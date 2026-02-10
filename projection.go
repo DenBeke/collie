@@ -12,6 +12,9 @@ type Projection[S any] struct {
 	Handlers map[string]HandleFunc[S]
 }
 
+// EventQuery returns the projection's QueryItem.
+func (p *Projection[S]) EventQuery() QueryItem { return p.Query }
+
 // Apply applies matching events to State in place.
 func (p *Projection[S]) Apply(events []SequencedEvent) {
 	for _, e := range events {

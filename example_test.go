@@ -23,9 +23,7 @@ func usernameExistsProjection(username string) dcb.Projection[bool] {
 // signUp registers a new user, failing if the username is already taken.
 func signUp(store dcb.EventStore, username string) error {
 	exists := usernameExistsProjection(username)
-	condition, err := dcb.BuildDecisionModel(store,
-		dcb.WithProjection(&exists),
-	)
+	condition, err := dcb.BuildDecisionModel(store, &exists)
 	if err != nil {
 		return err
 	}

@@ -1,41 +1,29 @@
 package dcb
 
-// Option configures a BuildDecisionModel call.
-type Option func(*decisionModel)
-
-type decisionModel struct {
-	query   Query
-	runners []func([]SequencedEvent)
+// Projector is satisfied by *Projection[S] for any S, or any custom type that
+// can apply events and report its query.
+type Projector interface {
+	EventQuery() QueryItem
+	Apply([]SequencedEvent)
 }
 
-// WithProjection adds a projection to the decision model. After
-// BuildDecisionModel returns, p.State contains the folded state.
-func WithProjection[S any](p *Projection[S]) Option {
-	return func(dm *decisionModel) {
-		dm.query = append(dm.query, p.Query)
-		dm.runners = append(dm.runners, func(events []SequencedEvent) {
-			p.Apply(events)
-		})
-	}
-}
-
-// BuildDecisionModel reads events matching all registered projections in one
-// pass, folds each projection's state, and returns an AppendCondition whose
-// Query is the union of all projection queries and whose After is the highest
-// sequence number seen.
-func BuildDecisionModel(store EventStore, opts ...Option) (*AppendCondition, error) {
-	var dm decisionModel
-	for _, opt := range opts {
-		opt(&dm)
+// BuildDecisionModel reads events matching all projections in one pass, applies
+// them to each projection, and returns an AppendCondition whose Query is the
+// union of all projection queries and whose After is the highest sequence
+// number seen.
+func BuildDecisionModel(store EventStore, projections ...Projector) (*AppendCondition, error) {
+	var query Query
+	for _, p := range projections {
+		query = append(query, p.EventQuery())
 	}
 
-	events, err := store.Read(dm.query, 0)
+	events, err := store.Read(query, 0)
 	if err != nil {
 		return nil, err
 	}
 
-	for _, run := range dm.runners {
-		run(events)
+	for _, p := range projections {
+		p.Apply(events)
 	}
 
 	var maxSeq uint64
@@ -46,7 +34,7 @@ func BuildDecisionModel(store EventStore, opts ...Option) (*AppendCondition, err
 	}
 
 	return &AppendCondition{
-		Query: dm.query,
+		Query: query,
 		After: maxSeq,
 	}, nil
 }
