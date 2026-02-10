@@ -9,12 +9,12 @@ type decisionModel struct {
 }
 
 // WithProjection adds a projection to the decision model. After
-// BuildDecisionModel returns, *target contains the folded state.
-func WithProjection[S any](target *S, p Projection[S]) Option {
+// BuildDecisionModel returns, p.State contains the folded state.
+func WithProjection[S any](p *Projection[S]) Option {
 	return func(dm *decisionModel) {
 		dm.query = append(dm.query, p.Query)
 		dm.runners = append(dm.runners, func(events []SequencedEvent) {
-			*target = p.Fold(events)
+			p.Apply(events)
 		})
 	}
 }
