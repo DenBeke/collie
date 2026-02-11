@@ -1,35 +1,37 @@
 package dcb
 
+import "context"
+
 // Projector is satisfied by *Projection[S] for any S, or any custom type that
 // can apply events and report its query.
 type Projector interface {
 	EventQuery() QueryItem
-	Apply([]SequencedEvent)
+	Apply(SequencedEvent)
 }
 
 // BuildDecisionModel reads events matching all projections in one pass, applies
-// them to each projection, and returns an AppendCondition whose Query is the
-// union of all projection queries and whose After is the highest sequence
-// number seen.
-func BuildDecisionModel(store EventStore, projections ...Projector) (*AppendCondition, error) {
+// each event to the projections it matches, and returns an AppendCondition
+// whose Query is the union of all projection queries and whose After is the
+// highest sequence number seen.
+func BuildDecisionModel(ctx context.Context, store EventStore, projections ...Projector) (*AppendCondition, error) {
+	// TODO: add "after" parameter?
 	var query Query
 	for _, p := range projections {
 		query = append(query, p.EventQuery())
 	}
 
-	events, err := store.Read(query, 0)
-	if err != nil {
-		return nil, err
-	}
-
-	for _, p := range projections {
-		p.Apply(events)
-	}
-
 	var maxSeq uint64
-	for _, e := range events {
+	for e, err := range store.Read(ctx, query, 0) {
+		if err != nil {
+			return nil, err
+		}
 		if e.SequenceNumber > maxSeq {
 			maxSeq = e.SequenceNumber
+		}
+		for _, p := range projections {
+			if p.EventQuery().Matches(e) {
+				p.Apply(e)
+			}
 		}
 	}
 
@@ -37,25 +39,4 @@ func BuildDecisionModel(store EventStore, projections ...Projector) (*AppendCond
 		Query: query,
 		After: maxSeq,
 	}, nil
-}
-
-func matchesQueryItem(e SequencedEvent, q QueryItem) bool {
-	if len(q.Types) > 0 {
-		found := false
-		for _, t := range q.Types {
-			if e.Type == t {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return false
-		}
-	}
-	for k, v := range q.Tags {
-		if e.Tags[k] != v {
-			return false
-		}
-	}
-	return true
 }

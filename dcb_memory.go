@@ -1,27 +1,39 @@
 package dcb
 
-import "errors"
+import (
+	"context"
+	"iter"
+	"sync"
+	"time"
+)
 
 // MemoryStore is a minimal in-memory EventStore.
 type MemoryStore struct {
+	mu     sync.RWMutex
 	events []SequencedEvent
 }
 
-func (s *MemoryStore) Read(query Query, after uint64) ([]SequencedEvent, error) {
-	var result []SequencedEvent
-	for _, e := range s.events {
-		if e.SequenceNumber > after && matchesQuery(e, query) {
-			result = append(result, e)
+func (s *MemoryStore) Read(_ context.Context, query Query, after uint64) iter.Seq2[SequencedEvent, error] {
+	return func(yield func(SequencedEvent, error) bool) {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		for _, e := range s.events {
+			if e.SequenceNumber > after && query.Matches(e) {
+				if !yield(e, nil) {
+					return
+				}
+			}
 		}
 	}
-	return result, nil
 }
 
-func (s *MemoryStore) Append(events []Event, condition *AppendCondition) error {
+func (s *MemoryStore) Append(_ context.Context, events []Event, condition *AppendCondition) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if condition != nil {
 		for _, e := range s.events {
-			if e.SequenceNumber > condition.After && matchesQuery(e, condition.Query) {
-				return errors.New("append condition violated")
+			if e.SequenceNumber > condition.After && condition.Query.Matches(e) {
+				return ErrConditionViolated
 			}
 		}
 	}
@@ -29,19 +41,8 @@ func (s *MemoryStore) Append(events []Event, condition *AppendCondition) error {
 		s.events = append(s.events, SequencedEvent{
 			Event:          e,
 			SequenceNumber: uint64(len(s.events) + 1),
+			CreatedAt:      time.Now(),
 		})
 	}
 	return nil
-}
-
-func matchesQuery(e SequencedEvent, query Query) bool {
-	if len(query) == 0 {
-		return true
-	}
-	for _, item := range query {
-		if matchesQueryItem(e, item) {
-			return true
-		}
-	}
-	return false
 }

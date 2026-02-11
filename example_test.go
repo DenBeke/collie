@@ -1,6 +1,7 @@
 package dcb_test
 
 import (
+	"context"
 	"fmt"
 
 	"dcb"
@@ -21,29 +22,30 @@ func usernameExistsProjection(username string) dcb.Projection[bool] {
 }
 
 // signUp registers a new user, failing if the username is already taken.
-func signUp(store dcb.EventStore, username string) error {
+func signUp(ctx context.Context, store dcb.EventStore, username string) error {
 	exists := usernameExistsProjection(username)
-	condition, err := dcb.BuildDecisionModel(store, &exists)
+	condition, err := dcb.BuildDecisionModel(ctx, store, &exists)
 	if err != nil {
 		return err
 	}
 	if exists.State {
 		return fmt.Errorf("username %q is already taken", username)
 	}
-	return store.Append([]dcb.Event{{
+	return store.Append(ctx, []dcb.Event{{
 		Type: "UserSignedUp",
-		Data: username,
+		Data: []byte(username),
 		Tags: map[string]string{"username": username},
 	}}, condition)
 }
 
 func ExampleBuildDecisionModel() {
+	ctx := context.Background()
 	store := &dcb.MemoryStore{}
 
-	err := signUp(store, "alice")
+	err := signUp(ctx, store, "alice")
 	fmt.Println("first signup:", err)
 
-	err = signUp(store, "alice")
+	err = signUp(ctx, store, "alice")
 	fmt.Println("second signup:", err)
 
 	// Output:

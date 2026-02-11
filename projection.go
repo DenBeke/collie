@@ -15,13 +15,9 @@ type Projection[S any] struct {
 // EventQuery returns the projection's QueryItem.
 func (p *Projection[S]) EventQuery() QueryItem { return p.Query }
 
-// Apply applies matching events to State in place.
-func (p *Projection[S]) Apply(events []SequencedEvent) {
-	for _, e := range events {
-		if matchesQueryItem(e, p.Query) {
-			if h, ok := p.Handlers[e.Type]; ok {
-				p.State = h(p.State, e)
-			}
-		}
+// Apply applies a single event to State.
+func (p *Projection[S]) Apply(e SequencedEvent) {
+	if h, ok := p.Handlers[e.Type]; ok {
+		p.State = h(p.State, e)
 	}
 }
