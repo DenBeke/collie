@@ -1,46 +1,53 @@
-package dcb_test
+//nolint:all
+package eventstore_test
 
 import (
 	"context"
 	"fmt"
+	"net/http"
 
-	"dcb"
+	"eventstore"
+	"eventstore/memory"
+
+	"github.com/labstack/echo/v4"
 )
 
 // usernameExistsProjection returns true if the given username is already taken.
-func usernameExistsProjection(username string) dcb.Projection[bool] {
-	return dcb.Projection[bool]{
-		Query: dcb.QueryItem{
+func usernameExistsProjection(username string) eventstore.Projection[bool] {
+	return eventstore.Projection[bool]{
+		Query: eventstore.QueryItem{
 			Types: []string{"UserSignedUp"},
 			Tags:  map[string]string{"username": username},
 		},
 		State: false,
-		Handlers: map[string]dcb.HandleFunc[bool]{
-			"UserSignedUp": func(_ bool, _ dcb.SequencedEvent) bool { return true },
+		Handlers: map[string]eventstore.HandleFunc[bool]{
+			"UserSignedUp": func(_ bool, _ eventstore.SequencedEvent) (bool, error) {
+				return true, nil
+			},
 		},
 	}
 }
 
 // signUp registers a new user, failing if the username is already taken.
-func signUp(ctx context.Context, store dcb.EventStore, username string) error {
+func signUp(ctx context.Context, store eventstore.Store, username string) error {
 	exists := usernameExistsProjection(username)
-	condition, err := dcb.BuildDecisionModel(ctx, store, &exists)
+	condition, err := eventstore.BuildDecisionModel(ctx, store, &exists)
 	if err != nil {
-		return err
+		return fmt.Errorf("could not build decision model: %w", err)
 	}
 	if exists.State {
 		return fmt.Errorf("username %q is already taken", username)
 	}
-	return store.Append(ctx, []dcb.Event{{
-		Type: "UserSignedUp",
-		Data: []byte(username),
-		Tags: map[string]string{"username": username},
-	}}, condition)
+	event, err := eventstore.NewEvent("UserSignedUp", username, map[string]string{"username": username})
+	if err != nil {
+		return fmt.Errorf("could not create event: %w", err)
+	}
+	return store.Append(ctx, []eventstore.Event{event}, condition)
 }
 
 func ExampleBuildDecisionModel() {
 	ctx := context.Background()
-	store := &dcb.MemoryStore{}
+	store := &memory.Store{}
 
 	err := signUp(ctx, store, "alice")
 	fmt.Println("first signup:", err)
@@ -51,4 +58,89 @@ func ExampleBuildDecisionModel() {
 	// Output:
 	// first signup: <nil>
 	// second signup: username "alice" is already taken
+}
+
+// totalUsersProjection is a read model that counts all signed-up users.
+// Unlike decision model projections, it is long-lived and incrementally updated.
+func totalUsersProjection(store eventstore.Store) *eventstore.ReadModel[int] {
+	return eventstore.NewReadModel(
+		eventstore.Projection[int]{
+			Query: eventstore.QueryItem{
+				Types: []string{"UserSignedUp"},
+			},
+			State: 0,
+			Handlers: map[string]eventstore.HandleFunc[int]{
+				"UserSignedUp": func(count int, _ eventstore.SequencedEvent) (int, error) {
+					return count + 1, nil
+				},
+			},
+		},
+		store, 0,
+	)
+}
+
+func ExampleReadModel() {
+	ctx := context.Background()
+	store := &memory.Store{}
+	totalUsers := totalUsersProjection(store)
+
+	// Initial state: no users yet.
+	totalUsers.Update(ctx)
+	fmt.Println("total users:", totalUsers.State)
+
+	// Sign up some users.
+	signUp(ctx, store, "alice")
+	signUp(ctx, store, "bob")
+
+	// Catch up the read model.
+	totalUsers.Update(ctx)
+	fmt.Println("total users:", totalUsers.State)
+
+	// Sign up another user.
+	signUp(ctx, store, "charlie")
+
+	// Incrementally update — only processes new events since last update.
+	totalUsers.Update(ctx)
+	fmt.Println("total users:", totalUsers.State)
+
+	// Output:
+	// total users: 0
+	// total users: 2
+	// total users: 3
+}
+
+// ExampleServe shows how to wire both sides into an Echo HTTP server.
+// POST /signup uses a decision model projection to enforce uniqueness.
+// GET /total-users uses a long-lived read model that catches up incrementally.
+func ExampleServe() {
+	store := &memory.Store{}
+	totalUsers := totalUsersProjection(store)
+
+	e := echo.New()
+
+	e.POST("/signup", func(c echo.Context) error {
+		var body struct {
+			Username string `json:"username"`
+		}
+		if err := c.Bind(&body); err != nil {
+			return c.String(http.StatusBadRequest, err.Error())
+		}
+		if err := signUp(c.Request().Context(), store, body.Username); err != nil {
+			return c.String(http.StatusConflict, err.Error())
+		}
+		return c.NoContent(http.StatusNoContent)
+	})
+
+	e.GET("/total-users", func(c echo.Context) error {
+		// Catch up with new events since the last query. This on-demand strategy
+		// keeps the read model decoupled from the write side — no need to notify
+		// read models after each command. The incremental update only processes
+		// events after the last known position, so catch-up stays fast.
+		if err := totalUsers.Update(c.Request().Context()); err != nil {
+			return err
+		}
+		return c.JSON(http.StatusOK, map[string]int{"total_users": totalUsers.State})
+	})
+
+	e.Start(":8080")
 }
