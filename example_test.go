@@ -62,30 +62,27 @@ func ExampleBuildDecisionModel() {
 
 // totalUsersProjection is a read model that counts all signed-up users.
 // Unlike decision model projections, it is long-lived and incrementally updated.
-func totalUsersProjection(store eventstore.Store) *eventstore.ReadModel[int] {
-	return eventstore.NewReadModel(
-		eventstore.Projection[int]{
-			Query: eventstore.QueryItem{
-				Types: []string{"UserSignedUp"},
-			},
-			State: 0,
-			Handlers: map[string]eventstore.HandleFunc[int]{
-				"UserSignedUp": func(count int, _ eventstore.SequencedEvent) (int, error) {
-					return count + 1, nil
-				},
+func totalUsersProjection() *memory.Projection[int] {
+	return memory.NewProjection(eventstore.Projection[int]{
+		Query: eventstore.QueryItem{
+			Types: []string{"UserSignedUp"},
+		},
+		State: 0,
+		Handlers: map[string]eventstore.HandleFunc[int]{
+			"UserSignedUp": func(count int, _ eventstore.SequencedEvent) (int, error) {
+				return count + 1, nil
 			},
 		},
-		store, 0,
-	)
+	})
 }
 
-func ExampleReadModel() {
+func ExampleUpdateProjection() {
 	ctx := context.Background()
 	store := &memory.Store{}
-	totalUsers := totalUsersProjection(store)
+	totalUsers := totalUsersProjection()
 
 	// Initial state: no users yet.
-	totalUsers.Update(ctx)
+	eventstore.UpdateProjection(ctx, store, totalUsers)
 	fmt.Println("total users:", totalUsers.State)
 
 	// Sign up some users.
@@ -93,14 +90,14 @@ func ExampleReadModel() {
 	signUp(ctx, store, "bob")
 
 	// Catch up the read model.
-	totalUsers.Update(ctx)
+	eventstore.UpdateProjection(ctx, store, totalUsers)
 	fmt.Println("total users:", totalUsers.State)
 
 	// Sign up another user.
 	signUp(ctx, store, "charlie")
 
 	// Incrementally update — only processes new events since last update.
-	totalUsers.Update(ctx)
+	eventstore.UpdateProjection(ctx, store, totalUsers)
 	fmt.Println("total users:", totalUsers.State)
 
 	// Output:
@@ -114,7 +111,7 @@ func ExampleReadModel() {
 // GET /total-users uses a long-lived read model that catches up incrementally.
 func ExampleServe() {
 	store := &memory.Store{}
-	totalUsers := totalUsersProjection(store)
+	totalUsers := totalUsersProjection()
 
 	e := echo.New()
 
@@ -136,7 +133,7 @@ func ExampleServe() {
 		// keeps the read model decoupled from the write side — no need to notify
 		// read models after each command. The incremental update only processes
 		// events after the last known position, so catch-up stays fast.
-		if err := totalUsers.Update(c.Request().Context()); err != nil {
+		if err := eventstore.UpdateProjection(c.Request().Context(), store, totalUsers); err != nil {
 			return err
 		}
 		return c.JSON(http.StatusOK, map[string]int{"total_users": totalUsers.State})

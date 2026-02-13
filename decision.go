@@ -18,6 +18,7 @@ type Projector interface {
 // highest sequence number seen.
 func BuildDecisionModel(ctx context.Context, store Store, projections ...Projector) (*AppendCondition, error) {
 	// TODO: add "after" parameter?
+
 	var query Query
 	for _, p := range projections {
 		query = append(query, p.EventQuery())

@@ -10,9 +10,10 @@ eventstore/
   event.go         — Event, SequencedEvent, NewEvent, EventData helpers
   projection.go    — Projection[S], HandleFunc
   decision.go      — BuildDecisionModel
-  readmodel.go     — ReadModel[S]
+  readmodel.go     — CheckpointProjector interface, UpdateProjection
   memory/
     memory.go      — In-memory Store implementation
+    projection.go  — In-memory CheckpointProjector implementation
 ```
 
 ## Core concepts
@@ -81,29 +82,29 @@ Decision model projections are short-lived — created per command, checked, the
 
 ### Read model
 
-A `ReadModel[S]` is a long-lived projection that tracks its position in the event stream. It catches up incrementally on demand, making it suitable for serving GET endpoints:
+A `CheckpointProjector` is a long-lived projection that tracks its position in the event stream. It catches up incrementally on demand via `UpdateProjection`, making it suitable for serving GET endpoints.
+
+The `memory.Projection[S]` wraps an `eventstore.Projection[S]` with position tracking:
 
 ```go
-totalUsers := eventstore.NewReadModel(
-    eventstore.Projection[int]{
-        Query: eventstore.QueryItem{Types: []string{"UserSignedUp"}},
-        State: 0,
-        Handlers: map[string]eventstore.HandleFunc[int]{
-            "UserSignedUp": func(count int, _ eventstore.SequencedEvent) (int, error) {
-                return count + 1, nil
-            },
+totalUsers := memory.NewProjection(eventstore.Projection[int]{
+    Query: eventstore.QueryItem{Types: []string{"UserSignedUp"}},
+    State: 0,
+    Handlers: map[string]eventstore.HandleFunc[int]{
+        "UserSignedUp": func(count int, _ eventstore.SequencedEvent) (int, error) {
+            return count + 1, nil
         },
     },
-    store,
-    0, // Initial offset/sequence number
-)
+})
 
 // Each call only processes events since the last update.
-totalUsers.Update(ctx)
+eventstore.UpdateProjection(ctx, store, totalUsers)
 fmt.Println(totalUsers.State) // 42
 ```
 
 The read model is decoupled from the write side — no need to notify it after each command. It catches up when queried.
+
+Implement the `CheckpointProjector` interface to use a different storage strategy (e.g. database snapshots, per-row storage).
 
 ## Example: enforcing uniqueness on signup
 
@@ -148,13 +149,13 @@ func signUp(ctx context.Context, store eventstore.Store, username string) error 
 
 ```go
 store := &memory.Store{}
-totalUsers := eventstore.NewReadModel(/* ... */, store, 0)
+totalUsers := memory.NewProjection(/* ... */)
 
 e := echo.New()
 
 e.GET("/total-users", func(c echo.Context) error {
     // Catch up with new events since the last query.
-    if err := totalUsers.Update(c.Request().Context()); err != nil {
+    if err := eventstore.UpdateProjection(c.Request().Context(), store, totalUsers); err != nil {
         return err
     }
     return c.JSON(200, map[string]int{"total_users": totalUsers.State})
