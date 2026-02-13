@@ -9,7 +9,7 @@ import (
 // can apply events and report its query.
 type Projector interface {
 	EventQuery() QueryItem
-	Apply(SequencedEvent) error
+	Apply(context.Context, SequencedEvent) error
 }
 
 // BuildDecisionModel reads events matching all projections in one pass, applies
@@ -34,7 +34,8 @@ func BuildDecisionModel(ctx context.Context, store Store, projections ...Project
 		}
 		for _, p := range projections {
 			if p.EventQuery().Matches(e) {
-				if err := p.Apply(e); err != nil {
+				err := p.Apply(ctx, e)
+				if err != nil {
 					return nil, fmt.Errorf("could not apply %s event: %w", e.Type, err)
 				}
 			}

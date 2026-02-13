@@ -11,7 +11,7 @@ import (
 type CheckpointProjector interface {
 	EventQuery() QueryItem
 	After() int64
-	Apply(SequencedEvent) error
+	Apply(context.Context, SequencedEvent) error
 }
 
 // UpdateProjection catches up a CheckpointProjector by applying all new
@@ -22,7 +22,8 @@ func UpdateProjection(ctx context.Context, store Store, p CheckpointProjector) e
 		if err != nil {
 			return fmt.Errorf("could not read events: %w", err)
 		}
-		if err := p.Apply(e); err != nil {
+		err = p.Apply(ctx, e)
+		if err != nil {
 			return fmt.Errorf("could not apply %s event: %w", e.Type, err)
 		}
 	}

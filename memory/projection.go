@@ -1,6 +1,11 @@
 package memory
 
-import "eventstore"
+import (
+	"context"
+	"fmt"
+
+	"eventstore"
+)
 
 // Projection is an in-memory [eventstore.CheckpointProjector]. It wraps a
 // [eventstore.Projection] and tracks the stream position so that
@@ -16,12 +21,15 @@ func NewProjection[S any](p eventstore.Projection[S]) *Projection[S] {
 }
 
 // After returns the sequence number of the last applied event.
-func (p *Projection[S]) After() int64 { return int64(p.position) }
+func (p *Projection[S]) After() int64 {
+	return int64(p.position)
+}
 
 // Apply applies a single event and advances the checkpoint.
-func (p *Projection[S]) Apply(e eventstore.SequencedEvent) error {
-	if err := p.Projection.Apply(e); err != nil {
-		return err
+func (p *Projection[S]) Apply(ctx context.Context, e eventstore.SequencedEvent) error {
+	err := p.Projection.Apply(ctx, e)
+	if err != nil {
+		return fmt.Errorf("could not apply event: %w", err)
 	}
 	p.position = e.SequenceNumber
 	return nil

@@ -1,6 +1,9 @@
 package eventstore
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+)
 
 // HandleFunc processes a single event and returns the updated state.
 type HandleFunc[S any] func(S, SequencedEvent) (S, error)
@@ -15,10 +18,12 @@ type Projection[S any] struct {
 }
 
 // EventQuery returns the projection's QueryItem.
-func (p *Projection[S]) EventQuery() QueryItem { return p.Query }
+func (p *Projection[S]) EventQuery() QueryItem {
+	return p.Query
+}
 
 // Apply applies a single event to State.
-func (p *Projection[S]) Apply(e SequencedEvent) error {
+func (p *Projection[S]) Apply(_ context.Context, e SequencedEvent) error {
 	if h, ok := p.Handlers[e.Type]; ok {
 		s, err := h(p.State, e)
 		if err != nil {
