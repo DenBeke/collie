@@ -6,14 +6,20 @@ A minimal Go library for event sourcing with [Dynamic Consistency Boundaries](ht
 
 ```
 eventstore/
-  eventstore.go    — Store interface, AppendCondition, core query types
-  event.go         — Event, SequencedEvent, NewEvent, EventData helpers
-  projection.go    — Projection[S], HandleFunc
-  decision.go      — BuildDecisionModel
-  readmodel.go     — CheckpointProjector interface, UpdateProjection
+  eventstore.go        — Store interface, AppendCondition
+  event.go             — Event, SequencedEvent, NewEvent, EventData
+  query.go             — Query, QueryItem
+  projection.go        — Projection[S], HandleFunc, Projector interface
+  decision.go          — BuildDecisionModel
+  readprojector.go     — CheckpointProjector interface, UpdateProjection
   memory/
-    memory.go      — In-memory Store implementation
-    projection.go  — In-memory CheckpointProjector implementation
+    memory.go          — In-memory Store
+    projection.go      — In-memory CheckpointProjector (memory.Projection[S])
+  postgres/
+    postgres.go        — PostgreSQL Store
+    projection_models.go — GORM models, MigrateProjections
+    projection.go      — Snapshot CheckpointProjector (postgres.Projection[S])
+    row_projection.go  — Row-based CheckpointProjector (postgres.RowProjection[V])
 ```
 
 ## Core concepts
@@ -36,8 +42,8 @@ Tags are key-value metadata attached to events. A `QueryItem` filters events by 
 
 ```go
 query := eventstore.QueryItem{
-    Types: []string{"UserSignedUp"},          // match these event types (OR)
-    Tags:  map[string]string{"username": "alice"}, // require these tags (AND)
+    Types: []string{"UserSignedUp"},               // match these event types (OR)
+    Tags:  map[string]string{"username": "alice"},  // require these tags (AND)
 }
 ```
 
@@ -80,11 +86,31 @@ store.Append(ctx, []eventstore.Event{event}, condition)
 
 Decision model projections are short-lived — created per command, checked, then discarded.
 
-### Read model
+### CheckpointProjector
 
-A `CheckpointProjector` is a long-lived projection that tracks its position in the event stream. It catches up incrementally on demand via `UpdateProjection`, making it suitable for serving GET endpoints.
+A `CheckpointProjector` is a long-lived projection that tracks its position in the event stream. It catches up incrementally on demand via `UpdateProjection`, making it suitable for serving read queries.
 
-The `memory.Projection[S]` wraps an `eventstore.Projection[S]` with position tracking:
+The interface has three methods:
+
+```go
+type CheckpointProjector interface {
+    EventQuery() QueryItem
+    After() int64
+    Apply(context.Context, SequencedEvent) error
+}
+```
+
+Three implementations are provided:
+
+| Implementation | Storage | Use case |
+|----------------|---------|----------|
+| `memory.Projection[S]` | In-memory | Testing, ephemeral state |
+| `postgres.Projection[S]` | Snapshot to DB | Full state persisted, survives restarts |
+| `postgres.RowProjection[V]` | Row per entity in DB | Large projections where full state doesn't fit in memory |
+
+#### In-memory projection
+
+Wraps a `Projection[S]` with position tracking. State is lost on restart.
 
 ```go
 totalUsers := memory.NewProjection(eventstore.Projection[int]{
@@ -97,14 +123,78 @@ totalUsers := memory.NewProjection(eventstore.Projection[int]{
     },
 })
 
-// Each call only processes events since the last update.
 eventstore.UpdateProjection(ctx, store, totalUsers)
-fmt.Println(totalUsers.State) // 42
+fmt.Println(totalUsers.State)
 ```
 
-The read model is decoupled from the write side — no need to notify it after each command. It catches up when queried.
+#### Postgres snapshot projection
 
-Implement the `CheckpointProjector` interface to use a different storage strategy (e.g. database snapshots, per-row storage).
+Wraps a `Projection[S]` and persists the full state and position to the database on every applied event. Loads existing state on construction, surviving restarts.
+
+```go
+totalUsers, err := postgres.NewProjection(db, "total_users", eventstore.Projection[int]{
+    Query: eventstore.QueryItem{Types: []string{"UserSignedUp"}},
+    State: 0,
+    Handlers: map[string]eventstore.HandleFunc[int]{
+        "UserSignedUp": func(count int, _ eventstore.SequencedEvent) (int, error) {
+            return count + 1, nil
+        },
+    },
+})
+
+eventstore.UpdateProjection(ctx, store, totalUsers)
+fmt.Println(totalUsers.State)
+```
+
+#### Postgres row projection
+
+Stores one row per entity. Each event loads the affected row, applies a handler, and writes it back in a single transaction. Does not keep the full projection in memory.
+
+Implement the `RowHandler[V]` interface:
+
+```go
+type UserProfile struct {
+    Name  string
+    Email string
+}
+
+type userProfileHandler struct{}
+
+func (h userProfileHandler) Key(e eventstore.SequencedEvent) (string, error) {
+    return e.Tags["user_id"], nil
+}
+
+func (h userProfileHandler) Apply(e eventstore.SequencedEvent, current *UserProfile) (*UserProfile, error) {
+    switch e.Type {
+    case "UserSignedUp":
+        var data struct{ Name, Email string }
+        json.Unmarshal(e.Data, &data)
+        return &UserProfile{Name: data.Name, Email: data.Email}, nil
+    case "UserEmailChanged":
+        var data struct{ Email string }
+        json.Unmarshal(e.Data, &data)
+        current.Email = data.Email
+        return current, nil
+    case "UserDeleted":
+        return nil, nil // nil deletes the row
+    }
+    return current, nil
+}
+```
+
+Then create the projection:
+
+```go
+profiles, err := postgres.NewRowProjection(db, "user_profiles",
+    eventstore.QueryItem{Types: []string{"UserSignedUp", "UserEmailChanged", "UserDeleted"}},
+    userProfileHandler{},
+)
+
+eventstore.UpdateProjection(ctx, store, profiles)
+
+// Retrieve a single row.
+profile, err := profiles.Get(ctx, "user-123")
+```
 
 ## Example: enforcing uniqueness on signup
 
@@ -154,8 +244,8 @@ totalUsers := memory.NewProjection(/* ... */)
 e := echo.New()
 
 e.GET("/total-users", func(c echo.Context) error {
-    // Catch up with new events since the last query.
-    if err := eventstore.UpdateProjection(c.Request().Context(), store, totalUsers); err != nil {
+    err := eventstore.UpdateProjection(c.Request().Context(), store, totalUsers)
+    if err != nil {
         return err
     }
     return c.JSON(200, map[string]int{"total_users": totalUsers.State})
@@ -167,10 +257,26 @@ e.GET("/total-users", func(c echo.Context) error {
 | Package | Description |
 |---------|-------------|
 | `eventstore/memory` | In-memory store for testing and development |
-| `eventstore/postgres` | PostgreSQL store (planned) |
+| `eventstore/postgres` | PostgreSQL store with advisory locking, batched reads, and B-tree/GIN tag indexing |
 
 ```go
+// In-memory
 var store eventstore.Store = &memory.Store{}
+
+// PostgreSQL
+db, _ := gorm.Open(postgres.Open(connStr))
+pgStore := pgstore.New(db, pgstore.WithIndexedTags("tenant_id"))
+pgStore.Migrate()
 ```
 
 The `Store` interface has two methods: `Read` and `Append`. Implement it to back the event store with any storage engine.
+
+### PostgreSQL projection tables
+
+Call `MigrateProjections` to create the tables used by `postgres.Projection[S]` and `postgres.RowProjection[V]`:
+
+```go
+postgres.MigrateProjections(db)
+```
+
+This creates three tables: `projection_checkpoints` (shared position tracking), `projection_snapshots` (snapshot state), and `projection_rows` (per-entity rows), with foreign key constraints from snapshots/rows to checkpoints.
