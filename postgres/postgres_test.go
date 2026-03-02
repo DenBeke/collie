@@ -1,3 +1,11 @@
+// Tests use testcontainers-go with PostgreSQL 17.
+//
+// With Colima (macOS), set these environment variables before running:
+//
+//	export DOCKER_HOST="unix://${HOME}/.colima/default/docker.sock"
+//	export TESTCONTAINERS_RYUK_DISABLED=true
+//
+// Then: go test ./postgres/ -timeout 300s
 package postgres_test
 
 import (

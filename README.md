@@ -12,6 +12,10 @@ eventstore/
   projection.go        — Projection[S], HandleFunc, Projector interface
   decision.go          — BuildDecisionModel
   readprojector.go     — CheckpointProjector interface, UpdateProjection
+  encryption/
+    encryption.go      — EventEncryptor, GDPRTag, ErrRedacted
+    keystore.go        — KeyStore interface
+    memory.go          — In-memory KeyStore for testing
   memory/
     memory.go          — In-memory Store
     projection.go      — In-memory CheckpointProjector (memory.Projection[S])
@@ -258,6 +262,7 @@ e.GET("/total-users", func(c echo.Context) error {
 |---------|-------------|
 | `eventstore/memory` | In-memory store for testing and development |
 | `eventstore/postgres` | PostgreSQL store with advisory locking, batched reads, and B-tree/GIN tag indexing |
+| `eventstore/encryption` | GDPR crypto-shredding: per-subject encryption with key deletion |
 
 ```go
 // In-memory
@@ -280,3 +285,113 @@ postgres.MigrateProjections(db)
 ```
 
 This creates three tables: `projection_checkpoints` (shared position tracking), `projection_snapshots` (snapshot state), and `projection_rows` (per-entity rows), with foreign key constraints from snapshots/rows to checkpoints.
+
+## GDPR / Crypto-shredding
+
+Event sourcing stores facts forever, but GDPR requires the ability to forget personal data. This library solves this with **crypto-shredding**: event payloads containing personal data are encrypted with a per-subject key. "Forgetting" a subject means deleting their key — the events remain in the store but the data becomes permanently unreadable.
+
+### Setting up encryption
+
+Pass an `EventEncryptor` when creating a store:
+
+```go
+keys := encryption.NewMemoryKeyStore()
+store := memory.New(memory.WithEncryption(encryption.NewEventEncryptor(keys)))
+```
+
+For PostgreSQL:
+
+```go
+pgStore := pgstore.New(db, pgstore.WithEncryptor(encryption.NewEventEncryptor(keys)))
+```
+
+### Marking events as personal data
+
+Add a `gdpr` tag whose value names which other tag(s) identify the data subject:
+
+```go
+event, _ := eventstore.NewEvent("UserSignedUp", userData, map[string]string{
+    "userId": "user-123",
+    "gdpr":   "userId",   // encrypt with key derived from userId tag
+})
+```
+
+Events **without** the `gdpr` tag pass through unencrypted. The `gdpr` tag value supports comma-separated tag names for multi-subject events:
+
+```go
+eventstore.NewEvent("FriendRequest", requestData, map[string]string{
+    "senderId":   "user-1",
+    "receiverId": "user-2",
+    "gdpr":       "senderId,receiverId",
+})
+```
+
+All events with the same subject tags share the same encryption key, regardless of what other tags they carry. An event tagged `{userId: "user-123", orderId: "order-456", gdpr: "userId"}` uses the same key as one tagged `{userId: "user-123", gdpr: "userId"}`.
+
+### Forgetting a subject
+
+Call `Forget` with the subject's tags:
+
+```go
+store.Forget(ctx, map[string]string{"userId": "user-123"})
+```
+
+This deletes the encryption key. All events for that subject are now permanently unreadable. The forget uses **superset matching** — `Forget({"userId": "user-1"})` also deletes keys for compound subjects like `{"senderId": "user-1", "receiverId": "user-2"}`.
+
+### Handling redacted events in projections
+
+After forgetting, events still flow through the store with their type, tags, and sequence number preserved, but the data is redacted. Use `e.Redacted()` to check:
+
+```go
+Handlers: map[string]eventstore.HandleFunc[MyState]{
+    "UserSignedUp": func(state MyState, e eventstore.SequencedEvent) (MyState, error) {
+        if e.Redacted() {
+            return state, nil // crypto-shredded, skip
+        }
+        data, err := eventstore.EventData[UserData](e)
+        if err != nil {
+            return state, err
+        }
+        // normal handling
+        state.Users = append(state.Users, data)
+        return state, nil
+    },
+}
+```
+
+Projections that only check event existence (like the `usernameExistsProjection` example) work without changes since they don't read `Data`.
+
+The `encryption.ErrRedacted` error is provided as a convenience for application code that needs to signal redacted data to callers.
+
+### Recommended forget workflow
+
+The library's `Forget` only deletes encryption keys — it does not emit events. Use domain events to coordinate:
+
+```go
+func deleteUser(ctx context.Context, store *memory.Store, userId string) error {
+    // 1. Append a business event so projections can clean up.
+    event, _ := eventstore.NewEvent("UserDeleted", userId, map[string]string{
+        "userId": userId,
+    })
+    store.Append(ctx, []eventstore.Event{event}, nil)
+
+    // 2. Shred the encryption keys.
+    return store.Forget(ctx, map[string]string{"userId": userId})
+}
+```
+
+Projections listen to `UserDeleted` to actively remove user data from their state. On replay, old events are redacted (`e.Redacted()` returns true) and handled gracefully.
+
+### Custom KeyStore
+
+The `encryption.KeyStore` interface is intentionally simple. Implement it to back keys with PostgreSQL, AWS KMS, HashiCorp Vault, or any other secret store:
+
+```go
+type KeyStore interface {
+    GetOrCreate(ctx context.Context, tags map[string]string) ([]byte, error)
+    Get(ctx context.Context, tags map[string]string) ([]byte, bool, error)
+    Forget(ctx context.Context, tags map[string]string) error
+}
+```
+
+`GetOrCreate` must be safe for concurrent calls with the same tags. `Get` returns `(nil, false, nil)` when the key has been forgotten. `Forget` deletes all keys whose tags are a superset of the provided tags.

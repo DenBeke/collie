@@ -22,6 +22,12 @@ type SequencedEvent struct {
 	CreatedAt      time.Time
 }
 
+// Redacted returns true if the event's data has been crypto-shredded
+// and is no longer readable.
+func (e SequencedEvent) Redacted() bool {
+	return e.Data == nil
+}
+
 // EventData unmarshals the event's Data field into a value of type T.
 func EventData[T any](e SequencedEvent) (T, error) {
 	var t T

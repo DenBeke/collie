@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"eventstore"
+	"eventstore/encryption"
 
 	"gorm.io/gorm"
 )
@@ -36,6 +37,7 @@ type Store struct {
 	db          *gorm.DB
 	batchSize   int
 	indexedTags map[string]bool // tag keys with expression indexes
+	encryptor   *encryption.EventEncryptor
 }
 
 // Option configures a Store.
@@ -45,6 +47,12 @@ type Option func(*Store)
 // during Read. Defaults to 1000.
 func WithBatchSize(n int) Option {
 	return func(s *Store) { s.batchSize = n }
+}
+
+// WithEncryptor enables GDPR crypto-shredding. Events tagged with
+// [encryption.GDPRTag] will have their Data encrypted at rest.
+func WithEncryptor(encryptor *encryption.EventEncryptor) Option {
+	return func(s *Store) { s.encryptor = encryptor }
 }
 
 // WithIndexedTags registers tag keys that get composite B-tree expression
@@ -113,6 +121,15 @@ func (s *Store) Read(ctx context.Context, query eventstore.Query, after uint64) 
 					}
 					continue
 				}
+				if s.encryptor != nil {
+					se, err = s.encryptor.Open(ctx, se)
+					if err != nil {
+						if !yield(se, err) {
+							return
+						}
+						continue
+					}
+				}
 				if !yield(se, nil) {
 					return
 				}
@@ -149,6 +166,13 @@ func (s *Store) Append(ctx context.Context, events []eventstore.Event, condition
 		}
 
 		for _, e := range events {
+			if s.encryptor != nil {
+				var err error
+				e, err = s.encryptor.Seal(ctx, e)
+				if err != nil {
+					return fmt.Errorf("could not seal event: %w", err)
+				}
+			}
 			tagsJSON, err := json.Marshal(e.Tags)
 			if err != nil {
 				return fmt.Errorf("could not marshal event tags: %w", err)
@@ -207,6 +231,15 @@ func (s *Store) applyQuery(db *gorm.DB, query eventstore.Query) *gorm.DB {
 		return db.Where(strings.Join(clauses, " OR "), args...)
 	}
 	return db
+}
+
+// Forget deletes encryption keys for the given subject tags, making
+// the corresponding event data permanently unreadable.
+func (s *Store) Forget(ctx context.Context, tags map[string]string) error {
+	if s.encryptor == nil {
+		return fmt.Errorf("no encryptor configured")
+	}
+	return s.encryptor.Forget(ctx, tags)
 }
 
 func toSequencedEvent(e event) (eventstore.SequencedEvent, error) {
