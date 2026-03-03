@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"eventstore"
+	"eventstore/encryption"
 	pgstore "eventstore/postgres"
 
 	"github.com/testcontainers/testcontainers-go"
@@ -26,7 +27,7 @@ import (
 	"gorm.io/gorm"
 )
 
-func setupStore(tb testing.TB, opts ...pgstore.Option) *pgstore.Store {
+func setupDB(tb testing.TB) *gorm.DB {
 	tb.Helper()
 	ctx := context.Background()
 
@@ -67,11 +68,31 @@ func setupStore(tb testing.TB, opts ...pgstore.Option) *pgstore.Store {
 		tb.Fatalf("could not connect to database: %v", err)
 	}
 
+	return db
+}
+
+func setupStore(tb testing.TB, opts ...pgstore.Option) *pgstore.Store {
+	tb.Helper()
+	db := setupDB(tb)
 	store := pgstore.New(db, opts...)
 	if err := store.Migrate(); err != nil {
 		tb.Fatalf("could not migrate: %v", err)
 	}
+	return store
+}
 
+func setupEncryptedStore(tb testing.TB) *pgstore.Store {
+	tb.Helper()
+	db := setupDB(tb)
+	if err := pgstore.MigrateKeyStore(db); err != nil {
+		tb.Fatalf("could not migrate key store: %v", err)
+	}
+	keys := pgstore.NewPostgresKeyStore(db)
+	enc := encryption.NewEventEncryptor(keys)
+	store := pgstore.New(db, pgstore.WithEncryptor(enc))
+	if err := store.Migrate(); err != nil {
+		tb.Fatalf("could not migrate: %v", err)
+	}
 	return store
 }
 
@@ -337,6 +358,236 @@ func TestAppendConditionConcurrency(t *testing.T) {
 	}
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event in store, got %d", len(events))
+	}
+}
+
+// --- Encryption integration tests ---
+
+func collectPGEvents(t *testing.T, store *pgstore.Store, query eventstore.Query) []eventstore.SequencedEvent {
+	t.Helper()
+	ctx := context.Background()
+	var events []eventstore.SequencedEvent
+	for e, err := range store.Read(ctx, query, 0) {
+		if err != nil {
+			t.Fatalf("unexpected read error: %v", err)
+		}
+		events = append(events, e)
+	}
+	return events
+}
+
+func TestPGEncryptedRoundTrip(t *testing.T) {
+	store := setupEncryptedStore(t)
+	ctx := context.Background()
+
+	type user struct {
+		Name  string `json:"name"`
+		Email string `json:"email"`
+	}
+	userData := user{Name: "Alice", Email: "alice@example.com"}
+
+	e, err := eventstore.NewEvent("UserSignedUp", userData, map[string]string{
+		"userId":           "user-123",
+		encryption.GDPRTag: "userId",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	events := collectPGEvents(t, store, nil)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	data, err := eventstore.EventData[user](events[0])
+	if err != nil {
+		t.Fatalf("unexpected unmarshal error: %v", err)
+	}
+	if data.Name != "Alice" || data.Email != "alice@example.com" {
+		t.Fatalf("unexpected data: %+v", data)
+	}
+}
+
+func TestPGEncryptedAtRest(t *testing.T) {
+	db := setupDB(t)
+	if err := pgstore.MigrateKeyStore(db); err != nil {
+		t.Fatalf("could not migrate key store: %v", err)
+	}
+	keys := pgstore.NewPostgresKeyStore(db)
+	enc := encryption.NewEventEncryptor(keys)
+	store := pgstore.New(db, pgstore.WithEncryptor(enc))
+	if err := store.Migrate(); err != nil {
+		t.Fatalf("could not migrate: %v", err)
+	}
+
+	ctx := context.Background()
+	e, _ := eventstore.NewEvent("UserSignedUp", "secret-data", map[string]string{
+		"userId":           "user-123",
+		encryption.GDPRTag: "userId",
+	})
+	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Query raw database to verify data is encrypted.
+	var raw struct{ Data []byte }
+	if err := db.Table("events").Select("data").First(&raw).Error; err != nil {
+		t.Fatalf("could not read raw event: %v", err)
+	}
+	if string(raw.Data) == `"secret-data"` {
+		t.Fatal("data should be encrypted at rest, but found plaintext")
+	}
+}
+
+func TestPGForgetRedactsData(t *testing.T) {
+	store := setupEncryptedStore(t)
+	ctx := context.Background()
+
+	e, _ := eventstore.NewEvent("UserSignedUp", "alice-data", map[string]string{
+		"userId":           "user-123",
+		encryption.GDPRTag: "userId",
+	})
+	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.Forget(ctx, map[string]string{"userId": "user-123"}); err != nil {
+		t.Fatal(err)
+	}
+
+	events := collectPGEvents(t, store, nil)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if !events[0].Redacted() {
+		t.Fatal("expected event to be redacted after forget")
+	}
+	if events[0].Type != "UserSignedUp" {
+		t.Fatalf("expected type preserved, got %s", events[0].Type)
+	}
+	if events[0].Tags["userId"] != "user-123" {
+		t.Fatalf("expected tags preserved, got %v", events[0].Tags)
+	}
+}
+
+func TestPGForgetDoesNotAffectOtherSubjects(t *testing.T) {
+	store := setupEncryptedStore(t)
+	ctx := context.Background()
+
+	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", map[string]string{
+		"userId":           "user-1",
+		encryption.GDPRTag: "userId",
+	})
+	e2, _ := eventstore.NewEvent("UserSignedUp", "bob", map[string]string{
+		"userId":           "user-2",
+		encryption.GDPRTag: "userId",
+	})
+	if err := store.Append(ctx, []eventstore.Event{e1, e2}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.Forget(ctx, map[string]string{"userId": "user-1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	events := collectPGEvents(t, store, nil)
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events, got %d", len(events))
+	}
+	if !events[0].Redacted() {
+		t.Fatal("expected user-1 to be redacted")
+	}
+	data, err := eventstore.EventData[string](events[1])
+	if err != nil {
+		t.Fatalf("unexpected error reading user-2: %v", err)
+	}
+	if data != "bob" {
+		t.Fatalf("expected bob, got %s", data)
+	}
+}
+
+func TestPGSupersetForget(t *testing.T) {
+	store := setupEncryptedStore(t)
+	ctx := context.Background()
+
+	e, _ := eventstore.NewEvent("FriendRequest", "request-data", map[string]string{
+		"senderId":         "user-1",
+		"receiverId":       "user-2",
+		encryption.GDPRTag: "senderId,receiverId",
+	})
+	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Forget with just senderId — should match via JSONB @> superset.
+	if err := store.Forget(ctx, map[string]string{"senderId": "user-1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	events := collectPGEvents(t, store, nil)
+	if !events[0].Redacted() {
+		t.Fatal("expected event to be redacted after superset forget")
+	}
+}
+
+func TestPGMixedEncryptedAndPlainEvents(t *testing.T) {
+	store := setupEncryptedStore(t)
+	ctx := context.Background()
+
+	plain, _ := eventstore.NewEvent("SystemBooted", "v1.0", nil)
+	encrypted, _ := eventstore.NewEvent("UserSignedUp", "alice", map[string]string{
+		"userId":           "user-1",
+		encryption.GDPRTag: "userId",
+	})
+	if err := store.Append(ctx, []eventstore.Event{plain, encrypted}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.Forget(ctx, map[string]string{"userId": "user-1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	events := collectPGEvents(t, store, nil)
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events, got %d", len(events))
+	}
+	data, err := eventstore.EventData[string](events[0])
+	if err != nil || data != "v1.0" {
+		t.Fatalf("plain event should be readable: data=%s, err=%v", data, err)
+	}
+	if !events[1].Redacted() {
+		t.Fatal("expected encrypted event to be redacted after forget")
+	}
+}
+
+func TestPGAppendConditionThroughEncryption(t *testing.T) {
+	store := setupEncryptedStore(t)
+	ctx := context.Background()
+
+	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", map[string]string{
+		"userId":           "user-1",
+		encryption.GDPRTag: "userId",
+	})
+	if err := store.Append(ctx, []eventstore.Event{e1}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	condition := &eventstore.AppendCondition{
+		Query: eventstore.Query{
+			eventstore.QueryItem{Types: []string{"UserSignedUp"}, Tags: map[string]string{"userId": "user-1"}},
+		},
+		After: 0,
+	}
+
+	e2, _ := eventstore.NewEvent("UserSignedUp", "alice-again", map[string]string{
+		"userId":           "user-1",
+		encryption.GDPRTag: "userId",
+	})
+	err := store.Append(ctx, []eventstore.Event{e2}, condition)
+	if err != eventstore.ErrAppendConditionViolated {
+		t.Fatalf("expected ErrAppendConditionViolated, got %v", err)
 	}
 }
 

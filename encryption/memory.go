@@ -23,7 +23,7 @@ func NewMemoryKeyStore() *MemoryKeyStore {
 }
 
 func (s *MemoryKeyStore) GetOrCreate(_ context.Context, tags map[string]string) ([]byte, error) {
-	id := tagID(tags)
+	id := TagID(tags)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if entry, ok := s.keys[id]; ok {
@@ -38,7 +38,7 @@ func (s *MemoryKeyStore) GetOrCreate(_ context.Context, tags map[string]string) 
 }
 
 func (s *MemoryKeyStore) Get(_ context.Context, tags map[string]string) ([]byte, bool, error) {
-	id := tagID(tags)
+	id := TagID(tags)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	entry, ok := s.keys[id]

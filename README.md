@@ -21,6 +21,7 @@ eventstore/
     projection.go      — In-memory CheckpointProjector (memory.Projection[S])
   postgres/
     postgres.go        — PostgreSQL Store
+    keystore.go        — PostgresKeyStore, MigrateKeyStore
     projection_models.go — GORM models, MigrateProjections
     projection.go      — Snapshot CheckpointProjector (postgres.Projection[S])
     row_projection.go  — Row-based CheckpointProjector (postgres.RowProjection[V])
@@ -286,6 +287,12 @@ postgres.MigrateProjections(db)
 
 This creates three tables: `projection_checkpoints` (shared position tracking), `projection_snapshots` (snapshot state), and `projection_rows` (per-entity rows), with foreign key constraints from snapshots/rows to checkpoints.
 
+If using encryption, also migrate the key store table:
+
+```go
+postgres.MigrateKeyStore(db)
+```
+
 ## GDPR / Crypto-shredding
 
 Event sourcing stores facts forever, but GDPR requires the ability to forget personal data. This library solves this with **crypto-shredding**: event payloads containing personal data are encrypted with a per-subject key. "Forgetting" a subject means deleting their key — the events remain in the store but the data becomes permanently unreadable.
@@ -299,9 +306,11 @@ keys := encryption.NewMemoryKeyStore()
 store := memory.New(memory.WithEncryption(encryption.NewEventEncryptor(keys)))
 ```
 
-For PostgreSQL:
+For PostgreSQL, use the built-in `PostgresKeyStore` to persist keys in the database:
 
 ```go
+pgstore.MigrateKeyStore(db)
+keys := pgstore.NewPostgresKeyStore(db)
 pgStore := pgstore.New(db, pgstore.WithEncryptor(encryption.NewEventEncryptor(keys)))
 ```
 
@@ -384,7 +393,7 @@ Projections listen to `UserDeleted` to actively remove user data from their stat
 
 ### Custom KeyStore
 
-The `encryption.KeyStore` interface is intentionally simple. Implement it to back keys with PostgreSQL, AWS KMS, HashiCorp Vault, or any other secret store:
+A PostgreSQL-backed key store is provided out of the box via `postgres.NewPostgresKeyStore(db)`. For other backends (AWS KMS, HashiCorp Vault, etc.), implement the `encryption.KeyStore` interface:
 
 ```go
 type KeyStore interface {

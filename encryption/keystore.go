@@ -28,7 +28,7 @@ type KeyStore interface {
 
 // tagID returns a deterministic string identifier for a tag set.
 // json.Marshal sorts map keys, so the output is stable.
-func tagID(tags map[string]string) string {
+func TagID(tags map[string]string) string {
 	b, _ := json.Marshal(tags)
 	return string(b)
 }
