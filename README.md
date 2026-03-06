@@ -13,7 +13,7 @@ eventstore/
   decision.go          — BuildDecisionModel
   readprojector.go     — CheckpointProjector interface, UpdateProjection
   encryption/
-    encryption.go      — EventEncryptor, GDPRTag, ErrRedacted
+    encryption.go      — EventEncryptor, ErrRedacted
     keystore.go        — KeyStore interface
     memory.go          — In-memory KeyStore for testing
   memory/
@@ -316,26 +316,26 @@ pgStore := pgstore.New(db, pgstore.WithEncryptor(encryption.NewEventEncryptor(ke
 
 ### Marking events as personal data
 
-Add a `gdpr` tag whose value names which other tag(s) identify the data subject:
+Use the `WithEncryptionKeys` option to name which tag(s) identify the data subject:
 
 ```go
 event, _ := eventstore.NewEvent("UserSignedUp", userData, map[string]string{
     "userId": "user-123",
-    "gdpr":   "userId",   // encrypt with key derived from userId tag
-})
+}, eventstore.WithEncryptionKeys("userId"))
 ```
 
-Events **without** the `gdpr` tag pass through unencrypted. The `gdpr` tag value supports comma-separated tag names for multi-subject events:
+Every key name must exist in the event's tags — `NewEvent` returns an error otherwise. Events created **without** `WithEncryptionKeys` pass through unencrypted.
+
+For multi-subject events, list all subject tag names:
 
 ```go
 eventstore.NewEvent("FriendRequest", requestData, map[string]string{
     "senderId":   "user-1",
     "receiverId": "user-2",
-    "gdpr":       "senderId,receiverId",
-})
+}, eventstore.WithEncryptionKeys("senderId", "receiverId"))
 ```
 
-All events with the same subject tags share the same encryption key, regardless of what other tags they carry. An event tagged `{userId: "user-123", orderId: "order-456", gdpr: "userId"}` uses the same key as one tagged `{userId: "user-123", gdpr: "userId"}`.
+All events with the same subject tags share the same encryption key, regardless of what other tags they carry. An event with tags `{userId: "user-123", orderId: "order-456"}` and `WithEncryptionKeys("userId")` uses the same key as one with just `{userId: "user-123"}` and `WithEncryptionKeys("userId")`.
 
 ### Forgetting a subject
 

@@ -387,9 +387,8 @@ func TestPGEncryptedRoundTrip(t *testing.T) {
 	userData := user{Name: "Alice", Email: "alice@example.com"}
 
 	e, err := eventstore.NewEvent("UserSignedUp", userData, map[string]string{
-		"userId":           "user-123",
-		encryption.GDPRTag: "userId",
-	})
+		"userId": "user-123",
+	}, eventstore.WithEncryptionKeys("userId"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -424,9 +423,8 @@ func TestPGEncryptedAtRest(t *testing.T) {
 
 	ctx := context.Background()
 	e, _ := eventstore.NewEvent("UserSignedUp", "secret-data", map[string]string{
-		"userId":           "user-123",
-		encryption.GDPRTag: "userId",
-	})
+		"userId": "user-123",
+	}, eventstore.WithEncryptionKeys("userId"))
 	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -446,9 +444,8 @@ func TestPGForgetRedactsData(t *testing.T) {
 	ctx := context.Background()
 
 	e, _ := eventstore.NewEvent("UserSignedUp", "alice-data", map[string]string{
-		"userId":           "user-123",
-		encryption.GDPRTag: "userId",
-	})
+		"userId": "user-123",
+	}, eventstore.WithEncryptionKeys("userId"))
 	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -477,13 +474,11 @@ func TestPGForgetDoesNotAffectOtherSubjects(t *testing.T) {
 	ctx := context.Background()
 
 	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", map[string]string{
-		"userId":           "user-1",
-		encryption.GDPRTag: "userId",
-	})
+		"userId": "user-1",
+	}, eventstore.WithEncryptionKeys("userId"))
 	e2, _ := eventstore.NewEvent("UserSignedUp", "bob", map[string]string{
-		"userId":           "user-2",
-		encryption.GDPRTag: "userId",
-	})
+		"userId": "user-2",
+	}, eventstore.WithEncryptionKeys("userId"))
 	if err := store.Append(ctx, []eventstore.Event{e1, e2}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -513,10 +508,9 @@ func TestPGSupersetForget(t *testing.T) {
 	ctx := context.Background()
 
 	e, _ := eventstore.NewEvent("FriendRequest", "request-data", map[string]string{
-		"senderId":         "user-1",
-		"receiverId":       "user-2",
-		encryption.GDPRTag: "senderId,receiverId",
-	})
+		"senderId":   "user-1",
+		"receiverId": "user-2",
+	}, eventstore.WithEncryptionKeys("senderId", "receiverId"))
 	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -538,9 +532,8 @@ func TestPGMixedEncryptedAndPlainEvents(t *testing.T) {
 
 	plain, _ := eventstore.NewEvent("SystemBooted", "v1.0", nil)
 	encrypted, _ := eventstore.NewEvent("UserSignedUp", "alice", map[string]string{
-		"userId":           "user-1",
-		encryption.GDPRTag: "userId",
-	})
+		"userId": "user-1",
+	}, eventstore.WithEncryptionKeys("userId"))
 	if err := store.Append(ctx, []eventstore.Event{plain, encrypted}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -567,9 +560,8 @@ func TestPGAppendConditionThroughEncryption(t *testing.T) {
 	ctx := context.Background()
 
 	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", map[string]string{
-		"userId":           "user-1",
-		encryption.GDPRTag: "userId",
-	})
+		"userId": "user-1",
+	}, eventstore.WithEncryptionKeys("userId"))
 	if err := store.Append(ctx, []eventstore.Event{e1}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -582,9 +574,8 @@ func TestPGAppendConditionThroughEncryption(t *testing.T) {
 	}
 
 	e2, _ := eventstore.NewEvent("UserSignedUp", "alice-again", map[string]string{
-		"userId":           "user-1",
-		encryption.GDPRTag: "userId",
-	})
+		"userId": "user-1",
+	}, eventstore.WithEncryptionKeys("userId"))
 	err := store.Append(ctx, []eventstore.Event{e2}, condition)
 	if err != eventstore.ErrAppendConditionViolated {
 		t.Fatalf("expected ErrAppendConditionViolated, got %v", err)

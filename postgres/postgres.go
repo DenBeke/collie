@@ -29,6 +29,7 @@ type event struct {
 	Type           string    `gorm:"not null;index"`
 	Data           []byte    `gorm:"type:bytea"`
 	Tags           []byte    `gorm:"type:jsonb;default:'{}';index:,type:gin"`
+	EncryptionKeys []byte    `gorm:"type:jsonb"`
 	CreatedAt      time.Time `gorm:"autoCreateTime;index"`
 }
 
@@ -49,8 +50,8 @@ func WithBatchSize(n int) Option {
 	return func(s *Store) { s.batchSize = n }
 }
 
-// WithEncryptor enables GDPR crypto-shredding. Events tagged with
-// [encryption.GDPRTag] will have their Data encrypted at rest.
+// WithEncryptor enables GDPR crypto-shredding. Events with EncryptionKeys
+// will have their Data encrypted at rest.
 func WithEncryptor(encryptor *encryption.EventEncryptor) Option {
 	return func(s *Store) { s.encryptor = encryptor }
 }
@@ -177,10 +178,18 @@ func (s *Store) Append(ctx context.Context, events []eventstore.Event, condition
 			if err != nil {
 				return fmt.Errorf("could not marshal event tags: %w", err)
 			}
+			var encKeysJSON []byte
+			if len(e.EncryptionKeys) > 0 {
+				encKeysJSON, err = json.Marshal(e.EncryptionKeys)
+				if err != nil {
+					return fmt.Errorf("could not marshal encryption keys: %w", err)
+				}
+			}
 			record := event{
-				Type: e.Type,
-				Data: e.Data,
-				Tags: tagsJSON,
+				Type:           e.Type,
+				Data:           e.Data,
+				Tags:           tagsJSON,
+				EncryptionKeys: encKeysJSON,
 			}
 			if err := tx.Create(&record).Error; err != nil {
 				return fmt.Errorf("could not insert event: %w", err)
@@ -249,11 +258,18 @@ func toSequencedEvent(e event) (eventstore.SequencedEvent, error) {
 			return eventstore.SequencedEvent{}, fmt.Errorf("could not unmarshal event tags: %w", err)
 		}
 	}
+	var encKeys []string
+	if len(e.EncryptionKeys) > 0 {
+		if err := json.Unmarshal(e.EncryptionKeys, &encKeys); err != nil {
+			return eventstore.SequencedEvent{}, fmt.Errorf("could not unmarshal encryption keys: %w", err)
+		}
+	}
 	return eventstore.SequencedEvent{
 		Event: eventstore.Event{
-			Type: e.Type,
-			Data: e.Data,
-			Tags: tags,
+			Type:           e.Type,
+			Data:           e.Data,
+			Tags:           tags,
+			EncryptionKeys: encKeys,
 		},
 		SequenceNumber: e.SequenceNumber,
 		CreatedAt:      e.CreatedAt,

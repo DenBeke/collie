@@ -8,15 +8,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"strings"
 
 	"eventstore"
 )
-
-// GDPRTag is the tag key that marks an event as containing personal data.
-// Its value is a comma-separated list of tag names that identify the data subject.
-// For example, gdpr:"userId" means the encryption key is derived from the userId tag.
-const GDPRTag = "gdpr"
 
 // ErrRedacted is a convenience error for consumers to return when encountering
 // redacted events (events whose Data is nil after crypto-shredding).
@@ -33,10 +27,10 @@ func NewEventEncryptor(keys KeyStore) *EventEncryptor {
 	return &EventEncryptor{keys: keys}
 }
 
-// Seal encrypts the event's Data if it has a gdpr tag. Events without
-// the tag are returned unchanged.
+// Seal encrypts the event's Data if it has EncryptionKeys set. Events without
+// encryption keys are returned unchanged.
 func (enc *EventEncryptor) Seal(ctx context.Context, e eventstore.Event) (eventstore.Event, error) {
-	subject := subjectTags(e.Tags)
+	subject := subjectTags(e.Tags, e.EncryptionKeys)
 	if subject == nil {
 		return e, nil
 	}
@@ -49,17 +43,18 @@ func (enc *EventEncryptor) Seal(ctx context.Context, e eventstore.Event) (events
 		return e, fmt.Errorf("could not encrypt event data: %w", err)
 	}
 	return eventstore.Event{
-		Type: e.Type,
-		Data: ciphertext,
-		Tags: e.Tags,
+		Type:           e.Type,
+		Data:           ciphertext,
+		Tags:           e.Tags,
+		EncryptionKeys: e.EncryptionKeys,
 	}, nil
 }
 
-// Open decrypts the event's Data if it has a gdpr tag. If the subject's key
-// has been forgotten, the event is returned with Data set to nil.
-// Events without the tag are returned unchanged.
+// Open decrypts the event's Data if it has EncryptionKeys set. If the subject's
+// key has been forgotten, the event is returned with Data set to nil.
+// Events without encryption keys are returned unchanged.
 func (enc *EventEncryptor) Open(ctx context.Context, e eventstore.SequencedEvent) (eventstore.SequencedEvent, error) {
-	subject := subjectTags(e.Tags)
+	subject := subjectTags(e.Tags, e.EncryptionKeys)
 	if subject == nil {
 		return e, nil
 	}
@@ -84,17 +79,14 @@ func (enc *EventEncryptor) Forget(ctx context.Context, tags map[string]string) e
 	return enc.keys.Forget(ctx, tags)
 }
 
-// subjectTags extracts the subject-identifying tags from an event's tag set.
-// It reads the gdpr tag value as a comma-separated list of tag names and
-// returns a map of those tags and their values. Returns nil if no gdpr tag.
-func subjectTags(tags map[string]string) map[string]string {
-	gdprValue, ok := tags[GDPRTag]
-	if !ok {
+// subjectTags extracts the subject-identifying tags from an event's tag set
+// using the provided encryption key names. Returns nil if keys is empty.
+func subjectTags(tags map[string]string, keys []string) map[string]string {
+	if len(keys) == 0 {
 		return nil
 	}
-	subject := make(map[string]string)
-	for _, name := range strings.Split(gdprValue, ",") {
-		name = strings.TrimSpace(name)
+	subject := make(map[string]string, len(keys))
+	for _, name := range keys {
 		if v, ok := tags[name]; ok {
 			subject[name] = v
 		}

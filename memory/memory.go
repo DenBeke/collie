@@ -22,8 +22,8 @@ type Store struct {
 // Option configures a Store.
 type Option func(*Store)
 
-// WithEncryption enables GDPR crypto-shredding. Events tagged with
-// [encryption.GDPRTag] will have their Data encrypted at rest.
+// WithEncryption enables GDPR crypto-shredding. Events with EncryptionKeys
+// will have their Data encrypted at rest.
 func WithEncryption(encryptor *encryption.EventEncryptor) Option {
 	return func(s *Store) { s.encryptor = encryptor }
 }

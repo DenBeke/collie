@@ -27,7 +27,7 @@ func collectEvents(t *testing.T, store eventstore.Store, query eventstore.Query)
 	return events
 }
 
-func TestPassthroughWithoutGDPRTag(t *testing.T) {
+func TestPassthroughWithoutEncryptionKeys(t *testing.T) {
 	store := newStore()
 	ctx := context.Background()
 
@@ -63,9 +63,8 @@ func TestEncryptedRoundTrip(t *testing.T) {
 	userData := user{Name: "Alice", Email: "alice@example.com"}
 
 	e, err := eventstore.NewEvent("UserSignedUp", userData, map[string]string{
-		"userId":            "user-123",
-		encryption.GDPRTag: "userId",
-	})
+		"userId": "user-123",
+	}, eventstore.WithEncryptionKeys("userId"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,9 +95,8 @@ func TestEncryptedAtRest(t *testing.T) {
 	ctx := context.Background()
 
 	e, err := eventstore.NewEvent("UserSignedUp", "secret-data", map[string]string{
-		"userId":            "user-123",
-		encryption.GDPRTag: "userId",
-	})
+		"userId": "user-123",
+	}, eventstore.WithEncryptionKeys("userId"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,9 +135,8 @@ func TestForgetRedactsData(t *testing.T) {
 	ctx := context.Background()
 
 	e, err := eventstore.NewEvent("UserSignedUp", "alice-data", map[string]string{
-		"userId":            "user-123",
-		encryption.GDPRTag: "userId",
-	})
+		"userId": "user-123",
+	}, eventstore.WithEncryptionKeys("userId"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,13 +174,11 @@ func TestForgetDoesNotAffectOtherSubjects(t *testing.T) {
 	ctx := context.Background()
 
 	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", map[string]string{
-		"userId":            "user-1",
-		encryption.GDPRTag: "userId",
-	})
+		"userId": "user-1",
+	}, eventstore.WithEncryptionKeys("userId"))
 	e2, _ := eventstore.NewEvent("UserSignedUp", "bob", map[string]string{
-		"userId":            "user-2",
-		encryption.GDPRTag: "userId",
-	})
+		"userId": "user-2",
+	}, eventstore.WithEncryptionKeys("userId"))
 	if err := store.Append(ctx, []eventstore.Event{e1, e2}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -218,14 +213,12 @@ func TestSameSubjectSameKey(t *testing.T) {
 	ctx := context.Background()
 
 	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", map[string]string{
-		"userId":            "user-1",
-		encryption.GDPRTag: "userId",
-	})
+		"userId": "user-1",
+	}, eventstore.WithEncryptionKeys("userId"))
 	e2, _ := eventstore.NewEvent("OrderPlaced", "order-data", map[string]string{
-		"userId":            "user-1",
-		"orderId":           "order-99",
-		encryption.GDPRTag: "userId",
-	})
+		"userId":  "user-1",
+		"orderId": "order-99",
+	}, eventstore.WithEncryptionKeys("userId"))
 	if err := store.Append(ctx, []eventstore.Event{e1, e2}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -249,16 +242,15 @@ func TestSameSubjectSameKey(t *testing.T) {
 	}
 }
 
-func TestSupersetForgetWithMultiTagSubject(t *testing.T) {
+func TestSupersetForgetWithMultiKeySubject(t *testing.T) {
 	store := newStore()
 	ctx := context.Background()
 
-	// Event with multi-tag subject (comma-separated)
+	// Event with multiple encryption keys
 	e, _ := eventstore.NewEvent("FriendRequest", "request-data", map[string]string{
-		"senderId":          "user-1",
-		"receiverId":        "user-2",
-		encryption.GDPRTag: "senderId,receiverId",
-	})
+		"senderId":   "user-1",
+		"receiverId": "user-2",
+	}, eventstore.WithEncryptionKeys("senderId", "receiverId"))
 	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -286,9 +278,8 @@ func TestAppendConditionWorksThroughEncryption(t *testing.T) {
 	ctx := context.Background()
 
 	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", map[string]string{
-		"userId":            "user-1",
-		encryption.GDPRTag: "userId",
-	})
+		"userId": "user-1",
+	}, eventstore.WithEncryptionKeys("userId"))
 	if err := store.Append(ctx, []eventstore.Event{e1}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -302,9 +293,8 @@ func TestAppendConditionWorksThroughEncryption(t *testing.T) {
 	}
 
 	e2, _ := eventstore.NewEvent("UserSignedUp", "alice-again", map[string]string{
-		"userId":            "user-1",
-		encryption.GDPRTag: "userId",
-	})
+		"userId": "user-1",
+	}, eventstore.WithEncryptionKeys("userId"))
 	err := store.Append(ctx, []eventstore.Event{e2}, condition)
 	if err != eventstore.ErrAppendConditionViolated {
 		t.Fatalf("expected ErrAppendConditionViolated, got %v", err)
@@ -317,9 +307,8 @@ func TestMixedEncryptedAndPlainEvents(t *testing.T) {
 
 	plain, _ := eventstore.NewEvent("SystemBooted", "v1.0", nil)
 	encrypted, _ := eventstore.NewEvent("UserSignedUp", "alice", map[string]string{
-		"userId":            "user-1",
-		encryption.GDPRTag: "userId",
-	})
+		"userId": "user-1",
+	}, eventstore.WithEncryptionKeys("userId"))
 	if err := store.Append(ctx, []eventstore.Event{plain, encrypted}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -352,9 +341,8 @@ func TestNilEncryptorPassthrough(t *testing.T) {
 	ctx := context.Background()
 
 	e, _ := eventstore.NewEvent("TestEvent", "data", map[string]string{
-		"userId":            "user-1",
-		encryption.GDPRTag: "userId",
-	})
+		"userId": "user-1",
+	}, eventstore.WithEncryptionKeys("userId"))
 	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -363,5 +351,14 @@ func TestNilEncryptorPassthrough(t *testing.T) {
 	data, err := eventstore.EventData[string](events[0])
 	if err != nil || data != "data" {
 		t.Fatalf("expected plaintext passthrough: data=%s, err=%v", data, err)
+	}
+}
+
+func TestEncryptionKeysMustReferenceExistingTags(t *testing.T) {
+	_, err := eventstore.NewEvent("UserSignedUp", "alice", map[string]string{
+		"userId": "user-1",
+	}, eventstore.WithEncryptionKeys("nonExistentTag"))
+	if err == nil {
+		t.Fatal("expected error for missing tag, got nil")
 	}
 }
