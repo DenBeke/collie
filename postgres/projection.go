@@ -81,25 +81,25 @@ func (p *Projection[S]) Reset(ctx context.Context) error {
 }
 
 func (p *Projection[S]) load() error {
-	var cp projectionCheckpoint
-	err := p.db.Where("projection_name = ?", p.name).First(&cp).Error
+	var checkpoint projectionCheckpoint
+	err := p.db.Where("projection_name = ?", p.name).First(&checkpoint).Error
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return nil // fresh projection
 		}
 		return fmt.Errorf("could not load checkpoint: %w", err)
 	}
-	p.position = uint64(cp.Position)
+	p.position = uint64(checkpoint.Position)
 
-	var snap projectionSnapshot
-	err = p.db.Where("projection_name = ?", p.name).First(&snap).Error
+	var snapshot projectionSnapshot
+	err = p.db.Where("projection_name = ?", p.name).First(&snapshot).Error
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
 			return nil
 		}
 		return fmt.Errorf("could not load snapshot: %w", err)
 	}
-	err = json.Unmarshal(snap.State, &p.Projection.State)
+	err = json.Unmarshal(snapshot.State, &p.Projection.State)
 	if err != nil {
 		return fmt.Errorf("could not unmarshal snapshot state: %w", err)
 	}

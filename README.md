@@ -2,33 +2,28 @@
 
 A minimal Go library for event sourcing with [Dynamic Consistency Boundaries](https://dcb.events/specification/). It provides an event store interface, typed projections, and optimistic concurrency control — everything needed to enforce business rules on the write side and serve read queries on the read side.
 
-## Package structure
+[[_TOC_]]
+
+## Installation
 
 ```
-eventstore/
-  eventstore.go        — Store interface, AppendCondition
-  event.go             — Event, SequencedEvent, NewEvent, EventData
-  middleware.go        — MiddlewareStore, AppendMiddleware, ReadMiddleware
-  query.go             — Query, QueryItem
-  projection.go        — Projection[S], HandleFunc, Projector interface
-  decision.go          — BuildDecisionModel
-  readprojector.go     — CheckpointProjector interface, UpdateProjection
-  encryption/
-    encryption.go      — EventEncryptor (OnAppend/OnRead middleware), ErrRedacted
-    keystore.go        — KeyStore interface
-    memory.go          — In-memory KeyStore for testing
-  memory/
-    memory.go          — In-memory Store
-    projection.go      — In-memory CheckpointProjector (memory.Projection[S])
-  postgres/
-    postgres.go        — PostgreSQL Store
-    keystore.go        — PostgresKeyStore, MigrateKeyStore
-    projection_models.go — GORM models, MigrateProjections
-    projection.go      — Snapshot CheckpointProjector (postgres.Projection[S])
-    row_projection.go  — Row-based CheckpointProjector (postgres.RowProjection[V])
+go get eventstore
 ```
 
 ## Core concepts
+
+### Store
+
+The central interface has two methods — append events and read them back:
+
+```go
+type Store interface {
+    Read(ctx context.Context, query Query, after uint64) iter.Seq2[SequencedEvent, error]
+    Append(ctx context.Context, events []Event, condition *AppendCondition) error
+}
+```
+
+Implement this interface to back the event store with any storage engine. In-memory and PostgreSQL implementations are provided.
 
 ### Events
 
@@ -114,12 +109,12 @@ Three implementations are provided:
 | `postgres.Projection[S]` | Snapshot to DB | Full state persisted, survives restarts |
 | `postgres.RowProjection[V]` | Row per entity in DB | Large projections where full state doesn't fit in memory |
 
-#### In-memory projection
+#### In-memory and postgres snapshot projections
 
-Wraps a `Projection[S]` with position tracking. State is lost on restart.
+Both wrap a `Projection[S]` with position tracking. Define the projection once:
 
 ```go
-totalUsers := memory.NewProjection(eventstore.Projection[int]{
+projection := eventstore.Projection[int]{
     Query: eventstore.QueryItem{Types: []string{"UserSignedUp"}},
     State: 0,
     Handlers: map[string]eventstore.HandleFunc[int]{
@@ -127,27 +122,22 @@ totalUsers := memory.NewProjection(eventstore.Projection[int]{
             return count + 1, nil
         },
     },
-})
-
-eventstore.UpdateProjection(ctx, store, totalUsers)
-fmt.Println(totalUsers.State)
+}
 ```
 
-#### Postgres snapshot projection
-
-Wraps a `Projection[S]` and persists the full state and position to the database on every applied event. Loads existing state on construction, surviving restarts.
+Then choose in-memory (state lost on restart) or postgres (state persisted to DB):
 
 ```go
-totalUsers, err := postgres.NewProjection(db, "total_users", eventstore.Projection[int]{
-    Query: eventstore.QueryItem{Types: []string{"UserSignedUp"}},
-    State: 0,
-    Handlers: map[string]eventstore.HandleFunc[int]{
-        "UserSignedUp": func(count int, _ eventstore.SequencedEvent) (int, error) {
-            return count + 1, nil
-        },
-    },
-})
+// In-memory
+totalUsers := memory.NewProjection(projection)
 
+// Postgres — loads existing state on construction
+totalUsers, err := postgres.NewProjection(db, "total_users", projection)
+```
+
+Update and read the state the same way:
+
+```go
 eventstore.UpdateProjection(ctx, store, totalUsers)
 fmt.Println(totalUsers.State)
 ```
@@ -244,7 +234,7 @@ func signUp(ctx context.Context, store eventstore.Store, username string) error 
 ## Example: serving a read query
 
 ```go
-store := &memory.Store{}
+store := memory.New()
 totalUsers := memory.NewProjection(/* ... */)
 
 e := echo.New()
@@ -258,13 +248,17 @@ e.GET("/total-users", func(c echo.Context) error {
 })
 ```
 
-## Store implementations
+## Store backends
 
 | Package | Description |
 |---------|-------------|
 | `eventstore/memory` | In-memory store for testing and development |
 | `eventstore/postgres` | PostgreSQL store with advisory locking, batched reads, and B-tree/GIN tag indexing |
-| `eventstore/encryption` | GDPR crypto-shredding: per-subject encryption with key deletion |
+
+| Package | Description |
+|---------|-------------|
+| `eventstore/encryption` | Middleware: GDPR crypto-shredding via per-subject encryption |
+| `eventstore/attachments` | Middleware: offload large event fields to blob storage |
 
 ```go
 // In-memory
@@ -275,8 +269,6 @@ db, _ := gorm.Open(postgres.Open(connStr))
 pgStore := pgstore.New(db, pgstore.WithIndexedTags("tenant_id"))
 pgStore.Migrate()
 ```
-
-The `Store` interface has two methods: `Read` and `Append`. Implement it to back the event store with any storage engine.
 
 ### PostgreSQL projection tables
 
@@ -298,10 +290,17 @@ postgres.MigrateKeyStore(db)
 
 A `MiddlewareStore` wraps any `Store` and applies middleware to events flowing through `Append` and `Read`. Middleware is a pure event transform — it never needs access to store internals.
 
+```
+Append:  Event → [AppendMiddleware₁ → AppendMiddleware₂] → Store.Append
+Read:    Store.Read → [ReadMiddleware₁ → ReadMiddleware₂] → Consumer
+```
+
 ```go
-store := eventstore.NewMiddlewareStore(pgStore,
-    eventstore.WithAppendMiddleware(enc.OnAppend),  // runs before persist
-    eventstore.WithReadMiddleware(enc.OnRead),       // runs after read
+keys := encryption.NewMemoryKeyStore()
+encryptor := encryption.NewEventEncryptor(keys)
+store := eventstore.NewMiddlewareStore(memory.New(),
+    eventstore.WithAppendMiddleware(encryptor.OnAppend),  // runs before persist
+    eventstore.WithReadMiddleware(encryptor.OnRead),       // runs after read
 )
 ```
 
@@ -330,10 +329,10 @@ Create an `EventEncryptor` and compose it with a store via `MiddlewareStore`:
 
 ```go
 keys := encryption.NewMemoryKeyStore()
-enc := encryption.NewEventEncryptor(keys)
+encryptor := encryption.NewEventEncryptor(keys)
 store := eventstore.NewMiddlewareStore(memory.New(),
-    eventstore.WithAppendMiddleware(enc.OnAppend),
-    eventstore.WithReadMiddleware(enc.OnRead),
+    eventstore.WithAppendMiddleware(encryptor.OnAppend),
+    eventstore.WithReadMiddleware(encryptor.OnRead),
 )
 ```
 
@@ -342,10 +341,10 @@ For PostgreSQL, use the built-in `PostgresKeyStore` to persist keys in the datab
 ```go
 pgstore.MigrateKeyStore(db)
 keys := pgstore.NewPostgresKeyStore(db)
-enc := encryption.NewEventEncryptor(keys)
+encryptor := encryption.NewEventEncryptor(keys)
 store := eventstore.NewMiddlewareStore(pgstore.New(db),
-    eventstore.WithAppendMiddleware(enc.OnAppend),
-    eventstore.WithReadMiddleware(enc.OnRead),
+    eventstore.WithAppendMiddleware(encryptor.OnAppend),
+    eventstore.WithReadMiddleware(encryptor.OnRead),
 )
 ```
 
@@ -377,7 +376,7 @@ All events with the same subject tags share the same encryption key, regardless 
 Call `Forget` directly on the encryptor:
 
 ```go
-enc.Forget(ctx, map[string]string{"userId": "user-123"})
+encryptor.Forget(ctx, map[string]string{"userId": "user-123"})
 ```
 
 This deletes the encryption key. All events for that subject are now permanently unreadable. The forget uses **superset matching** — `Forget({"userId": "user-1"})` also deletes keys for compound subjects like `{"senderId": "user-1", "receiverId": "user-2"}`.
@@ -409,13 +408,13 @@ Projections that only check event existence work without changes since they don'
 `Forget` only deletes encryption keys — it does not emit events. Use domain events to coordinate:
 
 ```go
-func deleteUser(ctx context.Context, store eventstore.Store, enc *encryption.EventEncryptor, userId string) error {
+func deleteUser(ctx context.Context, store eventstore.Store, encryptor *encryption.EventEncryptor, userId string) error {
     event, _ := eventstore.NewEvent("UserDeleted", userId, map[string]string{
         "userId": userId,
     })
     store.Append(ctx, []eventstore.Event{event}, nil)
 
-    return enc.Forget(ctx, map[string]string{"userId": userId})
+    return encryptor.Forget(ctx, map[string]string{"userId": userId})
 }
 ```
 
@@ -434,3 +433,83 @@ type KeyStore interface {
 ```
 
 `GetOrCreate` must be safe for concurrent calls with the same tags. `Get` returns `(nil, false, nil)` when the key has been forgotten. `Forget` deletes all keys whose tags are a superset of the provided tags.
+
+## Attachments / Blob offloading
+
+Large event fields (files, images, binary payloads) can be offloaded to a blob store instead of being stored inline. The attachment middleware transparently extracts marked fields on append and restores them on read — consumers see the original struct unchanged.
+
+### Setting up attachments
+
+```go
+blobStore := attachments.NewMemoryBlobStore() // or your own BlobStore implementation
+attachmentMiddleware := attachments.NewAttachmentMiddleware(blobStore)
+store := eventstore.NewMiddlewareStore(inner,
+    eventstore.WithAppendMiddleware(attachmentMiddleware.OnAppend),
+    eventstore.WithReadMiddleware(attachmentMiddleware.OnRead),
+)
+```
+
+### Marking fields for offloading
+
+Use `WithAttachments` to name which JSON fields should be stored in the blob store:
+
+```go
+type DocumentUploaded struct {
+    FileName string `json:"fileName"`
+    Content  []byte `json:"content"` // large, offloaded
+}
+
+event, _ := eventstore.NewEvent("DocumentUploaded", doc, tags,
+    attachments.WithAttachments("content"),
+)
+```
+
+Multiple fields can be offloaded at once:
+
+```go
+eventstore.NewEvent("PhotoUploaded", photo, tags,
+    attachments.WithAttachments("content", "thumbnail"),
+)
+```
+
+### Reading events with attachments
+
+On read, the middleware restores the original data from the blob store. Consumers use `EventData[T]` as usual. If a blob cannot be retrieved, the field is set to `null` and the event is flagged — check with `attachments.IsMissing(event)`.
+
+```go
+data, _ := eventstore.EventData[DocumentUploaded](event)
+fmt.Println(len(data.Content)) // original size
+```
+
+### Direct blob access
+
+Blob IDs are preserved in event metadata for direct access (e.g. serving download URLs without loading the full blob through the event store):
+
+```go
+ids := attachments.BlobIDs(event) // map[string]string{"content": "blob-abc-123"}
+url := fmt.Sprintf("/blobs/%s", ids["content"])
+```
+
+### Lazy loading
+
+If you don't want blobs fetched on every read (e.g. for projections that only need metadata), skip registering the read middleware:
+
+```go
+store := eventstore.NewMiddlewareStore(inner,
+    eventstore.WithAppendMiddleware(attachmentMiddleware.OnAppend),
+    // no OnRead — blob IDs stay in metadata for manual access
+)
+```
+
+### Custom BlobStore
+
+Implement the `attachments.BlobStore` interface for any storage backend (S3, GCS, local filesystem, etc.):
+
+```go
+type BlobStore interface {
+    Put(ctx context.Context, data []byte) (string, error) // returns blob ID
+    Get(ctx context.Context, id string) ([]byte, error)
+}
+```
+
+An in-memory implementation is provided for testing via `attachments.NewMemoryBlobStore()`.
