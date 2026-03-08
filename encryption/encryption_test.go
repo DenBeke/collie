@@ -9,9 +9,17 @@ import (
 	"eventstore/memory"
 )
 
-func newStore() *memory.Store {
-	keys := encryption.NewMemoryKeyStore()
-	return memory.New(memory.WithEncryption(encryption.NewEventEncryptor(keys)))
+func newEncryptor() *encryption.EventEncryptor {
+	return encryption.NewEventEncryptor(encryption.NewMemoryKeyStore())
+}
+
+func newStore() (*eventstore.MiddlewareStore, *encryption.EventEncryptor) {
+	enc := newEncryptor()
+	store := eventstore.NewMiddlewareStore(memory.New(),
+		eventstore.WithAppendMiddleware(enc.OnAppend),
+		eventstore.WithReadMiddleware(enc.OnRead),
+	)
+	return store, enc
 }
 
 func collectEvents(t *testing.T, store eventstore.Store, query eventstore.Query) []eventstore.SequencedEvent {
@@ -28,7 +36,7 @@ func collectEvents(t *testing.T, store eventstore.Store, query eventstore.Query)
 }
 
 func TestPassthroughWithoutEncryptionKeys(t *testing.T) {
-	store := newStore()
+	store, _ := newStore()
 	ctx := context.Background()
 
 	e, err := eventstore.NewEvent("SystemBooted", "v1.0", nil)
@@ -53,7 +61,7 @@ func TestPassthroughWithoutEncryptionKeys(t *testing.T) {
 }
 
 func TestEncryptedRoundTrip(t *testing.T) {
-	store := newStore()
+	store, _ := newStore()
 	ctx := context.Background()
 
 	type user struct {
@@ -64,7 +72,7 @@ func TestEncryptedRoundTrip(t *testing.T) {
 
 	e, err := eventstore.NewEvent("UserSignedUp", userData, map[string]string{
 		"userId": "user-123",
-	}, eventstore.WithEncryptionKeys("userId"))
+	}, encryption.WithEncryptionKeys("userId"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,20 +96,22 @@ func TestEncryptedRoundTrip(t *testing.T) {
 func TestEncryptedAtRest(t *testing.T) {
 	// Create a store with encryption, and a raw store without it to verify
 	// the data is actually encrypted at rest.
-	keys := encryption.NewMemoryKeyStore()
-	encryptedStore := memory.New(memory.WithEncryption(encryption.NewEventEncryptor(keys)))
-	rawStore := &memory.Store{} // zero-value, no encryption
+	enc := newEncryptor()
+	raw := memory.New()
+	encryptedStore := eventstore.NewMiddlewareStore(raw,
+		eventstore.WithAppendMiddleware(enc.OnAppend),
+		eventstore.WithReadMiddleware(enc.OnRead),
+	)
 
 	ctx := context.Background()
 
 	e, err := eventstore.NewEvent("UserSignedUp", "secret-data", map[string]string{
 		"userId": "user-123",
-	}, eventstore.WithEncryptionKeys("userId"))
+	}, encryption.WithEncryptionKeys("userId"))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Append through encrypted store
 	if err := encryptedStore.Append(ctx, []eventstore.Event{e}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -116,27 +126,20 @@ func TestEncryptedAtRest(t *testing.T) {
 		t.Fatalf("expected secret-data, got %s", data)
 	}
 
-	// Append same event through raw store (simulates reading raw DB)
-	// The encrypted store stores encrypted bytes, so reading those bytes
-	// without decryption should NOT yield the original data.
-	encryptedEvents := collectEvents(t, encryptedStore, nil)
-	if string(encryptedEvents[0].Data) == `"secret-data"` {
-		// This would mean data is NOT encrypted. But we're reading through
-		// the encrypted store which decrypts. Let's verify a different way:
-		// the raw event in the inner store should have different bytes.
-		_ = rawStore // can't access inner store directly, but the test above
-		// verifies the round-trip works. The encryption is verified by
-		// TestForgetRedactsData below.
+	// Read through raw store — should get ciphertext (not plaintext)
+	rawEvents := collectEvents(t, raw, nil)
+	if string(rawEvents[0].Data) == `"secret-data"` {
+		t.Fatal("data should be encrypted at rest, but found plaintext in raw store")
 	}
 }
 
 func TestForgetRedactsData(t *testing.T) {
-	store := newStore()
+	store, enc := newStore()
 	ctx := context.Background()
 
 	e, err := eventstore.NewEvent("UserSignedUp", "alice-data", map[string]string{
 		"userId": "user-123",
-	}, eventstore.WithEncryptionKeys("userId"))
+	}, encryption.WithEncryptionKeys("userId"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,8 +147,8 @@ func TestForgetRedactsData(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Forget the user
-	if err := store.Forget(ctx, map[string]string{"userId": "user-123"}); err != nil {
+	// Forget the user — called directly on the middleware
+	if err := enc.Forget(ctx, map[string]string{"userId": "user-123"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -155,7 +158,7 @@ func TestForgetRedactsData(t *testing.T) {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
 
-	if !events[0].Redacted() {
+	if !encryption.IsRedacted(events[0]) {
 		t.Fatal("expected event to be redacted after forget")
 	}
 	if events[0].Type != "UserSignedUp" {
@@ -170,21 +173,20 @@ func TestForgetRedactsData(t *testing.T) {
 }
 
 func TestForgetDoesNotAffectOtherSubjects(t *testing.T) {
-	store := newStore()
+	store, enc := newStore()
 	ctx := context.Background()
 
 	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", map[string]string{
 		"userId": "user-1",
-	}, eventstore.WithEncryptionKeys("userId"))
+	}, encryption.WithEncryptionKeys("userId"))
 	e2, _ := eventstore.NewEvent("UserSignedUp", "bob", map[string]string{
 		"userId": "user-2",
-	}, eventstore.WithEncryptionKeys("userId"))
+	}, encryption.WithEncryptionKeys("userId"))
 	if err := store.Append(ctx, []eventstore.Event{e1, e2}, nil); err != nil {
 		t.Fatal(err)
 	}
 
-	// Forget user-1
-	if err := store.Forget(ctx, map[string]string{"userId": "user-1"}); err != nil {
+	if err := enc.Forget(ctx, map[string]string{"userId": "user-1"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -193,12 +195,10 @@ func TestForgetDoesNotAffectOtherSubjects(t *testing.T) {
 		t.Fatalf("expected 2 events, got %d", len(events))
 	}
 
-	// user-1 should be redacted
-	if !events[0].Redacted() {
+	if !encryption.IsRedacted(events[0]) {
 		t.Fatal("expected user-1 to be redacted")
 	}
 
-	// user-2 should still be readable
 	data, err := eventstore.EventData[string](events[1])
 	if err != nil {
 		t.Fatalf("unexpected error reading user-2: %v", err)
@@ -209,82 +209,76 @@ func TestForgetDoesNotAffectOtherSubjects(t *testing.T) {
 }
 
 func TestSameSubjectSameKey(t *testing.T) {
-	store := newStore()
+	store, enc := newStore()
 	ctx := context.Background()
 
 	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", map[string]string{
 		"userId": "user-1",
-	}, eventstore.WithEncryptionKeys("userId"))
+	}, encryption.WithEncryptionKeys("userId"))
 	e2, _ := eventstore.NewEvent("OrderPlaced", "order-data", map[string]string{
 		"userId":  "user-1",
 		"orderId": "order-99",
-	}, eventstore.WithEncryptionKeys("userId"))
+	}, encryption.WithEncryptionKeys("userId"))
 	if err := store.Append(ctx, []eventstore.Event{e1, e2}, nil); err != nil {
 		t.Fatal(err)
 	}
 
-	// Both events readable
 	events := collectEvents(t, store, nil)
 	if len(events) != 2 {
 		t.Fatalf("expected 2 events, got %d", len(events))
 	}
 
-	// Forget user-1 — should redact BOTH events
-	if err := store.Forget(ctx, map[string]string{"userId": "user-1"}); err != nil {
+	if err := enc.Forget(ctx, map[string]string{"userId": "user-1"}); err != nil {
 		t.Fatal(err)
 	}
 
 	events = collectEvents(t, store, nil)
 	for i, e := range events {
-		if !e.Redacted() {
+		if !encryption.IsRedacted(e) {
 			t.Fatalf("event %d: expected to be redacted after forget", i)
 		}
 	}
 }
 
 func TestSupersetForgetWithMultiKeySubject(t *testing.T) {
-	store := newStore()
+	store, enc := newStore()
 	ctx := context.Background()
 
-	// Event with multiple encryption keys
 	e, _ := eventstore.NewEvent("FriendRequest", "request-data", map[string]string{
 		"senderId":   "user-1",
 		"receiverId": "user-2",
-	}, eventstore.WithEncryptionKeys("senderId", "receiverId"))
+	}, encryption.WithEncryptionKeys("senderId", "receiverId"))
 	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
 		t.Fatal(err)
 	}
 
-	// Verify it's readable
 	events := collectEvents(t, store, nil)
 	data, _ := eventstore.EventData[string](events[0])
 	if data != "request-data" {
 		t.Fatalf("expected request-data, got %s", data)
 	}
 
-	// Forget with just senderId — should match (superset matching)
-	if err := store.Forget(ctx, map[string]string{"senderId": "user-1"}); err != nil {
+	if err := enc.Forget(ctx, map[string]string{"senderId": "user-1"}); err != nil {
 		t.Fatal(err)
 	}
 
 	events = collectEvents(t, store, nil)
-	if !events[0].Redacted() {
+	if !encryption.IsRedacted(events[0]) {
 		t.Fatal("expected event to be redacted after superset forget")
 	}
 }
 
 func TestAppendConditionWorksThroughEncryption(t *testing.T) {
-	store := newStore()
+	store, _ := newStore()
 	ctx := context.Background()
 
 	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", map[string]string{
 		"userId": "user-1",
-	}, eventstore.WithEncryptionKeys("userId"))
+	}, encryption.WithEncryptionKeys("userId"))
 	if err := store.Append(ctx, []eventstore.Event{e1}, nil); err != nil {
 		t.Fatal(err)
 	}
 
-	// Build a condition that should be violated
 	condition := &eventstore.AppendCondition{
 		Query: eventstore.Query{
 			eventstore.QueryItem{Types: []string{"UserSignedUp"}, Tags: map[string]string{"userId": "user-1"}},
@@ -294,7 +288,7 @@ func TestAppendConditionWorksThroughEncryption(t *testing.T) {
 
 	e2, _ := eventstore.NewEvent("UserSignedUp", "alice-again", map[string]string{
 		"userId": "user-1",
-	}, eventstore.WithEncryptionKeys("userId"))
+	}, encryption.WithEncryptionKeys("userId"))
 	err := store.Append(ctx, []eventstore.Event{e2}, condition)
 	if err != eventstore.ErrAppendConditionViolated {
 		t.Fatalf("expected ErrAppendConditionViolated, got %v", err)
@@ -302,19 +296,18 @@ func TestAppendConditionWorksThroughEncryption(t *testing.T) {
 }
 
 func TestMixedEncryptedAndPlainEvents(t *testing.T) {
-	store := newStore()
+	store, enc := newStore()
 	ctx := context.Background()
 
 	plain, _ := eventstore.NewEvent("SystemBooted", "v1.0", nil)
 	encrypted, _ := eventstore.NewEvent("UserSignedUp", "alice", map[string]string{
 		"userId": "user-1",
-	}, eventstore.WithEncryptionKeys("userId"))
+	}, encryption.WithEncryptionKeys("userId"))
 	if err := store.Append(ctx, []eventstore.Event{plain, encrypted}, nil); err != nil {
 		t.Fatal(err)
 	}
 
-	// Forget user-1
-	if err := store.Forget(ctx, map[string]string{"userId": "user-1"}); err != nil {
+	if err := enc.Forget(ctx, map[string]string{"userId": "user-1"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -323,26 +316,24 @@ func TestMixedEncryptedAndPlainEvents(t *testing.T) {
 		t.Fatalf("expected 2 events, got %d", len(events))
 	}
 
-	// Plain event still readable
 	data, err := eventstore.EventData[string](events[0])
 	if err != nil || data != "v1.0" {
 		t.Fatalf("plain event should be readable: data=%s, err=%v", data, err)
 	}
 
-	// Encrypted event redacted
-	if !events[1].Redacted() {
+	if !encryption.IsRedacted(events[1]) {
 		t.Fatal("expected encrypted event to be redacted after forget")
 	}
 }
 
-func TestNilEncryptorPassthrough(t *testing.T) {
-	// Zero-value store (no encryptor) should work exactly as before
-	store := &memory.Store{}
+func TestNoMiddlewarePassthrough(t *testing.T) {
+	// Store without middleware should work as plain store
+	store := memory.New()
 	ctx := context.Background()
 
 	e, _ := eventstore.NewEvent("TestEvent", "data", map[string]string{
 		"userId": "user-1",
-	}, eventstore.WithEncryptionKeys("userId"))
+	}, encryption.WithEncryptionKeys("userId"))
 	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -355,9 +346,14 @@ func TestNilEncryptorPassthrough(t *testing.T) {
 }
 
 func TestEncryptionKeysMustReferenceExistingTags(t *testing.T) {
-	_, err := eventstore.NewEvent("UserSignedUp", "alice", map[string]string{
+	store, _ := newStore()
+	ctx := context.Background()
+
+	e, _ := eventstore.NewEvent("UserSignedUp", "alice", map[string]string{
 		"userId": "user-1",
-	}, eventstore.WithEncryptionKeys("nonExistentTag"))
+	}, encryption.WithEncryptionKeys("nonExistentTag"))
+
+	err := store.Append(ctx, []eventstore.Event{e}, nil)
 	if err == nil {
 		t.Fatal("expected error for missing tag, got nil")
 	}

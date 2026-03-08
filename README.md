@@ -8,12 +8,13 @@ A minimal Go library for event sourcing with [Dynamic Consistency Boundaries](ht
 eventstore/
   eventstore.go        — Store interface, AppendCondition
   event.go             — Event, SequencedEvent, NewEvent, EventData
+  middleware.go        — MiddlewareStore, AppendMiddleware, ReadMiddleware
   query.go             — Query, QueryItem
   projection.go        — Projection[S], HandleFunc, Projector interface
   decision.go          — BuildDecisionModel
   readprojector.go     — CheckpointProjector interface, UpdateProjection
   encryption/
-    encryption.go      — EventEncryptor, ErrRedacted
+    encryption.go      — EventEncryptor (OnAppend/OnRead middleware), ErrRedacted
     keystore.go        — KeyStore interface
     memory.go          — In-memory KeyStore for testing
   memory/
@@ -267,7 +268,7 @@ e.GET("/total-users", func(c echo.Context) error {
 
 ```go
 // In-memory
-var store eventstore.Store = &memory.Store{}
+var store eventstore.Store = memory.New()
 
 // PostgreSQL
 db, _ := gorm.Open(postgres.Open(connStr))
@@ -293,17 +294,47 @@ If using encryption, also migrate the key store table:
 postgres.MigrateKeyStore(db)
 ```
 
+## Middleware
+
+A `MiddlewareStore` wraps any `Store` and applies middleware to events flowing through `Append` and `Read`. Middleware is a pure event transform — it never needs access to store internals.
+
+```go
+store := eventstore.NewMiddlewareStore(pgStore,
+    eventstore.WithAppendMiddleware(enc.OnAppend),  // runs before persist
+    eventstore.WithReadMiddleware(enc.OnRead),       // runs after read
+)
+```
+
+Middleware types:
+
+```go
+type AppendMiddleware func(ctx context.Context, e *Event) error
+type ReadMiddleware func(ctx context.Context, e *SequencedEvent) error
+```
+
+Multiple middleware run in registration order. Append middleware can validate, transform, or encrypt event data. Read middleware can decrypt, decompress, or enrich events.
+
+### Metadata
+
+Events carry a `Metadata map[string]string` field for middleware-specific data. Metadata is persisted alongside events but is not used for querying. Middleware reads and writes metadata to coordinate — for example, the encryption middleware stores encryption key names in `metadata["encryptionKeys"]`.
+
 ## GDPR / Crypto-shredding
 
 Event sourcing stores facts forever, but GDPR requires the ability to forget personal data. This library solves this with **crypto-shredding**: event payloads containing personal data are encrypted with a per-subject key. "Forgetting" a subject means deleting their key — the events remain in the store but the data becomes permanently unreadable.
 
+Encryption is implemented as middleware, keeping store implementations clean.
+
 ### Setting up encryption
 
-Pass an `EventEncryptor` when creating a store:
+Create an `EventEncryptor` and compose it with a store via `MiddlewareStore`:
 
 ```go
 keys := encryption.NewMemoryKeyStore()
-store := memory.New(memory.WithEncryption(encryption.NewEventEncryptor(keys)))
+enc := encryption.NewEventEncryptor(keys)
+store := eventstore.NewMiddlewareStore(memory.New(),
+    eventstore.WithAppendMiddleware(enc.OnAppend),
+    eventstore.WithReadMiddleware(enc.OnRead),
+)
 ```
 
 For PostgreSQL, use the built-in `PostgresKeyStore` to persist keys in the database:
@@ -311,7 +342,11 @@ For PostgreSQL, use the built-in `PostgresKeyStore` to persist keys in the datab
 ```go
 pgstore.MigrateKeyStore(db)
 keys := pgstore.NewPostgresKeyStore(db)
-pgStore := pgstore.New(db, pgstore.WithEncryptor(encryption.NewEventEncryptor(keys)))
+enc := encryption.NewEventEncryptor(keys)
+store := eventstore.NewMiddlewareStore(pgstore.New(db),
+    eventstore.WithAppendMiddleware(enc.OnAppend),
+    eventstore.WithReadMiddleware(enc.OnRead),
+)
 ```
 
 ### Marking events as personal data
@@ -321,10 +356,10 @@ Use the `WithEncryptionKeys` option to name which tag(s) identify the data subje
 ```go
 event, _ := eventstore.NewEvent("UserSignedUp", userData, map[string]string{
     "userId": "user-123",
-}, eventstore.WithEncryptionKeys("userId"))
+}, encryption.WithEncryptionKeys("userId"))
 ```
 
-Every key name must exist in the event's tags — `NewEvent` returns an error otherwise. Events created **without** `WithEncryptionKeys` pass through unencrypted.
+Every key name must exist in the event's tags — the encryption middleware returns an error on append otherwise. Events created **without** `WithEncryptionKeys` pass through unencrypted.
 
 For multi-subject events, list all subject tag names:
 
@@ -332,64 +367,59 @@ For multi-subject events, list all subject tag names:
 eventstore.NewEvent("FriendRequest", requestData, map[string]string{
     "senderId":   "user-1",
     "receiverId": "user-2",
-}, eventstore.WithEncryptionKeys("senderId", "receiverId"))
+}, encryption.WithEncryptionKeys("senderId", "receiverId"))
 ```
 
-All events with the same subject tags share the same encryption key, regardless of what other tags they carry. An event with tags `{userId: "user-123", orderId: "order-456"}` and `WithEncryptionKeys("userId")` uses the same key as one with just `{userId: "user-123"}` and `WithEncryptionKeys("userId")`.
+All events with the same subject tags share the same encryption key, regardless of what other tags they carry.
 
 ### Forgetting a subject
 
-Call `Forget` with the subject's tags:
+Call `Forget` directly on the encryptor:
 
 ```go
-store.Forget(ctx, map[string]string{"userId": "user-123"})
+enc.Forget(ctx, map[string]string{"userId": "user-123"})
 ```
 
 This deletes the encryption key. All events for that subject are now permanently unreadable. The forget uses **superset matching** — `Forget({"userId": "user-1"})` also deletes keys for compound subjects like `{"senderId": "user-1", "receiverId": "user-2"}`.
 
 ### Handling redacted events in projections
 
-After forgetting, events still flow through the store with their type, tags, and sequence number preserved, but the data is redacted. Use `e.Redacted()` to check:
+After forgetting, events still flow through the store with their type, tags, and sequence number preserved, but the data is redacted. Use `encryption.IsRedacted(e)` to check:
 
 ```go
 Handlers: map[string]eventstore.HandleFunc[MyState]{
     "UserSignedUp": func(state MyState, e eventstore.SequencedEvent) (MyState, error) {
-        if e.Redacted() {
+        if encryption.IsRedacted(e) {
             return state, nil // crypto-shredded, skip
         }
         data, err := eventstore.EventData[UserData](e)
         if err != nil {
             return state, err
         }
-        // normal handling
         state.Users = append(state.Users, data)
         return state, nil
     },
 }
 ```
 
-Projections that only check event existence (like the `usernameExistsProjection` example) work without changes since they don't read `Data`.
-
-The `encryption.ErrRedacted` error is provided as a convenience for application code that needs to signal redacted data to callers.
+Projections that only check event existence work without changes since they don't read `Data`.
 
 ### Recommended forget workflow
 
-The library's `Forget` only deletes encryption keys — it does not emit events. Use domain events to coordinate:
+`Forget` only deletes encryption keys — it does not emit events. Use domain events to coordinate:
 
 ```go
-func deleteUser(ctx context.Context, store *memory.Store, userId string) error {
-    // 1. Append a business event so projections can clean up.
+func deleteUser(ctx context.Context, store eventstore.Store, enc *encryption.EventEncryptor, userId string) error {
     event, _ := eventstore.NewEvent("UserDeleted", userId, map[string]string{
         "userId": userId,
     })
     store.Append(ctx, []eventstore.Event{event}, nil)
 
-    // 2. Shred the encryption keys.
-    return store.Forget(ctx, map[string]string{"userId": userId})
+    return enc.Forget(ctx, map[string]string{"userId": userId})
 }
 ```
 
-Projections listen to `UserDeleted` to actively remove user data from their state. On replay, old events are redacted (`e.Redacted()` returns true) and handled gracefully.
+Projections listen to `UserDeleted` to actively remove user data from their state. On replay, old events are redacted (`encryption.IsRedacted(e)` returns true) and handled gracefully.
 
 ### Custom KeyStore
 

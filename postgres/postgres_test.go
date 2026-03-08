@@ -81,7 +81,7 @@ func setupStore(tb testing.TB, opts ...pgstore.Option) *pgstore.Store {
 	return store
 }
 
-func setupEncryptedStore(tb testing.TB) *pgstore.Store {
+func setupEncryptedStore(tb testing.TB) (*eventstore.MiddlewareStore, *encryption.EventEncryptor) {
 	tb.Helper()
 	db := setupDB(tb)
 	if err := pgstore.MigrateKeyStore(db); err != nil {
@@ -89,11 +89,15 @@ func setupEncryptedStore(tb testing.TB) *pgstore.Store {
 	}
 	keys := pgstore.NewPostgresKeyStore(db)
 	enc := encryption.NewEventEncryptor(keys)
-	store := pgstore.New(db, pgstore.WithEncryptor(enc))
+	store := pgstore.New(db)
 	if err := store.Migrate(); err != nil {
 		tb.Fatalf("could not migrate: %v", err)
 	}
-	return store
+	mw := eventstore.NewMiddlewareStore(store,
+		eventstore.WithAppendMiddleware(enc.OnAppend),
+		eventstore.WithReadMiddleware(enc.OnRead),
+	)
+	return mw, enc
 }
 
 func TestAppendAndRead(t *testing.T) {
@@ -139,7 +143,6 @@ func TestAppendConditionPasses(t *testing.T) {
 	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", map[string]string{"username": "alice"})
 	store.Append(ctx, []eventstore.Event{e1}, nil)
 
-	// Condition: no UserSignedUp for "bob" — should pass.
 	condition := &eventstore.AppendCondition{
 		Query: eventstore.Query{{
 			Types: []string{"UserSignedUp"},
@@ -161,7 +164,6 @@ func TestAppendConditionViolated(t *testing.T) {
 	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", map[string]string{"username": "alice"})
 	store.Append(ctx, []eventstore.Event{e1}, nil)
 
-	// Condition: no UserSignedUp for "alice" — should fail.
 	condition := &eventstore.AppendCondition{
 		Query: eventstore.Query{{
 			Types: []string{"UserSignedUp"},
@@ -186,7 +188,6 @@ func TestTagsFiltering(t *testing.T) {
 	e3, _ := eventstore.NewEvent("UserSignedUp", "charlie", map[string]string{"username": "charlie", "tenant": "t1"})
 	store.Append(ctx, []eventstore.Event{e1, e2, e3}, nil)
 
-	// Read only tenant t1 events.
 	query := eventstore.Query{{
 		Types: []string{"UserSignedUp"},
 		Tags:  map[string]string{"tenant": "t1"},
@@ -214,7 +215,6 @@ func TestReadAfter(t *testing.T) {
 	e3, _ := eventstore.NewEvent("C", nil, nil)
 	store.Append(ctx, []eventstore.Event{e1, e2, e3}, nil)
 
-	// Read all to get sequence numbers.
 	var all []eventstore.SequencedEvent
 	for e, err := range store.Read(ctx, nil, 0) {
 		if err != nil {
@@ -223,7 +223,6 @@ func TestReadAfter(t *testing.T) {
 		all = append(all, e)
 	}
 
-	// Read after the second event.
 	var after []eventstore.SequencedEvent
 	for e, err := range store.Read(ctx, nil, all[1].SequenceNumber) {
 		if err != nil {
@@ -241,7 +240,6 @@ func TestReadAfter(t *testing.T) {
 }
 
 func TestBatching(t *testing.T) {
-	// Use batch size of 2 to verify batching works with 5 events.
 	store := setupStore(t, pgstore.WithBatchSize(2))
 	ctx := context.Background()
 
@@ -264,8 +262,6 @@ func TestBatching(t *testing.T) {
 }
 
 func TestIndexedTags(t *testing.T) {
-	// Create store with indexed tenant_id tag — uses tags->>'tenant_id' = ?
-	// instead of tags @> ?::jsonb.
 	store := setupStore(t, pgstore.WithIndexedTags("tenant_id"))
 	ctx := context.Background()
 
@@ -274,7 +270,6 @@ func TestIndexedTags(t *testing.T) {
 	e3, _ := eventstore.NewEvent("UserSignedUp", "charlie", map[string]string{"tenant_id": "t1", "username": "charlie"})
 	store.Append(ctx, []eventstore.Event{e1, e2, e3}, nil)
 
-	// Read filtered by indexed tag.
 	query := eventstore.Query{{
 		Tags: map[string]string{"tenant_id": "t1"},
 	}}
@@ -291,7 +286,6 @@ func TestIndexedTags(t *testing.T) {
 		t.Fatalf("expected 2 events for tenant_id t1, got %d", len(events))
 	}
 
-	// Verify non-indexed tag still works (username uses @> fallback).
 	query2 := eventstore.Query{{
 		Tags: map[string]string{"username": "bob"},
 	}}
@@ -348,7 +342,6 @@ func TestAppendConditionConcurrency(t *testing.T) {
 		t.Fatalf("expected exactly 1 successful append, got %d", succeeded)
 	}
 
-	// Verify only one event was persisted.
 	var events []eventstore.SequencedEvent
 	for e, err := range store.Read(ctx, nil, 0) {
 		if err != nil {
@@ -363,7 +356,7 @@ func TestAppendConditionConcurrency(t *testing.T) {
 
 // --- Encryption integration tests ---
 
-func collectPGEvents(t *testing.T, store *pgstore.Store, query eventstore.Query) []eventstore.SequencedEvent {
+func collectPGEvents(t *testing.T, store eventstore.Store, query eventstore.Query) []eventstore.SequencedEvent {
 	t.Helper()
 	ctx := context.Background()
 	var events []eventstore.SequencedEvent
@@ -377,7 +370,7 @@ func collectPGEvents(t *testing.T, store *pgstore.Store, query eventstore.Query)
 }
 
 func TestPGEncryptedRoundTrip(t *testing.T) {
-	store := setupEncryptedStore(t)
+	store, _ := setupEncryptedStore(t)
 	ctx := context.Background()
 
 	type user struct {
@@ -388,7 +381,7 @@ func TestPGEncryptedRoundTrip(t *testing.T) {
 
 	e, err := eventstore.NewEvent("UserSignedUp", userData, map[string]string{
 		"userId": "user-123",
-	}, eventstore.WithEncryptionKeys("userId"))
+	}, encryption.WithEncryptionKeys("userId"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -416,41 +409,45 @@ func TestPGEncryptedAtRest(t *testing.T) {
 	}
 	keys := pgstore.NewPostgresKeyStore(db)
 	enc := encryption.NewEventEncryptor(keys)
-	store := pgstore.New(db, pgstore.WithEncryptor(enc))
-	if err := store.Migrate(); err != nil {
+	raw := pgstore.New(db)
+	if err := raw.Migrate(); err != nil {
 		t.Fatalf("could not migrate: %v", err)
 	}
+	store := eventstore.NewMiddlewareStore(raw,
+		eventstore.WithAppendMiddleware(enc.OnAppend),
+		eventstore.WithReadMiddleware(enc.OnRead),
+	)
 
 	ctx := context.Background()
 	e, _ := eventstore.NewEvent("UserSignedUp", "secret-data", map[string]string{
 		"userId": "user-123",
-	}, eventstore.WithEncryptionKeys("userId"))
+	}, encryption.WithEncryptionKeys("userId"))
 	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
 		t.Fatal(err)
 	}
 
 	// Query raw database to verify data is encrypted.
-	var raw struct{ Data []byte }
-	if err := db.Table("events").Select("data").First(&raw).Error; err != nil {
+	var rawData struct{ Data []byte }
+	if err := db.Table("events").Select("data").First(&rawData).Error; err != nil {
 		t.Fatalf("could not read raw event: %v", err)
 	}
-	if string(raw.Data) == `"secret-data"` {
+	if string(rawData.Data) == `"secret-data"` {
 		t.Fatal("data should be encrypted at rest, but found plaintext")
 	}
 }
 
 func TestPGForgetRedactsData(t *testing.T) {
-	store := setupEncryptedStore(t)
+	store, enc := setupEncryptedStore(t)
 	ctx := context.Background()
 
 	e, _ := eventstore.NewEvent("UserSignedUp", "alice-data", map[string]string{
 		"userId": "user-123",
-	}, eventstore.WithEncryptionKeys("userId"))
+	}, encryption.WithEncryptionKeys("userId"))
 	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := store.Forget(ctx, map[string]string{"userId": "user-123"}); err != nil {
+	if err := enc.Forget(ctx, map[string]string{"userId": "user-123"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -458,7 +455,7 @@ func TestPGForgetRedactsData(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
-	if !events[0].Redacted() {
+	if !encryption.IsRedacted(events[0]) {
 		t.Fatal("expected event to be redacted after forget")
 	}
 	if events[0].Type != "UserSignedUp" {
@@ -470,20 +467,20 @@ func TestPGForgetRedactsData(t *testing.T) {
 }
 
 func TestPGForgetDoesNotAffectOtherSubjects(t *testing.T) {
-	store := setupEncryptedStore(t)
+	store, enc := setupEncryptedStore(t)
 	ctx := context.Background()
 
 	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", map[string]string{
 		"userId": "user-1",
-	}, eventstore.WithEncryptionKeys("userId"))
+	}, encryption.WithEncryptionKeys("userId"))
 	e2, _ := eventstore.NewEvent("UserSignedUp", "bob", map[string]string{
 		"userId": "user-2",
-	}, eventstore.WithEncryptionKeys("userId"))
+	}, encryption.WithEncryptionKeys("userId"))
 	if err := store.Append(ctx, []eventstore.Event{e1, e2}, nil); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := store.Forget(ctx, map[string]string{"userId": "user-1"}); err != nil {
+	if err := enc.Forget(ctx, map[string]string{"userId": "user-1"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -491,7 +488,7 @@ func TestPGForgetDoesNotAffectOtherSubjects(t *testing.T) {
 	if len(events) != 2 {
 		t.Fatalf("expected 2 events, got %d", len(events))
 	}
-	if !events[0].Redacted() {
+	if !encryption.IsRedacted(events[0]) {
 		t.Fatal("expected user-1 to be redacted")
 	}
 	data, err := eventstore.EventData[string](events[1])
@@ -504,41 +501,40 @@ func TestPGForgetDoesNotAffectOtherSubjects(t *testing.T) {
 }
 
 func TestPGSupersetForget(t *testing.T) {
-	store := setupEncryptedStore(t)
+	store, enc := setupEncryptedStore(t)
 	ctx := context.Background()
 
 	e, _ := eventstore.NewEvent("FriendRequest", "request-data", map[string]string{
 		"senderId":   "user-1",
 		"receiverId": "user-2",
-	}, eventstore.WithEncryptionKeys("senderId", "receiverId"))
+	}, encryption.WithEncryptionKeys("senderId", "receiverId"))
 	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
 		t.Fatal(err)
 	}
 
-	// Forget with just senderId — should match via JSONB @> superset.
-	if err := store.Forget(ctx, map[string]string{"senderId": "user-1"}); err != nil {
+	if err := enc.Forget(ctx, map[string]string{"senderId": "user-1"}); err != nil {
 		t.Fatal(err)
 	}
 
 	events := collectPGEvents(t, store, nil)
-	if !events[0].Redacted() {
+	if !encryption.IsRedacted(events[0]) {
 		t.Fatal("expected event to be redacted after superset forget")
 	}
 }
 
 func TestPGMixedEncryptedAndPlainEvents(t *testing.T) {
-	store := setupEncryptedStore(t)
+	store, enc := setupEncryptedStore(t)
 	ctx := context.Background()
 
 	plain, _ := eventstore.NewEvent("SystemBooted", "v1.0", nil)
 	encrypted, _ := eventstore.NewEvent("UserSignedUp", "alice", map[string]string{
 		"userId": "user-1",
-	}, eventstore.WithEncryptionKeys("userId"))
+	}, encryption.WithEncryptionKeys("userId"))
 	if err := store.Append(ctx, []eventstore.Event{plain, encrypted}, nil); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := store.Forget(ctx, map[string]string{"userId": "user-1"}); err != nil {
+	if err := enc.Forget(ctx, map[string]string{"userId": "user-1"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -550,18 +546,18 @@ func TestPGMixedEncryptedAndPlainEvents(t *testing.T) {
 	if err != nil || data != "v1.0" {
 		t.Fatalf("plain event should be readable: data=%s, err=%v", data, err)
 	}
-	if !events[1].Redacted() {
+	if !encryption.IsRedacted(events[1]) {
 		t.Fatal("expected encrypted event to be redacted after forget")
 	}
 }
 
 func TestPGAppendConditionThroughEncryption(t *testing.T) {
-	store := setupEncryptedStore(t)
+	store, _ := setupEncryptedStore(t)
 	ctx := context.Background()
 
 	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", map[string]string{
 		"userId": "user-1",
-	}, eventstore.WithEncryptionKeys("userId"))
+	}, encryption.WithEncryptionKeys("userId"))
 	if err := store.Append(ctx, []eventstore.Event{e1}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -575,7 +571,7 @@ func TestPGAppendConditionThroughEncryption(t *testing.T) {
 
 	e2, _ := eventstore.NewEvent("UserSignedUp", "alice-again", map[string]string{
 		"userId": "user-1",
-	}, eventstore.WithEncryptionKeys("userId"))
+	}, encryption.WithEncryptionKeys("userId"))
 	err := store.Append(ctx, []eventstore.Event{e2}, condition)
 	if err != eventstore.ErrAppendConditionViolated {
 		t.Fatalf("expected ErrAppendConditionViolated, got %v", err)
