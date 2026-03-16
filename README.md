@@ -372,11 +372,11 @@ store := eventstore.NewMiddlewareStore(memory.New(),
 )
 ```
 
-For PostgreSQL, use the built-in `PostgresKeyStore` to persist keys in the database:
+For PostgreSQL, use the built-in `KeyStore` to persist keys in the database:
 
 ```go
 pgstore.MigrateKeyStore(db)
-keys := pgstore.NewPostgresKeyStore(db)
+keys := pgstore.NewKeyStore(db)
 encryptor := encryption.NewEventEncryptor(keys)
 store := eventstore.NewMiddlewareStore(pgstore.New(db),
     eventstore.WithAppendMiddleware(encryptor.OnAppend),
@@ -458,7 +458,7 @@ Projections listen to `UserDeleted` to actively remove user data from their stat
 
 ### Custom KeyStore
 
-A PostgreSQL-backed key store is provided out of the box via `postgres.NewPostgresKeyStore(db)`. For other backends (AWS KMS, HashiCorp Vault, etc.), implement the `encryption.KeyStore` interface:
+A PostgreSQL-backed key store is provided out of the box via `postgres.NewKeyStore(db)`. For other backends (AWS KMS, HashiCorp Vault, etc.), implement the `encryption.KeyStore` interface:
 
 ```go
 type KeyStore interface {

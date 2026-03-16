@@ -26,7 +26,7 @@ type KeyStore interface {
 	Forget(ctx context.Context, tags map[string]string) error
 }
 
-// tagID returns a deterministic string identifier for a tag set.
+// TagID returns a deterministic string identifier for a tag set.
 // json.Marshal sorts map keys, so the output is stable.
 func TagID(tags map[string]string) string {
 	b, _ := json.Marshal(tags)

@@ -22,6 +22,7 @@ func NewMemoryKeyStore() *MemoryKeyStore {
 	return &MemoryKeyStore{keys: make(map[string]memoryKey)}
 }
 
+// GetOrCreate returns the key for the tag set, generating a new one if needed.
 func (s *MemoryKeyStore) GetOrCreate(_ context.Context, tags map[string]string) ([]byte, error) {
 	id := TagID(tags)
 	s.mu.Lock()
@@ -37,6 +38,7 @@ func (s *MemoryKeyStore) GetOrCreate(_ context.Context, tags map[string]string) 
 	return key, nil
 }
 
+// Get returns the key for the exact tag set, or (nil, false, nil) if absent.
 func (s *MemoryKeyStore) Get(_ context.Context, tags map[string]string) ([]byte, bool, error) {
 	id := TagID(tags)
 	s.mu.RLock()
@@ -48,6 +50,7 @@ func (s *MemoryKeyStore) Get(_ context.Context, tags map[string]string) ([]byte,
 	return entry.key, true, nil
 }
 
+// Forget deletes all keys whose tag sets are a superset of the provided tags.
 func (s *MemoryKeyStore) Forget(_ context.Context, tags map[string]string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

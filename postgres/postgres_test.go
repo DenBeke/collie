@@ -47,7 +47,7 @@ func setupDB(tb testing.TB) *gorm.DB {
 	if err != nil {
 		tb.Fatalf("could not start postgres container: %v", err)
 	}
-	tb.Cleanup(func() { container.Terminate(ctx) })
+	tb.Cleanup(func() { _ = container.Terminate(ctx) })
 
 	connStr, err := container.ConnectionString(ctx, "sslmode=disable")
 	if err != nil {
@@ -87,7 +87,7 @@ func setupEncryptedStore(tb testing.TB) (*eventstore.MiddlewareStore, *encryptio
 	if err := pgstore.MigrateKeyStore(db); err != nil {
 		tb.Fatalf("could not migrate key store: %v", err)
 	}
-	keys := pgstore.NewPostgresKeyStore(db)
+	keys := pgstore.NewKeyStore(db)
 	enc := encryption.NewEventEncryptor(keys)
 	store := pgstore.New(db)
 	if err := store.Migrate(); err != nil {
@@ -141,7 +141,9 @@ func TestAppendConditionPasses(t *testing.T) {
 	ctx := context.Background()
 
 	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", map[string]string{"username": "alice"})
-	store.Append(ctx, []eventstore.Event{e1}, nil)
+	if err := store.Append(ctx, []eventstore.Event{e1}, nil); err != nil {
+		t.Fatalf("append failed: %v", err)
+	}
 
 	condition := &eventstore.AppendCondition{
 		Query: eventstore.Query{{
@@ -162,7 +164,9 @@ func TestAppendConditionViolated(t *testing.T) {
 	ctx := context.Background()
 
 	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", map[string]string{"username": "alice"})
-	store.Append(ctx, []eventstore.Event{e1}, nil)
+	if err := store.Append(ctx, []eventstore.Event{e1}, nil); err != nil {
+		t.Fatalf("append failed: %v", err)
+	}
 
 	condition := &eventstore.AppendCondition{
 		Query: eventstore.Query{{
@@ -186,7 +190,9 @@ func TestTagsFiltering(t *testing.T) {
 	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", map[string]string{"username": "alice", "tenant": "t1"})
 	e2, _ := eventstore.NewEvent("UserSignedUp", "bob", map[string]string{"username": "bob", "tenant": "t2"})
 	e3, _ := eventstore.NewEvent("UserSignedUp", "charlie", map[string]string{"username": "charlie", "tenant": "t1"})
-	store.Append(ctx, []eventstore.Event{e1, e2, e3}, nil)
+	if err := store.Append(ctx, []eventstore.Event{e1, e2, e3}, nil); err != nil {
+		t.Fatalf("append failed: %v", err)
+	}
 
 	query := eventstore.Query{{
 		Types: []string{"UserSignedUp"},
@@ -213,7 +219,9 @@ func TestReadAfter(t *testing.T) {
 	e1, _ := eventstore.NewEvent("A", nil, nil)
 	e2, _ := eventstore.NewEvent("B", nil, nil)
 	e3, _ := eventstore.NewEvent("C", nil, nil)
-	store.Append(ctx, []eventstore.Event{e1, e2, e3}, nil)
+	if err := store.Append(ctx, []eventstore.Event{e1, e2, e3}, nil); err != nil {
+		t.Fatalf("append failed: %v", err)
+	}
 
 	var all []eventstore.SequencedEvent
 	for e, err := range store.Read(ctx, nil, 0) {
@@ -245,7 +253,9 @@ func TestBatching(t *testing.T) {
 
 	for i := range 5 {
 		e, _ := eventstore.NewEvent("Event", fmt.Sprintf("data-%d", i), nil)
-		store.Append(ctx, []eventstore.Event{e}, nil)
+		if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
+			t.Fatalf("append failed: %v", err)
+		}
 	}
 
 	var events []eventstore.SequencedEvent
@@ -268,7 +278,9 @@ func TestIndexedTags(t *testing.T) {
 	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", map[string]string{"tenant_id": "t1", "username": "alice"})
 	e2, _ := eventstore.NewEvent("UserSignedUp", "bob", map[string]string{"tenant_id": "t2", "username": "bob"})
 	e3, _ := eventstore.NewEvent("UserSignedUp", "charlie", map[string]string{"tenant_id": "t1", "username": "charlie"})
-	store.Append(ctx, []eventstore.Event{e1, e2, e3}, nil)
+	if err := store.Append(ctx, []eventstore.Event{e1, e2, e3}, nil); err != nil {
+		t.Fatalf("append failed: %v", err)
+	}
 
 	query := eventstore.Query{{
 		Tags: map[string]string{"tenant_id": "t1"},
@@ -407,7 +419,7 @@ func TestPGEncryptedAtRest(t *testing.T) {
 	if err := pgstore.MigrateKeyStore(db); err != nil {
 		t.Fatalf("could not migrate key store: %v", err)
 	}
-	keys := pgstore.NewPostgresKeyStore(db)
+	keys := pgstore.NewKeyStore(db)
 	enc := encryption.NewEventEncryptor(keys)
 	raw := pgstore.New(db)
 	if err := raw.Migrate(); err != nil {

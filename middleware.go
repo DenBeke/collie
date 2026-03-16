@@ -44,6 +44,7 @@ func NewMiddlewareStore(store Store, opts ...MiddlewareOption) *MiddlewareStore 
 	return s
 }
 
+// Append runs append middleware on each event, then delegates to the inner store.
 func (s *MiddlewareStore) Append(ctx context.Context, events []Event, condition *AppendCondition) error {
 	// Clone events so middleware mutations don't affect the caller's slice.
 	processed := make([]Event, len(events))

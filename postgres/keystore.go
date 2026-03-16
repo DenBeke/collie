@@ -21,18 +21,18 @@ type encryptionKey struct {
 	Key   []byte `gorm:"type:bytea;not null"`
 }
 
-// Compile-time check that PostgresKeyStore implements encryption.KeyStore.
-var _ encryption.KeyStore = (*PostgresKeyStore)(nil)
+// Compile-time check that KeyStore implements encryption.KeyStore.
+var _ encryption.KeyStore = (*KeyStore)(nil)
 
-// PostgresKeyStore is a PostgreSQL-backed KeyStore that persists encryption
+// KeyStore is a PostgreSQL-backed KeyStore that persists encryption
 // keys in an encryption_keys table.
-type PostgresKeyStore struct {
+type KeyStore struct {
 	db *gorm.DB
 }
 
-// NewPostgresKeyStore creates a key store backed by the given database connection.
-func NewPostgresKeyStore(db *gorm.DB) *PostgresKeyStore {
-	return &PostgresKeyStore{db: db}
+// NewKeyStore creates a key store backed by the given database connection.
+func NewKeyStore(db *gorm.DB) *KeyStore {
+	return &KeyStore{db: db}
 }
 
 // MigrateKeyStore creates the encryption_keys table.
@@ -42,7 +42,7 @@ func MigrateKeyStore(db *gorm.DB) error {
 
 // GetOrCreate returns the encryption key for the exact tag set,
 // creating a new random 32-byte key if none exists.
-func (s *PostgresKeyStore) GetOrCreate(ctx context.Context, tags map[string]string) ([]byte, error) {
+func (s *KeyStore) GetOrCreate(ctx context.Context, tags map[string]string) ([]byte, error) {
 	id := encryption.TagID(tags)
 
 	var existing encryptionKey
@@ -89,7 +89,7 @@ func (s *PostgresKeyStore) GetOrCreate(ctx context.Context, tags map[string]stri
 
 // Get returns the encryption key for the exact tag set.
 // Returns (nil, false, nil) if the key does not exist (e.g. it was forgotten).
-func (s *PostgresKeyStore) Get(ctx context.Context, tags map[string]string) ([]byte, bool, error) {
+func (s *KeyStore) Get(ctx context.Context, tags map[string]string) ([]byte, bool, error) {
 	id := encryption.TagID(tags)
 
 	var existing encryptionKey
@@ -105,7 +105,7 @@ func (s *PostgresKeyStore) Get(ctx context.Context, tags map[string]string) ([]b
 
 // Forget deletes all keys whose tag sets are a superset of the provided tags.
 // Uses PostgreSQL's JSONB containment operator (@>) for superset matching.
-func (s *PostgresKeyStore) Forget(ctx context.Context, tags map[string]string) error {
+func (s *KeyStore) Forget(ctx context.Context, tags map[string]string) error {
 	tagsJSON, err := json.Marshal(tags)
 	if err != nil {
 		return fmt.Errorf("could not marshal tags for forget: %w", err)

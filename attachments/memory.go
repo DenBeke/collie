@@ -20,6 +20,7 @@ func NewMemoryBlobStore() *MemoryBlobStore {
 	return &MemoryBlobStore{blobs: make(map[string][]byte)}
 }
 
+// Put stores data and returns a generated blob ID.
 func (s *MemoryBlobStore) Put(_ context.Context, data []byte) (string, error) {
 	id, err := randomID()
 	if err != nil {
@@ -33,6 +34,7 @@ func (s *MemoryBlobStore) Put(_ context.Context, data []byte) (string, error) {
 	return id, nil
 }
 
+// Get retrieves a blob by ID.
 func (s *MemoryBlobStore) Get(_ context.Context, id string) ([]byte, error) {
 	s.mu.RLock()
 	data, ok := s.blobs[id]

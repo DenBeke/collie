@@ -75,7 +75,7 @@ func (p *Projection[S]) Reset(ctx context.Context) error {
 		return fmt.Errorf("could not reset projection %q: %w", p.name, err)
 	}
 	var zero S
-	p.Projection.State = zero
+	p.State = zero
 	p.position = 0
 	return nil
 }
@@ -99,7 +99,7 @@ func (p *Projection[S]) load() error {
 		}
 		return fmt.Errorf("could not load snapshot: %w", err)
 	}
-	err = json.Unmarshal(snapshot.State, &p.Projection.State)
+	err = json.Unmarshal(snapshot.State, &p.State)
 	if err != nil {
 		return fmt.Errorf("could not unmarshal snapshot state: %w", err)
 	}
@@ -107,7 +107,7 @@ func (p *Projection[S]) load() error {
 }
 
 func (p *Projection[S]) save(ctx context.Context) error {
-	stateBytes, err := json.Marshal(p.Projection.State)
+	stateBytes, err := json.Marshal(p.State)
 	if err != nil {
 		return fmt.Errorf("could not marshal projection state: %w", err)
 	}

@@ -1,3 +1,4 @@
+// Package attachments offloads large event fields to an external blob store.
 package attachments
 
 import (
