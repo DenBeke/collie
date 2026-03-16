@@ -86,6 +86,30 @@ store.Append(ctx, []eventstore.Event{event}, condition)
 
 Decision model projections are short-lived — created per command, checked, then discarded.
 
+### Stored decision models
+
+For large event streams, replaying every matching event on each command becomes slow. You can pre-load projection state at a known checkpoint and implement `CheckpointedProjector` so that `BuildDecisionModel` only replays events after the checkpoint:
+
+```go
+type CheckpointedProjector interface {
+    Projector
+    After() uint64
+}
+```
+
+For example, a stored projection that loads its state from a cache or database:
+
+```go
+type storedProjection[S any] struct {
+    eventstore.Projection[S]
+    after uint64
+}
+
+func (s *storedProjection[S]) After() uint64 { return s.after }
+```
+
+The caller only changes how the projection is constructed — `BuildDecisionModel`, the business rule check, and `Append` stay the same. When multiple projections are passed, the read starts from the lowest checkpoint and each projection skips events it has already processed.
+
 ### CheckpointProjector
 
 A `CheckpointProjector` is a long-lived projection that tracks its position in the event stream. It catches up incrementally on demand via `UpdateProjection`, making it suitable for serving read queries.
