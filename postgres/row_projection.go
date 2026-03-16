@@ -85,6 +85,19 @@ func (p *RowProjection[V]) Apply(ctx context.Context, e eventstore.SequencedEven
 			return fmt.Errorf("could not apply %s event to row %q: %w", e.Type, key, err)
 		}
 
+		// Update checkpoint first (rows have a FK to checkpoint).
+		p.position = e.SequenceNumber
+		err = tx.Clauses(clause.OnConflict{
+			Columns:   []clause.Column{{Name: "projection_name"}},
+			DoUpdates: clause.AssignmentColumns([]string{"position"}),
+		}).Create(&projectionCheckpoint{
+			ProjectionName: p.name,
+			Position:       int64(p.position),
+		}).Error
+		if err != nil {
+			return fmt.Errorf("could not upsert checkpoint: %w", err)
+		}
+
 		// Upsert or delete row.
 		if newValue == nil {
 			err = tx.Delete(&projectionRow{}, "projection_name = ? AND key = ?", p.name, key).Error
@@ -96,30 +109,22 @@ func (p *RowProjection[V]) Apply(ctx context.Context, e eventstore.SequencedEven
 			if err != nil {
 				return fmt.Errorf("could not marshal row %q: %w", key, err)
 			}
+			tagsBytes, err := json.Marshal(e.Tags)
+			if err != nil {
+				return fmt.Errorf("could not marshal tags for row %q: %w", key, err)
+			}
 			err = tx.Clauses(clause.OnConflict{
 				Columns:   []clause.Column{{Name: "projection_name"}, {Name: "key"}},
-				DoUpdates: clause.AssignmentColumns([]string{"value"}),
+				DoUpdates: clause.AssignmentColumns([]string{"value", "tags"}),
 			}).Create(&projectionRow{
 				ProjectionName: p.name,
 				Key:            key,
 				Value:          valueBytes,
+				Tags:           tagsBytes,
 			}).Error
 			if err != nil {
 				return fmt.Errorf("could not upsert row %q: %w", key, err)
 			}
-		}
-
-		// Update checkpoint.
-		p.position = e.SequenceNumber
-		err = tx.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "projection_name"}},
-			DoUpdates: clause.AssignmentColumns([]string{"position"}),
-		}).Create(&projectionCheckpoint{
-			ProjectionName: p.name,
-			Position:       int64(p.position),
-		}).Error
-		if err != nil {
-			return fmt.Errorf("could not upsert checkpoint: %w", err)
 		}
 		return nil
 	})
@@ -145,6 +150,60 @@ func (p *RowProjection[V]) Get(ctx context.Context, key string) (*V, error) {
 		return nil, fmt.Errorf("could not unmarshal row %q: %w", key, err)
 	}
 	return &v, nil
+}
+
+// List returns rows matching the given filters, with optional ordering and
+// pagination. Filters operate on JSONB fields within the row value.
+func (p *RowProjection[V]) List(ctx context.Context, opts ...ListOption) ([]V, error) {
+	q := buildListQuery(opts)
+	where, args := q.whereClause(p.name)
+
+	db := p.db.WithContext(ctx).
+		Table("projection_rows").
+		Where(where, args...)
+
+	if q.orderBy != nil {
+		dir := "ASC"
+		if q.orderBy.desc {
+			dir = "DESC"
+		}
+		db = db.Order(fmt.Sprintf("value->>'%s' %s", q.orderBy.key, dir))
+	}
+
+	if q.pagination != nil {
+		db = db.Offset(q.pagination.offset).Limit(q.pagination.limit)
+	}
+
+	var rows []projectionRow
+	if err := db.Find(&rows).Error; err != nil {
+		return nil, fmt.Errorf("could not list rows for projection %q: %w", p.name, err)
+	}
+
+	result := make([]V, 0, len(rows))
+	for _, row := range rows {
+		var v V
+		if err := json.Unmarshal(row.Value, &v); err != nil {
+			return nil, fmt.Errorf("could not unmarshal row %q: %w", row.Key, err)
+		}
+		result = append(result, v)
+	}
+	return result, nil
+}
+
+// MigrateIndexes creates partial expression indexes on the projection_rows
+// table for the given JSONB keys, scoped to this projection. This speeds up
+// List and Count queries that filter on these keys.
+func (p *RowProjection[V]) MigrateIndexes(keys ...string) error {
+	for _, key := range keys {
+		sql := fmt.Sprintf(
+			`CREATE INDEX IF NOT EXISTS idx_proj_%s_%s ON projection_rows ((tags->>'%s')) WHERE projection_name = '%s'`,
+			p.name, key, key, p.name,
+		)
+		if err := p.db.Exec(sql).Error; err != nil {
+			return fmt.Errorf("could not create index on %q for projection %q: %w", key, p.name, err)
+		}
+	}
+	return nil
 }
 
 // Reset deletes all rows and the checkpoint for this projection and resets

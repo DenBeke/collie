@@ -2,7 +2,6 @@
 
 A minimal Go library for event sourcing with [Dynamic Consistency Boundaries](https://dcb.events/specification/). It provides an event store interface, typed projections, and optimistic concurrency control — everything needed to enforce business rules on the write side and serve read queries on the read side.
 
-[[_TOC_]]
 
 ## Installation
 
@@ -190,6 +189,19 @@ eventstore.UpdateProjection(ctx, store, profiles)
 
 // Retrieve a single row.
 profile, err := profiles.Get(ctx, "user-123")
+
+// List rows filtered by event tags.
+active, err := profiles.List(ctx, postgres.WithMatchTag("status", "active"))
+
+// Multiple values match any (IN logic).
+subset, err := profiles.List(ctx, postgres.WithMatchTag("userId", "user-1", "user-2"))
+
+// Combine filters (AND), add ordering and pagination.
+page, err := profiles.List(ctx,
+    postgres.WithMatchTag("tenant", "acme"),
+    postgres.WithOrderBy("name", false),
+    postgres.WithPagination(0, 20),
+)
 ```
 
 ## Example: enforcing uniqueness on signup
