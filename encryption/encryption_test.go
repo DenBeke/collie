@@ -2,6 +2,7 @@ package encryption_test
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"eventstore"
@@ -358,3 +359,252 @@ func TestEncryptionKeysMustReferenceExistingTags(t *testing.T) {
 		t.Fatal("expected error for missing tag, got nil")
 	}
 }
+
+// --- Field-level encryption tests ---
+
+func TestFieldLevelWithoutEncryptionKeysIsNoOp(t *testing.T) {
+	store, _ := newStore()
+	ctx := context.Background()
+
+	type user struct {
+		Name string `json:"name"`
+	}
+
+	// WithEncryptedFields alone (no WithEncryptionKeys) should pass through
+	e, _ := eventstore.NewEvent("UserSignedUp", user{Name: "Alice"}, nil,
+		encryption.WithEncryptedFields("name"))
+	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	events := collectEvents(t, store, nil)
+	data, err := eventstore.EventData[user](events[0])
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if data.Name != "Alice" {
+		t.Fatalf("expected Alice, got %s", data.Name)
+	}
+}
+
+func TestFieldLevelRoundTrip(t *testing.T) {
+	store, _ := newStore()
+	ctx := context.Background()
+
+	type user struct {
+		Name  string `json:"name"`
+		Email string `json:"email"`
+		Role  string `json:"role"`
+	}
+	u := user{Name: "Alice", Email: "alice@example.com", Role: "admin"}
+
+	e, err := eventstore.NewEvent("UserSignedUp", u, map[string]string{
+		"userId": "user-1",
+	}, encryption.WithEncryptionKeys("userId"), encryption.WithEncryptedFields("name", "email"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	events := collectEvents(t, store, nil)
+	data, err := eventstore.EventData[user](events[0])
+	if err != nil {
+		t.Fatalf("unexpected unmarshal error: %v", err)
+	}
+	if data.Name != "Alice" || data.Email != "alice@example.com" || data.Role != "admin" {
+		t.Fatalf("unexpected data: %+v", data)
+	}
+}
+
+func TestFieldLevelEncryptedAtRest(t *testing.T) {
+	enc := newEncryptor()
+	raw := memory.New()
+	store := eventstore.NewMiddlewareStore(raw,
+		eventstore.WithAppendMiddleware(enc.OnAppend),
+		eventstore.WithReadMiddleware(enc.OnRead),
+	)
+	ctx := context.Background()
+
+	type user struct {
+		Name  string `json:"name"`
+		Email string `json:"email"`
+		Role  string `json:"role"`
+	}
+	u := user{Name: "Alice", Email: "alice@example.com", Role: "admin"}
+
+	e, _ := eventstore.NewEvent("UserSignedUp", u, map[string]string{
+		"userId": "user-1",
+	}, encryption.WithEncryptionKeys("userId"), encryption.WithEncryptedFields("email"))
+	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Raw store should have "role" in plaintext but "email" should be opaque
+	rawEvents := collectEvents(t, raw, nil)
+	rawData := string(rawEvents[0].Data)
+	if !strings.Contains(rawData, `"role":"admin"`) {
+		t.Fatalf("expected non-encrypted field 'role' in plaintext, got: %s", rawData)
+	}
+	if strings.Contains(rawData, "alice@example.com") {
+		t.Fatal("encrypted field 'email' should not appear as plaintext in raw store")
+	}
+}
+
+func TestFieldLevelForgetRedactsOnlyEncryptedFields(t *testing.T) {
+	store, enc := newStore()
+	ctx := context.Background()
+
+	type user struct {
+		Name  string  `json:"name"`
+		Email *string `json:"email"`
+		Role  string  `json:"role"`
+	}
+	email := "alice@example.com"
+	u := user{Name: "Alice", Email: &email, Role: "admin"}
+
+	e, _ := eventstore.NewEvent("UserSignedUp", u, map[string]string{
+		"userId": "user-1",
+	}, encryption.WithEncryptionKeys("userId"), encryption.WithEncryptedFields("name", "email"))
+	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := enc.Forget(ctx, map[string]string{"userId": "user-1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	events := collectEvents(t, store, nil)
+	if !encryption.IsRedacted(events[0]) {
+		t.Fatal("expected event to be marked as redacted")
+	}
+	// Data should NOT be nil — non-encrypted fields are preserved
+	if events[0].Data == nil {
+		t.Fatal("expected Data to be non-nil for field-level redaction")
+	}
+
+	data, err := eventstore.EventData[user](events[0])
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if data.Role != "admin" {
+		t.Fatalf("expected non-encrypted field preserved, got role=%s", data.Role)
+	}
+	if data.Name != "" {
+		t.Fatalf("expected redacted field to be zero value, got name=%s", data.Name)
+	}
+	if data.Email != nil {
+		t.Fatalf("expected redacted field to be nil, got email=%v", data.Email)
+	}
+}
+
+func TestFieldLevelNestedStructRoundTrip(t *testing.T) {
+	store, _ := newStore()
+	ctx := context.Background()
+
+	type address struct {
+		Street string `json:"street"`
+		City   string `json:"city"`
+	}
+	type user struct {
+		Name    string  `json:"name"`
+		Address address `json:"address"`
+		Role    string  `json:"role"`
+	}
+	u := user{
+		Name:    "Alice",
+		Address: address{Street: "123 Main St", City: "Springfield"},
+		Role:    "admin",
+	}
+
+	e, _ := eventstore.NewEvent("UserSignedUp", u, map[string]string{
+		"userId": "user-1",
+	}, encryption.WithEncryptionKeys("userId"), encryption.WithEncryptedFields("address"))
+	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	events := collectEvents(t, store, nil)
+	data, err := eventstore.EventData[user](events[0])
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if data.Address.Street != "123 Main St" || data.Address.City != "Springfield" {
+		t.Fatalf("expected nested struct preserved, got: %+v", data.Address)
+	}
+}
+
+func TestFieldLevelMissingFieldError(t *testing.T) {
+	store, _ := newStore()
+	ctx := context.Background()
+
+	type user struct {
+		Name string `json:"name"`
+	}
+
+	e, _ := eventstore.NewEvent("UserSignedUp", user{Name: "Alice"}, map[string]string{
+		"userId": "user-1",
+	}, encryption.WithEncryptionKeys("userId"), encryption.WithEncryptedFields("nonExistent"))
+
+	err := store.Append(ctx, []eventstore.Event{e}, nil)
+	if err == nil {
+		t.Fatal("expected error for missing field, got nil")
+	}
+}
+
+func TestMixedFullBlobAndFieldLevelEvents(t *testing.T) {
+	store, enc := newStore()
+	ctx := context.Background()
+
+	type user struct {
+		Name  string `json:"name"`
+		Email string `json:"email"`
+		Role  string `json:"role"`
+	}
+
+	// Full-blob encryption
+	fullBlob, _ := eventstore.NewEvent("UserSignedUp", "full-secret", map[string]string{
+		"userId": "user-1",
+	}, encryption.WithEncryptionKeys("userId"))
+
+	// Field-level encryption
+	fieldLevel, _ := eventstore.NewEvent("ProfileUpdated", user{Name: "Alice", Email: "a@b.c", Role: "admin"}, map[string]string{
+		"userId": "user-2",
+	}, encryption.WithEncryptionKeys("userId"), encryption.WithEncryptedFields("email"))
+
+	if err := store.Append(ctx, []eventstore.Event{fullBlob, fieldLevel}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	// Both readable before forget
+	events := collectEvents(t, store, nil)
+	if len(events) != 2 {
+		t.Fatalf("expected 2 events, got %d", len(events))
+	}
+
+	// Forget user-1 (full-blob)
+	if err := enc.Forget(ctx, map[string]string{"userId": "user-1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	events = collectEvents(t, store, nil)
+
+	// Full-blob: Data should be nil
+	if !encryption.IsRedacted(events[0]) {
+		t.Fatal("expected full-blob event to be redacted")
+	}
+	if events[0].Data != nil {
+		t.Fatal("expected full-blob Data to be nil")
+	}
+
+	// Field-level: should still be fully readable (different subject)
+	data, err := eventstore.EventData[user](events[1])
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if data.Email != "a@b.c" {
+		t.Fatalf("expected field-level event unaffected, got email=%s", data.Email)
+	}
+}
+

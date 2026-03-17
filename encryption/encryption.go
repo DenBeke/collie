@@ -5,6 +5,8 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,13 +18,22 @@ import (
 // MetadataKey is the metadata key used to store encryption key names.
 const MetadataKey = "encryptionKeys"
 
+// FieldsMetadataKey is the metadata key used to list JSON field names that
+// should be encrypted individually instead of encrypting the whole payload.
+const FieldsMetadataKey = "encryptedFields"
+
 // ErrRedacted is a convenience error for consumers to return when encountering
-// redacted events (events whose Data is nil after crypto-shredding).
+// redacted events. For full-blob encryption Data is nil; for field-level
+// encryption Data is preserved but encrypted fields are set to JSON null.
 var ErrRedacted = errors.New("event data redacted")
 
 // ErrMissingTag is returned when an encryption key name does not exist as a
 // tag on the event.
 var ErrMissingTag = errors.New("encryption key references missing tag")
+
+// ErrMissingField is returned when an encrypted field name does not exist as
+// a top-level key in the JSON-encoded event data.
+var ErrMissingField = errors.New("encrypted field not found in event data")
 
 // WithEncryptionKeys marks the event for GDPR crypto-shredding. The provided
 // names must each exist as a key in the event's Tags; their values identify
@@ -34,6 +45,19 @@ func WithEncryptionKeys(keys ...string) eventstore.EventOption {
 			e.Metadata = make(map[string]string)
 		}
 		e.Metadata[MetadataKey] = strings.Join(keys, ",")
+	}
+}
+
+// WithEncryptedFields limits encryption to specific top-level JSON fields
+// instead of encrypting the entire payload. Must be combined with
+// WithEncryptionKeys. Each name must correspond to a top-level key in the
+// JSON-encoded event data.
+func WithEncryptedFields(fields ...string) eventstore.EventOption {
+	return func(e *eventstore.Event) {
+		if e.Metadata == nil {
+			e.Metadata = make(map[string]string)
+		}
+		e.Metadata[FieldsMetadataKey] = strings.Join(fields, ",")
 	}
 }
 
@@ -55,7 +79,9 @@ func NewEventEncryptor(keys KeyStore) *EventEncryptor {
 }
 
 // OnAppend is an AppendMiddleware that encrypts event Data if the event has
-// encryption keys set in its Metadata.
+// encryption keys set in its Metadata. When encrypted fields are specified,
+// only those JSON fields are encrypted; otherwise the entire payload is
+// encrypted.
 func (enc *EventEncryptor) OnAppend(ctx context.Context, e *eventstore.Event) error {
 	keys := encryptionKeys(e.Metadata)
 	if len(keys) == 0 {
@@ -69,6 +95,12 @@ func (enc *EventEncryptor) OnAppend(ctx context.Context, e *eventstore.Event) er
 	if err != nil {
 		return fmt.Errorf("could not get encryption key: %w", err)
 	}
+
+	fields := encryptedFields(e.Metadata)
+	if len(fields) > 0 {
+		return encryptFields(key, e, fields)
+	}
+
 	ciphertext, err := encrypt(key, e.Data)
 	if err != nil {
 		return fmt.Errorf("could not encrypt event data: %w", err)
@@ -79,7 +111,8 @@ func (enc *EventEncryptor) OnAppend(ctx context.Context, e *eventstore.Event) er
 
 // OnRead is a ReadMiddleware that decrypts event Data if the event has
 // encryption keys set in its Metadata. If the subject's key has been
-// forgotten, Data is set to nil (redacted).
+// forgotten, Data is set to nil for full-blob encryption or fields are set
+// to null for field-level encryption.
 func (enc *EventEncryptor) OnRead(ctx context.Context, e *eventstore.SequencedEvent) error {
 	keys := encryptionKeys(e.Metadata)
 	if len(keys) == 0 {
@@ -93,14 +126,25 @@ func (enc *EventEncryptor) OnRead(ctx context.Context, e *eventstore.SequencedEv
 	if err != nil {
 		return fmt.Errorf("could not get decryption key: %w", err)
 	}
+
+	fields := encryptedFields(e.Metadata)
+
 	if !ok {
-		e.Data = nil
 		if e.Metadata == nil {
 			e.Metadata = make(map[string]string)
 		}
 		e.Metadata["redacted"] = "true"
+		if len(fields) > 0 {
+			return redactFields(e, fields)
+		}
+		e.Data = nil
 		return nil
 	}
+
+	if len(fields) > 0 {
+		return decryptFields(key, e, fields)
+	}
+
 	plaintext, err := decrypt(key, e.Data)
 	if err != nil {
 		return fmt.Errorf("could not decrypt event data: %w", err)
@@ -136,6 +180,94 @@ func subjectTags(tags map[string]string, keys []string) (map[string]string, erro
 		subject[name] = v
 	}
 	return subject, nil
+}
+
+// encryptedFields reads the field names to encrypt from event metadata.
+func encryptedFields(metadata map[string]string) []string {
+	v, ok := metadata[FieldsMetadataKey]
+	if !ok || v == "" {
+		return nil
+	}
+	return strings.Split(v, ",")
+}
+
+// encryptFields encrypts specific JSON fields in the event data.
+func encryptFields(key []byte, e *eventstore.Event, fields []string) error {
+	var data map[string]json.RawMessage
+	if err := json.Unmarshal(e.Data, &data); err != nil {
+		return fmt.Errorf("could not parse event data for field encryption: %w", err)
+	}
+	for _, field := range fields {
+		raw, exists := data[field]
+		if !exists {
+			return fmt.Errorf("%w: %q", ErrMissingField, field)
+		}
+		ciphertext, err := encrypt(key, []byte(raw))
+		if err != nil {
+			return fmt.Errorf("could not encrypt field %q: %w", field, err)
+		}
+		encoded, err := json.Marshal(base64.StdEncoding.EncodeToString(ciphertext))
+		if err != nil {
+			return fmt.Errorf("could not encode encrypted field %q: %w", field, err)
+		}
+		data[field] = encoded
+	}
+	newData, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("could not re-marshal event data: %w", err)
+	}
+	e.Data = newData
+	return nil
+}
+
+// decryptFields decrypts specific JSON fields in the event data.
+func decryptFields(key []byte, e *eventstore.SequencedEvent, fields []string) error {
+	var data map[string]json.RawMessage
+	if err := json.Unmarshal(e.Data, &data); err != nil {
+		return fmt.Errorf("could not parse event data for field decryption: %w", err)
+	}
+	for _, field := range fields {
+		raw, exists := data[field]
+		if !exists {
+			continue
+		}
+		var encoded string
+		if err := json.Unmarshal(raw, &encoded); err != nil {
+			return fmt.Errorf("could not decode encrypted field %q: %w", field, err)
+		}
+		ciphertext, err := base64.StdEncoding.DecodeString(encoded)
+		if err != nil {
+			return fmt.Errorf("could not base64-decode field %q: %w", field, err)
+		}
+		plaintext, err := decrypt(key, ciphertext)
+		if err != nil {
+			return fmt.Errorf("could not decrypt field %q: %w", field, err)
+		}
+		data[field] = json.RawMessage(plaintext)
+	}
+	newData, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("could not re-marshal event data: %w", err)
+	}
+	e.Data = newData
+	return nil
+}
+
+// redactFields sets encrypted fields to JSON null when the key is forgotten.
+func redactFields(e *eventstore.SequencedEvent, fields []string) error {
+	var data map[string]json.RawMessage
+	if err := json.Unmarshal(e.Data, &data); err != nil {
+		return fmt.Errorf("could not parse event data for redaction: %w", err)
+	}
+	for _, field := range fields {
+		data[field] = json.RawMessage("null")
+	}
+	newData, err := json.Marshal(data)
+	if err != nil {
+		return fmt.Errorf("could not re-marshal event data: %w", err)
+	}
+	e.Data = newData
+	return nil
 }
 
 // encrypt encrypts plaintext with AES-256-GCM. The nonce is prepended

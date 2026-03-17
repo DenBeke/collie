@@ -407,6 +407,21 @@ eventstore.NewEvent("FriendRequest", requestData, map[string]string{
 
 All events with the same subject tags share the same encryption key, regardless of what other tags they carry.
 
+### Field-level encryption
+
+By default, `WithEncryptionKeys` encrypts the entire event payload. If only some fields contain personal data, use `WithEncryptedFields` to encrypt just those fields — non-sensitive fields remain readable even after the subject is forgotten:
+
+```go
+event, _ := eventstore.NewEvent("UserSignedUp", userData, map[string]string{
+    "userId": "user-123",
+},
+    encryption.WithEncryptionKeys("userId"),
+    encryption.WithEncryptedFields("name", "email"),
+)
+```
+
+On read, encrypted fields are transparently decrypted. After a `Forget`, encrypted fields become `null` while the rest of the payload stays intact — `IsRedacted(e)` returns true but `e.Data` is not nil. This works with nested objects too: the middleware encrypts the raw JSON value of each field, preserving its structure on round-trip.
+
 ### Forgetting a subject
 
 Call `Forget` directly on the encryptor:
@@ -419,7 +434,7 @@ This deletes the encryption key. All events for that subject are now permanently
 
 ### Handling redacted events in projections
 
-After forgetting, events still flow through the store with their type, tags, and sequence number preserved, but the data is redacted. Use `encryption.IsRedacted(e)` to check:
+After forgetting, events still flow through the store with their type, tags, and sequence number preserved, but the data is redacted. For full-blob encryption `Data` is nil; for field-level encryption `Data` is preserved with encrypted fields set to `null`. Use `encryption.IsRedacted(e)` to check:
 
 ```go
 Handlers: map[string]eventstore.HandleFunc[MyState]{
