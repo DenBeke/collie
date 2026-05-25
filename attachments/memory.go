@@ -47,12 +47,13 @@ func (s *MemoryBlobStore) Get(_ context.Context, id string) ([]byte, error) {
 	return dataCopy, nil
 }
 
-// Delete removes a blob by ID. This is not part of the BlobStore interface
-// but is useful for testing missing-blob scenarios.
-func (s *MemoryBlobStore) Delete(id string) {
+// Delete removes a blob by ID. Idempotent — deleting an unknown ID is a
+// no-op and returns nil.
+func (s *MemoryBlobStore) Delete(_ context.Context, id string) error {
 	s.mu.Lock()
 	delete(s.blobs, id)
 	s.mu.Unlock()
+	return nil
 }
 
 func randomID() (string, error) {

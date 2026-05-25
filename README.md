@@ -560,7 +560,10 @@ Implement the `attachments.BlobStore` interface for any storage backend (S3, GCS
 type BlobStore interface {
     Put(ctx context.Context, data []byte) (string, error) // returns blob ID
     Get(ctx context.Context, id string) ([]byte, error)
+    Delete(ctx context.Context, id string) error          // idempotent
 }
 ```
 
 An in-memory implementation is provided for testing via `attachments.NewMemoryBlobStore()`.
+
+`Delete` is the attachments analogue of `EventEncryptor.Forget`: it lets a GDPR-erasure handler crypto-shred the encrypted fields *and* physically delete the blob attachments for the same subject in one operation. It is idempotent — deleting an unknown id returns nil — so callers can erase without first checking which blobs exist.

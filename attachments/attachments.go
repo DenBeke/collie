@@ -26,6 +26,11 @@ const MissingMetadataKey = "attachmentsMissing"
 type BlobStore interface {
 	Put(ctx context.Context, data []byte) (string, error)
 	Get(ctx context.Context, id string) ([]byte, error)
+	// Delete removes a blob by ID. Idempotent: deleting an unknown ID is not
+	// an error. The contract is "after Delete returns nil, the blob is not in
+	// the store" — useful for GDPR erasure where the caller doesn't always
+	// know which blobs were ever stored.
+	Delete(ctx context.Context, id string) error
 }
 
 // WithAttachments marks the listed JSON field names for offloading to a blob

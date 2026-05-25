@@ -156,7 +156,9 @@ func TestMissingBlobOnRead(t *testing.T) {
 	events := collectEvents(t, store, nil)
 	ids := attachments.BlobIDs(events[0])
 	blobID := ids["content"]
-	blobs.Delete(blobID)
+	if err := blobs.Delete(ctx, blobID); err != nil {
+		t.Fatal(err)
+	}
 
 	// Re-read — should get null content and missing flag
 	events = collectEvents(t, store, nil)
@@ -172,6 +174,54 @@ func TestMissingBlobOnRead(t *testing.T) {
 	}
 	if data.FileName != "f.txt" {
 		t.Fatalf("expected fileName preserved, got %s", data.FileName)
+	}
+}
+
+func TestBlobDelete(t *testing.T) {
+	store, blobs := newStore()
+	ctx := context.Background()
+
+	type Doc struct {
+		FileName string  `json:"fileName"`
+		Content  *string `json:"content"`
+	}
+	content := "to-be-erased"
+	e, err := eventstore.NewEvent("DocumentUploaded", Doc{FileName: "f.txt", Content: &content}, nil,
+		attachments.WithAttachments("content"),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	events := collectEvents(t, store, nil)
+	blobID := attachments.BlobIDs(events[0])["content"]
+	if blobID == "" {
+		t.Fatal("expected blob ID in metadata")
+	}
+
+	// Delete via the BlobStore interface — proves the method is on the interface.
+	var iface attachments.BlobStore = blobs
+	if err := iface.Delete(ctx, blobID); err != nil {
+		t.Fatalf("first delete: %v", err)
+	}
+
+	// Re-reading reports the blob as missing.
+	events = collectEvents(t, store, nil)
+	if !attachments.IsMissing(events[0]) {
+		t.Fatal("expected event to be marked as attachmentsMissing after Delete")
+	}
+
+	// Idempotency: deleting the same id again is not an error.
+	if err := iface.Delete(ctx, blobID); err != nil {
+		t.Fatalf("second delete should be a no-op, got error: %v", err)
+	}
+
+	// Idempotency: deleting an unknown id is not an error.
+	if err := iface.Delete(ctx, "never-stored"); err != nil {
+		t.Fatalf("delete of unknown id should be a no-op, got error: %v", err)
 	}
 }
 
