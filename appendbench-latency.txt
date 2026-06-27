@@ -1,0 +1,57 @@
+appendbench latency sweep @ 1M rows — wo 17 jun. 2026 21:38:42 CEST
+1 ephemeral postgres:17 (seeded once, reused) behind 1 Toxiproxy; torn down at end.
+Only the downstream latency toxic changes between runs (controlled experiment).
+Client co-located in Colima VM; read RELATIVE trends. Workload: condition=head loop=open users=8 partitions=1000.
+
+seeding 1,000,000 rows directly into postgres (bypasses the proxy) ...
+2026/06/17 21:38:43 appendbench: FAST-SEED 1000000 events via COPY/generate_series (BYPASSING Append)
+2026/06/17 21:39:53 appendbench: fast-seeded 1000000/1000000
+2026/06/17 21:39:53 appendbench: fast-seeded 1000000 events in 1m9.368s
+2026/06/17 21:39:53 appendbench: seed-only complete
+SEEDED ROWS: 1000000
+
+############### latency = 0 ms / round-trip ###############
+window:  measured=15.00s
+ops:     attempts=1064 successes=1050 conflicts=6 failed=0 dbErrors=0 canceled=8
+rates:   successes/s=70.0 attempts/s=70.9 conflict_rate=0.56% fail_rate=0.000%
+append latency (success):   p50=122.59ms p90=161.76ms p99=217.70ms p99.9=259.36ms max=259.36ms mean=129.54ms
+append latency (violation): p50=106.72ms p99=125.04ms
+readHead latency:           p50=4.76ms p99=11.85ms
+
+############### latency = 1 ms / round-trip ###############
+window:  measured=15.00s
+ops:     attempts=858 successes=849 conflicts=2 failed=0 dbErrors=0 canceled=8
+rates:   successes/s=56.6 attempts/s=57.2 conflict_rate=0.23% fail_rate=0.000%
+append latency (success):   p50=155.48ms p90=164.99ms p99=245.17ms p99.9=279.62ms max=279.62ms mean=158.21ms
+append latency (violation): p50=159.03ms p99=159.03ms
+readHead latency:           p50=6.54ms p99=13.88ms
+
+############### latency = 5 ms / round-trip ###############
+window:  measured=15.00s
+ops:     attempts=563 successes=552 conflicts=4 failed=0 dbErrors=0 canceled=8
+rates:   successes/s=36.8 attempts/s=37.5 conflict_rate=0.71% fail_rate=0.000%
+append latency (success):   p50=240.36ms p90=250.07ms p99=343.30ms p99.9=357.17ms max=358.60ms mean=244.06ms
+append latency (violation): p50=226.50ms p99=226.50ms
+readHead latency:           p50=9.72ms p99=14.73ms
+
+############### latency = 10 ms / round-trip ###############
+window:  measured=15.00s
+ops:     attempts=366 successes=358 conflicts=0 failed=0 dbErrors=0 canceled=8
+rates:   successes/s=23.9 attempts/s=24.4 conflict_rate=0.00% fail_rate=0.000%
+append latency (success):   p50=371.60ms p90=386.61ms p99=435.38ms p99.9=442.12ms max=442.12ms mean=375.37ms
+readHead latency:           p50=15.63ms p99=22.33ms
+
+############### latency = 25 ms / round-trip ###############
+window:  measured=15.00s
+ops:     attempts=174 successes=166 conflicts=0 failed=0 dbErrors=0 canceled=8
+rates:   successes/s=11.1 attempts/s=11.6 conflict_rate=0.00% fail_rate=0.000%
+append latency (success):   p50=788.64ms p90=804.41ms p99=820.50ms p99.9=820.50ms max=821.25ms mean=794.02ms
+readHead latency:           p50=33.84ms p99=38.87ms
+
+=================== DIGEST ===================
+latency   succ/s    att/s     conflict  append_p50   readhead_p50 ceiling   
+0       ms 70.0      70.9      0.006     122.6     ms 4.8       ms 7.7    /s
+1       ms 56.6      57.2      0.002     155.5     ms 6.5       ms 6.3    /s
+5       ms 36.8      37.5      0.007     240.4     ms 9.7       ms 4.1    /s
+10      ms 23.9      24.4      0.000     371.6     ms 15.6      ms 2.7    /s
+25      ms 11.1      11.6      0.000     788.6     ms 33.8      ms 1.3    /s
