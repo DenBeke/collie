@@ -398,321 +398,6 @@ func TestAppendConditionConcurrency(t *testing.T) {
 	}
 }
 
-// --- Per-boundary (experimental) append tests ---
-
-// TestPerBoundarySameBoundaryConcurrency proves the per-boundary locks still
-// serialize a SHARED boundary: 10 racing appends to username=alice → exactly 1
-// succeeds, 9 violations. (Single-boundary is the correct case.)
-func TestPerBoundarySameBoundaryConcurrency(t *testing.T) {
-	store := setupStore(t)
-	ctx := context.Background()
-
-	const n = 10
-	errs := make(chan error, n)
-	var wg sync.WaitGroup
-	wg.Add(n)
-	for range n {
-		go func() {
-			defer wg.Done()
-			e, _ := eventstore.NewEvent("UserSignedUp", "alice", map[string]string{"username": "alice"})
-			condition := &eventstore.AppendCondition{
-				Query: eventstore.Query{{
-					Types: []string{"UserSignedUp"},
-					Tags:  map[string]string{"username": "alice"},
-				}},
-				After: 0,
-			}
-			errs <- store.AppendPerBoundary(ctx, []eventstore.Event{e}, condition)
-		}()
-	}
-	wg.Wait()
-	close(errs)
-
-	var succeeded int
-	for err := range errs {
-		if err == nil {
-			succeeded++
-		} else if err != eventstore.ErrAppendConditionViolated {
-			t.Errorf("unexpected error: %v", err)
-		}
-	}
-	if succeeded != 1 {
-		t.Fatalf("expected exactly 1 successful append, got %d", succeeded)
-	}
-}
-
-// TestPerBoundaryDisjointConcurrency proves appends to DIFFERENT boundaries do
-// not block each other: 20 distinct usernames all succeed concurrently.
-func TestPerBoundaryDisjointConcurrency(t *testing.T) {
-	store := setupStore(t)
-	ctx := context.Background()
-
-	const n = 20
-	errs := make(chan error, n)
-	var wg sync.WaitGroup
-	wg.Add(n)
-	for i := range n {
-		go func(i int) {
-			defer wg.Done()
-			user := fmt.Sprintf("user-%d", i)
-			e, _ := eventstore.NewEvent("UserSignedUp", user, map[string]string{"username": user})
-			condition := &eventstore.AppendCondition{
-				Query: eventstore.Query{{
-					Types: []string{"UserSignedUp"},
-					Tags:  map[string]string{"username": user},
-				}},
-				After: 0,
-			}
-			errs <- store.AppendPerBoundary(ctx, []eventstore.Event{e}, condition)
-		}(i)
-	}
-	wg.Wait()
-	close(errs)
-
-	for err := range errs {
-		if err != nil {
-			t.Errorf("expected all disjoint appends to succeed, got: %v", err)
-		}
-	}
-	var count int
-	for _, err := range store.Read(ctx, nil, 0) {
-		if err != nil {
-			t.Fatalf("read error: %v", err)
-		}
-		count++
-	}
-	if count != n {
-		t.Fatalf("expected %d events, got %d", n, count)
-	}
-}
-
-// TestPerBoundaryNoDeadlock fires many concurrent multi-key appends drawn from a
-// small shared pool of boundaries, so key sets overlap heavily. Ascending-order
-// acquisition inside dcb_append_boundary must prevent any deadlock (40P01).
-func TestPerBoundaryNoDeadlock(t *testing.T) {
-	store := setupStore(t)
-	ctx := context.Background()
-
-	const n = 40
-	errs := make(chan error, n)
-	var wg sync.WaitGroup
-	wg.Add(n)
-	for i := range n {
-		go func(i int) {
-			defer wg.Done()
-			// Two boundaries from a 4-slot pool ⇒ overlapping key sets across
-			// goroutines. Unconditional append, so the only thing under test is
-			// that multi-key acquisition never deadlocks.
-			tags := map[string]string{
-				fmt.Sprintf("slot%d", i%4):     "x",
-				fmt.Sprintf("slot%d", (i+1)%4): "x",
-			}
-			e, _ := eventstore.NewEvent("Slot", nil, tags)
-			errs <- store.AppendPerBoundary(ctx, []eventstore.Event{e}, nil)
-		}(i)
-	}
-	wg.Wait()
-	close(errs)
-
-	for err := range errs {
-		if err != nil {
-			t.Fatalf("unexpected error (possible deadlock): %v", err)
-		}
-	}
-}
-
-// TestHybridSameBoundaryConcurrency proves AppendHybrid still enforces the
-// condition on a single boundary: 10 concurrent appends of the same username,
-// exactly 1 wins. (Per-boundary lock serializes the check+insert for the shared
-// boundary, exactly like AppendPerBoundary.)
-func TestHybridSameBoundaryConcurrency(t *testing.T) {
-	store := setupStore(t)
-	ctx := context.Background()
-
-	const n = 10
-	errs := make(chan error, n)
-	var wg sync.WaitGroup
-	wg.Add(n)
-	for range n {
-		go func() {
-			defer wg.Done()
-			e, _ := eventstore.NewEvent("UserSignedUp", "alice", map[string]string{"username": "alice"})
-			condition := &eventstore.AppendCondition{
-				Query: eventstore.Query{{
-					Types: []string{"UserSignedUp"},
-					Tags:  map[string]string{"username": "alice"},
-				}},
-				After: 0,
-			}
-			errs <- store.AppendHybrid(ctx, []eventstore.Event{e}, condition)
-		}()
-	}
-	wg.Wait()
-	close(errs)
-
-	var succeeded int
-	for err := range errs {
-		if err == nil {
-			succeeded++
-		} else if err != eventstore.ErrAppendConditionViolated {
-			t.Errorf("unexpected error: %v", err)
-		}
-	}
-	if succeeded != 1 {
-		t.Fatalf("expected exactly 1 successful append, got %d", succeeded)
-	}
-}
-
-// TestHybridDisjointConcurrency proves AppendHybrid lets condition checks for
-// DIFFERENT boundaries run concurrently (only the write serializes on the global
-// lock): 20 distinct usernames all succeed.
-func TestHybridDisjointConcurrency(t *testing.T) {
-	store := setupStore(t)
-	ctx := context.Background()
-
-	const n = 20
-	errs := make(chan error, n)
-	var wg sync.WaitGroup
-	wg.Add(n)
-	for i := range n {
-		go func(i int) {
-			defer wg.Done()
-			user := fmt.Sprintf("user-%d", i)
-			e, _ := eventstore.NewEvent("UserSignedUp", user, map[string]string{"username": user})
-			condition := &eventstore.AppendCondition{
-				Query: eventstore.Query{{
-					Types: []string{"UserSignedUp"},
-					Tags:  map[string]string{"username": user},
-				}},
-				After: 0,
-			}
-			errs <- store.AppendHybrid(ctx, []eventstore.Event{e}, condition)
-		}(i)
-	}
-	wg.Wait()
-	close(errs)
-
-	for err := range errs {
-		if err != nil {
-			t.Errorf("expected all disjoint appends to succeed, got: %v", err)
-		}
-	}
-	var count int
-	for _, err := range store.Read(ctx, nil, 0) {
-		if err != nil {
-			t.Fatalf("read error: %v", err)
-		}
-		count++
-	}
-	if count != n {
-		t.Fatalf("expected %d events, got %d", n, count)
-	}
-}
-
-// TestHybridNoDeadlock fires many concurrent overlapping multi-key appends. The
-// hybrid takes per-boundary keys in ascending order and the global write-lock
-// last, so the lock order is consistent and nothing deadlocks (40P01).
-func TestHybridNoDeadlock(t *testing.T) {
-	store := setupStore(t)
-	ctx := context.Background()
-
-	const n = 40
-	errs := make(chan error, n)
-	var wg sync.WaitGroup
-	wg.Add(n)
-	for i := range n {
-		go func(i int) {
-			defer wg.Done()
-			tags := map[string]string{
-				fmt.Sprintf("slot%d", i%4):     "x",
-				fmt.Sprintf("slot%d", (i+1)%4): "x",
-			}
-			e, _ := eventstore.NewEvent("Slot", nil, tags)
-			errs <- store.AppendHybrid(ctx, []eventstore.Event{e}, nil)
-		}(i)
-	}
-	wg.Wait()
-	close(errs)
-
-	for err := range errs {
-		if err != nil {
-			t.Fatalf("unexpected error (possible deadlock): %v", err)
-		}
-	}
-}
-
-// TestPerBoundaryMultiBoundaryGap deterministically reproduces the DOCUMENTED
-// limitation of per-boundary locking: a multi-boundary condition can miss an
-// event because BIGSERIAL positions commit out of order. It asserts the append
-// WRONGLY succeeds — a gap-safe store (global lock, or xid8 cursors) would
-// reject it. If commit-order cursors are ever added, flip the expectation.
-func TestPerBoundaryMultiBoundaryGap(t *testing.T) {
-	db := setupDB(t)
-	store := pgstore.New(db)
-	if err := store.Migrate(); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-	ctx := context.Background()
-
-	// tx1 inserts X {course:c2, student:s9} → seq 1, but does NOT commit yet.
-	tx1 := db.Begin()
-	if tx1.Error != nil {
-		t.Fatalf("begin tx1: %v", tx1.Error)
-	}
-	if err := tx1.Exec(`INSERT INTO events (type, data, tags, metadata) VALUES ('Enrolled', NULL, '{"course":"c2","student":"s9"}'::jsonb, NULL)`).Error; err != nil {
-		t.Fatalf("insert X: %v", err)
-	}
-
-	// tx2 inserts Y {course:c5, student:s1} → seq 2, and COMMITS (visible first).
-	tx2 := db.Begin()
-	if tx2.Error != nil {
-		t.Fatalf("begin tx2: %v", tx2.Error)
-	}
-	if err := tx2.Exec(`INSERT INTO events (type, data, tags, metadata) VALUES ('Enrolled', NULL, '{"course":"c5","student":"s1"}'::jsonb, NULL)`).Error; err != nil {
-		t.Fatalf("insert Y: %v", err)
-	}
-	if err := tx2.Commit().Error; err != nil {
-		t.Fatalf("commit tx2: %v", err)
-	}
-
-	// Decision-model read over (course=c2) OR (student=s1): sees Y (seq 2),
-	// misses the still-uncommitted X. After = highest seen = 2.
-	query := eventstore.Query{
-		{Types: []string{"Enrolled"}, Tags: map[string]string{"course": "c2"}},
-		{Types: []string{"Enrolled"}, Tags: map[string]string{"student": "s1"}},
-	}
-	var after uint64
-	sawX := false
-	for e, err := range store.Read(ctx, query, 0) {
-		if err != nil {
-			t.Fatalf("read error: %v", err)
-		}
-		if e.SequenceNumber > after {
-			after = e.SequenceNumber
-		}
-		if e.Tags["course"] == "c2" && e.Tags["student"] == "s9" {
-			sawX = true
-		}
-	}
-	if sawX {
-		t.Fatal("precondition failed: read should not have seen the uncommitted X")
-	}
-
-	// X becomes visible now (committed after the read).
-	if err := tx1.Commit().Error; err != nil {
-		t.Fatalf("commit tx1: %v", err)
-	}
-
-	// enroll(s1, c2) guarded by (query, After=2). X is seq 1 ≤ 2, so the
-	// `sequence_number > After` check cannot see it → the append WRONGLY
-	// succeeds, demonstrating the lost-event gap.
-	e, _ := eventstore.NewEvent("Enrolled", nil, map[string]string{"course": "c2", "student": "s1"})
-	err := store.AppendPerBoundary(ctx, []eventstore.Event{e}, &eventstore.AppendCondition{Query: query, After: after})
-	if err != nil {
-		t.Fatalf("expected the per-boundary append to succeed (demonstrating the gap); got: %v", err)
-	}
-}
-
 // --- Staging (sequencer/outbox) tests ---
 
 // flushAll drains the staging buffer into events synchronously (test helper).
@@ -865,8 +550,10 @@ func TestStagingFlushMonotonic(t *testing.T) {
 }
 
 // TestStagingMultiBoundaryConsistent: an event pending in staging (not yet
-// flushed) is still seen by a later multi-boundary condition check — the exact gap
-// that poisons AppendPerBoundary cannot form here.
+// flushed) is still seen by a later multi-boundary condition check — the
+// out-of-order-commit position gap that makes plain per-boundary locking unsafe
+// (see appendbench-conclusion.md) cannot form here, because the staging check reads
+// staging ∪ events in one snapshot.
 func TestStagingMultiBoundaryConsistent(t *testing.T) {
 	store := setupStore(t)
 	ctx := context.Background()
@@ -924,10 +611,10 @@ func TestStagingNoDeadlock(t *testing.T) {
 	}
 }
 
-// TestUnkeyableConditionRejected: the per-boundary append methods reject conditions
-// that can't be keyed (match-all, type-less, tag-less) up front with
-// ErrUnkeyableCondition, instead of silently falling back to the global lock (which
-// doesn't compose with per-boundary locks). A keyable condition is still accepted.
+// TestUnkeyableConditionRejected: AppendStaging rejects conditions that can't be
+// keyed (match-all, type-less, tag-less) up front with ErrUnkeyableCondition,
+// instead of silently falling back to the global lock (which doesn't compose with
+// per-boundary locks). A keyable condition is still accepted.
 func TestUnkeyableConditionRejected(t *testing.T) {
 	store := setupStore(t)
 	ctx := context.Background()
@@ -938,18 +625,9 @@ func TestUnkeyableConditionRejected(t *testing.T) {
 		{Query: eventstore.Query{{Tags: map[string]string{"email": "x"}}}, After: 0}, // type-less
 		{Query: eventstore.Query{{Types: []string{"Thing"}}}, After: 0},              // tag-less
 	}
-	methods := map[string]func(*eventstore.AppendCondition) error{
-		"PerBoundary": func(c *eventstore.AppendCondition) error {
-			return store.AppendPerBoundary(ctx, []eventstore.Event{e}, c)
-		},
-		"Hybrid":  func(c *eventstore.AppendCondition) error { return store.AppendHybrid(ctx, []eventstore.Event{e}, c) },
-		"Staging": func(c *eventstore.AppendCondition) error { return store.AppendStaging(ctx, []eventstore.Event{e}, c) },
-	}
-	for name, fn := range methods {
-		for _, c := range unkeyable {
-			if err := fn(c); !errors.Is(err, pgstore.ErrUnkeyableCondition) {
-				t.Errorf("%s with unkeyable condition %+v: want ErrUnkeyableCondition, got %v", name, c.Query, err)
-			}
+	for _, c := range unkeyable {
+		if err := store.AppendStaging(ctx, []eventstore.Event{e}, c); !errors.Is(err, pgstore.ErrUnkeyableCondition) {
+			t.Errorf("AppendStaging with unkeyable condition %+v: want ErrUnkeyableCondition, got %v", c.Query, err)
 		}
 	}
 

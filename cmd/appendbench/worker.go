@@ -87,15 +87,10 @@ func makeEvents(cfg *Config, id int) []eventstore.Event {
 	return events
 }
 
-// appendWith dispatches to the store's global-lock Append, the experimental
-// per-boundary AppendPerBoundary, or the consistent AppendHybrid, per cfg.Lock —
-// the A/B/C switch under test.
+// appendWith dispatches to the store's global-lock Append or the staging-buffer
+// AppendStaging, per cfg.Lock — the A/B switch under test.
 func appendWith(ctx context.Context, store *pgstore.Store, cfg *Config, events []eventstore.Event, cond *eventstore.AppendCondition) error {
 	switch cfg.Lock {
-	case lockBoundary:
-		return store.AppendPerBoundary(ctx, events, cond)
-	case lockHybrid:
-		return store.AppendHybrid(ctx, events, cond)
 	case lockStaging:
 		return store.AppendStaging(ctx, events, cond)
 	default:

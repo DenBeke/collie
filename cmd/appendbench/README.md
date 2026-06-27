@@ -1,11 +1,21 @@
 # appendbench
 
-A load tester for `postgres.Store.Append` under its single **global advisory lock**
-(`pg_advisory_xact_lock`, same key for every append).
+A load tester for the postgres event store's append paths, selected with `-lock`:
+
+- **`-lock=global`** (default) — `postgres.Store.Append`: one **global advisory lock**
+  (`pg_advisory_xact_lock`, same key for every append), so every append serializes.
+- **`-lock=staging`** — `postgres.Store.AppendStaging` + a singleton `RunFlusher`: appends
+  land concurrently in a per-boundary-locked staging buffer and a single flusher drains them
+  into `events` (consistent, concurrent, eventual read-visibility). Tune the flusher with
+  `-flush-interval` and `-flush-batch`.
+
+The two other strategies benchmarked during the exploration (per-boundary and hybrid locks)
+were removed from the library when consolidating on staging; see `appendbench-conclusion.md`
+for the full four-way comparison and why staging was chosen.
 
 ## The idea it measures
 
-Because the lock is global, **every append serializes regardless of whether tags overlap**.
+Under `-lock=global` **every append serializes regardless of whether tags overlap**.
 So the suite separates two things that are easy to conflate:
 
 - **Lock-bound throughput** ≈ `1 / (mean critical-section duration)` — the advisory-lock
@@ -47,6 +57,7 @@ runs with `-csv=runs.csv` append one row each.
 
 | Axis | Flags |
 |---|---|
+| Strategy | `-lock global\|staging`, and for staging `-flush-interval`, `-flush-batch` |
 | Concurrency X | `-users` (1 = serial lock-bound baseline) |
 | Partitions Y | `-partitions` |
 | Overlap | `-dist uniform\|zipf`, `-zipf-s`, `-zipf-v` |

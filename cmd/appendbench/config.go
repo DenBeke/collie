@@ -34,10 +34,8 @@ const (
 
 // Locking strategy under test.
 const (
-	lockGlobal   = "global"   // store.Append: one global advisory lock
-	lockBoundary = "boundary" // store.AppendPerBoundary: per-(type,tag,value) locks
-	lockHybrid   = "hybrid"   // store.AppendHybrid: per-boundary check + global write-lock (consistent)
-	lockStaging  = "staging"  // store.AppendStaging: staging buffer + singleton flusher (consistent, concurrent)
+	lockGlobal  = "global"  // store.Append: one global advisory lock
+	lockStaging = "staging" // store.AppendStaging: staging buffer + singleton flusher (consistent, concurrent)
 )
 
 // Config is the fully-resolved set of run parameters.
@@ -124,7 +122,7 @@ func registerFlags(fs *flag.FlagSet) *Config {
 	fs.BoolVar(&c.IndexedTags, "indexed-tags", true, "create/use a B-tree index on the entity tag (vs GIN-only)")
 	fs.IntVar(&c.BatchSize, "batch-size", 1000, "store read batch size (WithBatchSize)")
 	fs.BoolVar(&c.Migrate, "migrate", true, "run store.Migrate() before load")
-	fs.StringVar(&c.Lock, "lock", lockGlobal, "locking strategy: global|boundary|hybrid|staging (staging = staging buffer + singleton flusher: consistent, concurrent, eventual read-visibility)")
+	fs.StringVar(&c.Lock, "lock", lockGlobal, "locking strategy: global|staging (staging = staging buffer + singleton flusher: consistent, concurrent, eventual read-visibility)")
 	fs.DurationVar(&c.FlushInterval, "flush-interval", 5*time.Millisecond, "staging flusher idle interval (lock=staging)")
 	fs.IntVar(&c.FlushBatch, "flush-batch", 5000, "staging flusher max rows moved per flush (lock=staging)")
 
@@ -218,9 +216,9 @@ func (c *Config) validate() (warnings []string, err error) {
 		return nil, fmt.Errorf("-count-mode must be attempts|successes, got %q", c.CountMode)
 	}
 	switch c.Lock {
-	case lockGlobal, lockBoundary, lockHybrid, lockStaging:
+	case lockGlobal, lockStaging:
 	default:
-		return nil, fmt.Errorf("-lock must be global|boundary|hybrid|staging, got %q", c.Lock)
+		return nil, fmt.Errorf("-lock must be global|staging, got %q", c.Lock)
 	}
 
 	// none/create are single-shot — no retry loop applies.

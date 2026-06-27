@@ -306,6 +306,25 @@ pgStore := pgstore.New(db, pgstore.WithIndexedTags("tenant_id"))
 pgStore.Migrate()
 ```
 
+### High-throughput appends (staging)
+
+`Store.Append` is the simple, fully-consistent default: every append serializes on one global
+advisory lock, with immediate read-visibility and a plain `uint64` cursor. When append
+throughput becomes the bottleneck, `Store.AppendStaging` keeps that consistency and cursor while
+letting appends to disjoint boundaries run concurrently — they land in a staging buffer that a
+singleton `RunFlusher` drains into `events`. The trade-off is eventual read-visibility (bounded by
+the flush interval) and running the flusher daemon.
+
+```go
+go pgStore.RunFlusher(ctx, postgres.FlushOptions{}) // one per deployment; leader-elected
+// ... then use pgStore.AppendStaging instead of pgStore.Append on the hot write path.
+```
+
+The design and the benchmarks behind choosing staging (including the per-boundary and hybrid
+strategies that were evaluated and rejected) are written up in
+[`appendbench-conclusion.md`](appendbench-conclusion.md), with full methodology in
+[`appendbench-scaleway.md`](appendbench-scaleway.md).
+
 ### PostgreSQL projection tables
 
 Call `MigrateProjections` to create the tables used by `postgres.Projection[S]` and `postgres.RowProjection[V]`:

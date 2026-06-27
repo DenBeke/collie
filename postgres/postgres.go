@@ -23,14 +23,13 @@ import (
 // 0x4443425F617070 is ASCII for "DCB_app".
 const appendLock int64 = 0x4443425F617070
 
-// ErrUnkeyableCondition is returned by AppendPerBoundary, AppendHybrid, and
-// AppendStaging when the condition cannot be reduced to a finite set of
-// (type,tag,value) boundaries — a match-all (empty Query) or any item missing a
-// type or a tag. Such a condition would need the global lock, which does NOT
-// compose with the per-boundary locks (the two share no advisory key, so a
-// conflict between a global-lock append and a per-boundary append would go
-// unnoticed). Give every query item at least one type AND one tag, or run the
-// whole workload on the global-lock Append.
+// ErrUnkeyableCondition is returned by AppendStaging when the condition cannot
+// be reduced to a finite set of (type,tag,value) boundaries — a match-all (empty
+// Query) or any item missing a type or a tag. Such a condition would need the
+// global lock, which does NOT compose with the per-boundary locks (the two share
+// no advisory key, so a conflict between a global-lock append and a per-boundary
+// append would go unnoticed). Give every query item at least one type AND one
+// tag, or run the whole workload on the global-lock Append.
 var ErrUnkeyableCondition = errors.New("append condition is not keyable: the query must be non-empty and every item needs at least one type and one tag")
 
 // Compile-time check that Store implements eventstore.Store.
@@ -111,12 +110,6 @@ func (s *Store) Migrate() error {
 	if err := s.db.Exec(fmt.Sprintf(dcbAppendFnTemplate, appendLock)).Error; err != nil {
 		return fmt.Errorf("could not create dcb_append function: %w", err)
 	}
-	if err := s.db.Exec(dcbAppendBoundaryFnTemplate).Error; err != nil {
-		return fmt.Errorf("could not create dcb_append_boundary function: %w", err)
-	}
-	if err := s.db.Exec(fmt.Sprintf(dcbAppendHybridFnTemplate, appendLock)).Error; err != nil {
-		return fmt.Errorf("could not create dcb_append_hybrid function: %w", err)
-	}
 	if err := s.db.Exec(fmt.Sprintf(dcbAppendStagingFnTemplate, appendLock)).Error; err != nil {
 		return fmt.Errorf("could not create dcb_append_staging function: %w", err)
 	}
@@ -179,14 +172,12 @@ func (s *Store) Read(ctx context.Context, query eventstore.Query, after uint64) 
 	}
 }
 
-// dcbCheckBody is the shared DCB condition-check head of all three append
-// functions: given v_after and p_query it sets v_conflict and RETURNs false if a
-// matching event exists after v_after. It is identical across dcb_append (global
-// lock), dcb_append_boundary (per-boundary locks) and dcb_append_hybrid
-// (per-boundary check + global write-lock), so the functions differ ONLY in how
-// they lock — keeping any A/B comparison honest.
+// dcbCheckBody is the DCB condition-check head of dcb_append: given v_after and
+// p_query it sets v_conflict and RETURNs false if a matching event exists after
+// v_after. (dcb_append_staging has its own variant that checks staging ∪ events
+// in one snapshot — see dcbAppendStagingFnTemplate.)
 //
-// All functions are VOLATILE so that, under READ COMMITTED, each statement
+// dcb_append is VOLATILE so that, under READ COMMITTED, each statement
 // re-snapshots: the check after the lock observes appends that committed while we
 // were waiting for the lock. That re-snapshot is what makes lock+check+insert
 // race-free in one call (a client-side CTE could not — one statement holds a
@@ -222,9 +213,8 @@ const dcbCheckBody = `
     END IF;
 `
 
-// dcbInsertBody is the shared tail of all three append functions: the batched
-// insert of p_events, then RETURN true. It is appended after dcbCheckBody (and,
-// for the hybrid, after the global write-lock has been taken).
+// dcbInsertBody is the tail of dcb_append: the batched insert of p_events into
+// events, then RETURN true. It is appended after dcbCheckBody.
 const dcbInsertBody = `
     INSERT INTO events (type, data, tags, metadata, created_at)
     SELECT elem->>'type',
@@ -250,49 +240,6 @@ DECLARE
 BEGIN
     PERFORM pg_advisory_xact_lock(%d);
 ` + dcbCheckBody + dcbInsertBody
-
-// dcbAppendBoundaryFnTemplate is the DDL for dcb_append_boundary: instead of one
-// global lock it acquires a caller-supplied set of per-boundary advisory keys, so
-// appends to disjoint boundaries run concurrently. Keys are acquired in ascending
-// order (a single global lock order ⇒ deadlock-free). The check + insert tail is
-// identical to dcb_append. (Experimental — see AppendPerBoundary for the
-// correctness caveat on multi-boundary conditions.)
-const dcbAppendBoundaryFnTemplate = `CREATE OR REPLACE FUNCTION dcb_append_boundary(p_events jsonb, p_query jsonb, p_after bigint, p_keys bigint[])
-RETURNS boolean LANGUAGE plpgsql VOLATILE AS $func$
-DECLARE
-    v_after bigint := COALESCE(p_after, 0);
-    v_conflict boolean;
-    v_key bigint;
-BEGIN
-    FOR v_key IN SELECT DISTINCT k FROM unnest(p_keys) AS t(k) ORDER BY k LOOP
-        PERFORM pg_advisory_xact_lock(v_key);
-    END LOOP;
-` + dcbCheckBody + dcbInsertBody
-
-// dcbAppendHybridFnTemplate is the DDL for dcb_append_hybrid: the fully-consistent
-// per-boundary variant. It acquires the per-boundary keys (like dcb_append_boundary)
-// and runs the condition CHECK under them — so checks for disjoint boundaries run
-// concurrently — then takes the ONE global advisory lock (%d) only for the INSERT.
-// Holding the global lock from the insert through commit re-serializes the writes,
-// so sequence_number is assigned in commit order (gap-free) while the expensive
-// check stays parallel. Result: correct for MULTI-boundary conditions AND keeps the
-// plain sequence-number cursor (no xid8) — unlike dcb_append_boundary, which trades
-// that gap for group-commit throughput. Per-boundary keys are taken in ascending
-// order and the global lock last, so the lock order is consistent (deadlock-free).
-// %d is appendLock.
-const dcbAppendHybridFnTemplate = `CREATE OR REPLACE FUNCTION dcb_append_hybrid(p_events jsonb, p_query jsonb, p_after bigint, p_keys bigint[])
-RETURNS boolean LANGUAGE plpgsql VOLATILE AS $func$
-DECLARE
-    v_after bigint := COALESCE(p_after, 0);
-    v_conflict boolean;
-    v_key bigint;
-BEGIN
-    FOR v_key IN SELECT DISTINCT k FROM unnest(p_keys) AS t(k) ORDER BY k LOOP
-        PERFORM pg_advisory_xact_lock(v_key);
-    END LOOP;
-` + dcbCheckBody + `
-    PERFORM pg_advisory_xact_lock(%d);
-` + dcbInsertBody
 
 // dcbAppendStagingFnTemplate is the DDL for dcb_append_staging — the sequencer/
 // outbox append. It per-boundary-locks (or takes the global %d lock when no keys
@@ -391,7 +338,7 @@ type queryItemDTO struct {
 }
 
 // appendArgs marshals events and an optional condition into the arguments shared
-// by the dcb_append / dcb_append_boundary functions: the events as a JSON array
+// by the dcb_append / dcb_append_staging functions: the events as a JSON array
 // string, the query as a JSON string (or nil => SQL NULL => unconditional), and
 // the After cursor. Data is base64-encoded because it is arbitrary bytes.
 func appendArgs(events []eventstore.Event, condition *eventstore.AppendCondition) (eventsJSON string, queryArg any, after int64, err error) {
@@ -434,6 +381,18 @@ func appendArgs(events []eventstore.Event, condition *eventstore.AppendCondition
 // condition's sequence number. The function acquires the global advisory lock
 // and performs the check + insert atomically; it is called in autocommit (no
 // surrounding transaction) so the whole append is one round-trip.
+//
+// Append is the simple, fully-consistent default (immediate read-visibility, plain
+// uint64 cursor); every append serializes on the one global lock, so it is
+// throughput-capped. When you need per-boundary write concurrency while keeping
+// that consistency and cursor, use AppendStaging + RunFlusher.
+//
+// Two other strategies were prototyped and benchmarked but deliberately NOT kept:
+// per-boundary locks (fast but positions commit out of order, so multi-boundary
+// conditions are gappy without xid8 cursors) and a per-boundary-check + global-write
+// "hybrid" (consistent but lands at ~global throughput). See appendbench-conclusion.md
+// for the full comparison and why staging won; the implementations live in this
+// repo's git history (the commit before the staging consolidation).
 func (s *Store) Append(ctx context.Context, events []eventstore.Event, condition *eventstore.AppendCondition) error {
 	if len(events) == 0 && condition == nil {
 		return nil
@@ -476,7 +435,7 @@ func lockKey(eventType, tagKey, tagValue string) int64 {
 // (type,tag) triples AND the events' (type,tag) triples, because a conflict can
 // arise from my-events vs your-condition or your-events vs my-condition.
 //
-// A condition is NOT keyable — and the per-boundary callers reject it with
+// A condition is NOT keyable — and AppendStaging rejects it with
 // ErrUnkeyableCondition — when it would lock nothing meaningful: a match-all
 // (empty Query) or any item lacking a type or a tag. Those can't be expressed as a
 // finite (type,tag,value) boundary set, so they'd need the global lock, which does
@@ -526,99 +485,18 @@ func bigintArrayLiteral(keys []int64) string {
 	return b.String()
 }
 
-// AppendPerBoundary is an EXPERIMENTAL alternative to Append that serializes on
-// per-(eventType,tagKey,tagValue) advisory locks instead of one global lock, so
-// appends to disjoint boundaries run concurrently. Same one-round-trip shape as
-// Append. Conditions that aren't keyable (match-all, or any item missing a type or
-// a tag) are rejected with ErrUnkeyableCondition — they would need the global lock,
-// which does not compose with the per-boundary locks (see ErrUnkeyableCondition).
-//
-// CORRECTNESS CAVEAT: this is safe for single-boundary conditions, but a
-// condition spanning MULTIPLE boundaries can miss an event under concurrency. The
-// decision-model read (which computes After) is lock-free and runs before this
-// call; because per-boundary locking lets BIGSERIAL positions commit out of
-// order, that read can skip a lower-positioned event that commits later, and the
-// `sequence_number > After` check then can't catch it. The global Append does not
-// have this gap. A gap-safe fix needs commit-order cursors (transaction_id xid8).
-func (s *Store) AppendPerBoundary(ctx context.Context, events []eventstore.Event, condition *eventstore.AppendCondition) error {
-	if len(events) == 0 && condition == nil {
-		return nil
-	}
-	keys, keyable := boundaryLockKeys(events, condition)
-	if !keyable {
-		return ErrUnkeyableCondition
-	}
-
-	eventsJSON, queryArg, after, err := appendArgs(events, condition)
-	if err != nil {
-		return err
-	}
-
-	var appended bool
-	err = s.db.WithContext(ctx).Raw(
-		"SELECT dcb_append_boundary(?::jsonb, ?::jsonb, ?::bigint, ?::bigint[])",
-		eventsJSON, queryArg, after, bigintArrayLiteral(keys),
-	).Scan(&appended).Error
-	if err != nil {
-		return fmt.Errorf("could not append events (per-boundary): %w", err)
-	}
-	if !appended {
-		return eventstore.ErrAppendConditionViolated
-	}
-	return nil
-}
-
-// AppendHybrid is the fully-consistent per-boundary append: it acquires the
-// per-(eventType,tagKey,tagValue) advisory locks and runs the condition check
-// under them (so checks for disjoint boundaries run concurrently), then takes the
-// global advisory lock only for the insert. Serializing the write under the global
-// lock keeps sequence_number in commit order, so — unlike AppendPerBoundary — it is
-// correct for MULTI-boundary conditions and keeps the plain sequence-number cursor
-// (no xid8). The trade-off is that it gives up group-commit, so it is slower than
-// AppendPerBoundary but parallelizes the (often expensive) condition check that the
-// global Append serializes. Same one-round-trip shape as Append; conditions that
-// aren't keyable are rejected with ErrUnkeyableCondition (see that error).
-//
-// NOTE: the commit-order guarantee holds only if every append serializes its write
-// on the global lock — i.e. mix AppendHybrid with the global Append, not with the
-// gap-prone AppendPerBoundary.
-func (s *Store) AppendHybrid(ctx context.Context, events []eventstore.Event, condition *eventstore.AppendCondition) error {
-	if len(events) == 0 && condition == nil {
-		return nil
-	}
-	keys, keyable := boundaryLockKeys(events, condition)
-	if !keyable {
-		return ErrUnkeyableCondition
-	}
-
-	eventsJSON, queryArg, after, err := appendArgs(events, condition)
-	if err != nil {
-		return err
-	}
-
-	var appended bool
-	err = s.db.WithContext(ctx).Raw(
-		"SELECT dcb_append_hybrid(?::jsonb, ?::jsonb, ?::bigint, ?::bigint[])",
-		eventsJSON, queryArg, after, bigintArrayLiteral(keys),
-	).Scan(&appended).Error
-	if err != nil {
-		return fmt.Errorf("could not append events (hybrid): %w", err)
-	}
-	if !appended {
-		return eventstore.ErrAppendConditionViolated
-	}
-	return nil
-}
-
 // AppendStaging is the sequencer/outbox append: it per-boundary-locks (rejecting
 // unkeyable conditions with ErrUnkeyableCondition), checks the condition across
-// staging and events in one snapshot, and inserts into the staging buffer.
+// staging and events in one snapshot, and inserts into the staging buffer. Appends
+// to disjoint boundaries run concurrently (per-boundary locks + group commit),
+// while a singleton flusher (RunFlusher) assigns events.sequence_number, so it is
+// the high-throughput path that still keeps full consistency.
+//
 // A successful append is durable (committed to staging) but not visible to Read
-// until the flusher (RunFlusher) moves it into events — eventual read-visibility
-// bounded by the flush interval. Unlike AppendPerBoundary it is fully consistent
-// for multi-boundary conditions AND keeps the plain uint64 cursor, because events
-// is written only by the single flusher. A RunFlusher must be running for appends
-// to become visible.
+// until the flusher moves it into events — eventual read-visibility bounded by the
+// flush interval. It is fully consistent for multi-boundary conditions AND keeps the
+// plain uint64 cursor, because events is written only by the single flusher. A
+// RunFlusher must be running for appends to become visible.
 func (s *Store) AppendStaging(ctx context.Context, events []eventstore.Event, condition *eventstore.AppendCondition) error {
 	if len(events) == 0 && condition == nil {
 		return nil
@@ -678,8 +556,8 @@ SELECT type, data, tags, metadata, created_at FROM moved ORDER BY staging_id`
 // batch; if rows moved, drain again immediately; otherwise sleep opts.Interval.
 //
 // Only the flusher writes events for the staging strategy; running it alongside
-// the direct-write Append/AppendPerBoundary/AppendHybrid would add a second writer
-// to events and break the gap-free ordering.
+// the direct-write Append would add a second writer to events and break the
+// gap-free ordering.
 func (s *Store) RunFlusher(ctx context.Context, opts FlushOptions) error {
 	if opts.Interval <= 0 {
 		opts.Interval = 5 * time.Millisecond
