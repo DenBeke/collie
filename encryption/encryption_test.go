@@ -607,4 +607,3 @@ func TestMixedFullBlobAndFieldLevelEvents(t *testing.T) {
 		t.Fatalf("expected field-level event unaffected, got email=%s", data.Email)
 	}
 }
-

@@ -8,10 +8,16 @@ import (
 	"eventstore/memory"
 )
 
-// storedProjection wraps a Projection with a checkpoint, implementing
-// CheckpointedProjector so BuildDecisionModel skips already-processed events.
+// The library's own stored read-model projection must satisfy
+// CheckpointProjection so BuildDecisionModel recognizes it as a decision model
+// and skips already-processed events. Regression guard for the projector-type
+// consolidation: *memory.CheckpointProjection must implement it.
+var _ eventstore.CheckpointProjection = (*memory.CheckpointProjection[int])(nil)
+
+// storedProjection wraps a DefaultProjection with a checkpoint, implementing
+// CheckpointProjection so BuildDecisionModel skips already-processed events.
 type storedProjection[S any] struct {
-	eventstore.Projection[S]
+	eventstore.DefaultProjection[S]
 	after uint64
 }
 
@@ -38,7 +44,7 @@ func TestBuildDecisionModel_BackwardCompatible(t *testing.T) {
 	store := seed(t, 3, "UserSignedUp", map[string]string{"username": "alice"})
 	ctx := context.Background()
 
-	counter := eventstore.Projection[int]{
+	counter := eventstore.DefaultProjection[int]{
 		Query: eventstore.QueryItem{Types: []string{"UserSignedUp"}},
 		State: 0,
 		Handlers: map[string]eventstore.HandleFunc[int]{
@@ -67,7 +73,7 @@ func TestBuildDecisionModel_StoredProjectionSkipsOldEvents(t *testing.T) {
 
 	// Pre-loaded state: already counted 3 events (at checkpoint 3).
 	projection := &storedProjection[int]{
-		Projection: eventstore.Projection[int]{
+		DefaultProjection: eventstore.DefaultProjection[int]{
 			Query: eventstore.QueryItem{Types: []string{"UserSignedUp"}},
 			State: 3,
 			Handlers: map[string]eventstore.HandleFunc[int]{
@@ -99,7 +105,7 @@ func TestBuildDecisionModel_NoNewEventsAfterCheckpoint(t *testing.T) {
 
 	// Stored projection already at the end of the stream.
 	projection := &storedProjection[int]{
-		Projection: eventstore.Projection[int]{
+		DefaultProjection: eventstore.DefaultProjection[int]{
 			Query: eventstore.QueryItem{Types: []string{"UserSignedUp"}},
 			State: 3,
 			Handlers: map[string]eventstore.HandleFunc[int]{
@@ -132,7 +138,7 @@ func TestBuildDecisionModel_MixedStoredAndFresh(t *testing.T) {
 
 	// Stored projection at checkpoint 3.
 	stored := &storedProjection[int]{
-		Projection: eventstore.Projection[int]{
+		DefaultProjection: eventstore.DefaultProjection[int]{
 			Query: eventstore.QueryItem{Types: []string{"UserSignedUp"}},
 			State: 3,
 			Handlers: map[string]eventstore.HandleFunc[int]{
@@ -145,7 +151,7 @@ func TestBuildDecisionModel_MixedStoredAndFresh(t *testing.T) {
 	}
 
 	// Fresh projection — no checkpoint.
-	fresh := &eventstore.Projection[int]{
+	fresh := &eventstore.DefaultProjection[int]{
 		Query: eventstore.QueryItem{Types: []string{"UserSignedUp"}},
 		State: 0,
 		Handlers: map[string]eventstore.HandleFunc[int]{
@@ -179,7 +185,7 @@ func TestBuildDecisionModel_MultipleStoredAtDifferentCheckpoints(t *testing.T) {
 
 	// p1 at checkpoint 3, p2 at checkpoint 7.
 	p1 := &storedProjection[int]{
-		Projection: eventstore.Projection[int]{
+		DefaultProjection: eventstore.DefaultProjection[int]{
 			Query: eventstore.QueryItem{Types: []string{"UserSignedUp"}},
 			State: 3,
 			Handlers: map[string]eventstore.HandleFunc[int]{
@@ -191,7 +197,7 @@ func TestBuildDecisionModel_MultipleStoredAtDifferentCheckpoints(t *testing.T) {
 		after: 3,
 	}
 	p2 := &storedProjection[int]{
-		Projection: eventstore.Projection[int]{
+		DefaultProjection: eventstore.DefaultProjection[int]{
 			Query: eventstore.QueryItem{Types: []string{"UserSignedUp"}},
 			State: 7,
 			Handlers: map[string]eventstore.HandleFunc[int]{
@@ -217,5 +223,54 @@ func TestBuildDecisionModel_MultipleStoredAtDifferentCheckpoints(t *testing.T) {
 	}
 	if condition.After != 10 {
 		t.Fatalf("expected After=10, got %d", condition.After)
+	}
+}
+
+// TestBuildDecisionModel_RealMemoryProjectionIsCheckpointed proves the checkpoint
+// path using the library's own *memory.CheckpointProjection (not the test-only
+// storedProjection): a caught-up read model reused as a decision model must apply
+// only the events appended since its checkpoint, not replay from 0 and double-count.
+func TestBuildDecisionModel_RealMemoryProjectionIsCheckpointed(t *testing.T) {
+	store := seed(t, 3, "UserSignedUp", nil)
+	ctx := context.Background()
+
+	proj := memory.NewCheckpointProjection(eventstore.DefaultProjection[int]{
+		Query: eventstore.QueryItem{Types: []string{"UserSignedUp"}},
+		State: 0,
+		Handlers: map[string]eventstore.HandleFunc[int]{
+			"UserSignedUp": func(count int, _ eventstore.SequencedEvent) (int, error) {
+				return count + 1, nil
+			},
+		},
+	})
+
+	// Catch the read model up to the current head (checkpoint advances to 3).
+	if err := eventstore.UpdateProjection(ctx, store, proj); err != nil {
+		t.Fatal(err)
+	}
+	if proj.State != 3 || proj.After() != 3 {
+		t.Fatalf("after catch-up: state=%d after=%d, want 3/3", proj.State, proj.After())
+	}
+
+	// Two more events arrive after the checkpoint.
+	for range 2 {
+		e, err := eventstore.NewEvent("UserSignedUp", nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	condition, err := eventstore.BuildDecisionModel(ctx, store, proj)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if proj.State != 5 {
+		t.Fatalf("expected state 5 (checkpoint honored, only events 4-5 applied), got %d", proj.State)
+	}
+	if condition.After != 5 {
+		t.Fatalf("expected After=5, got %d", condition.After)
 	}
 }

@@ -13,8 +13,8 @@ import (
 )
 
 // usernameExistsProjection returns true if the given username is already taken.
-func usernameExistsProjection(username string) eventstore.Projection[bool] {
-	return eventstore.Projection[bool]{
+func usernameExistsProjection(username string) eventstore.DefaultProjection[bool] {
+	return eventstore.DefaultProjection[bool]{
 		Query: eventstore.QueryItem{
 			Types: []string{"UserSignedUp"},
 			Tags:  map[string]string{"username": username},
@@ -62,8 +62,8 @@ func ExampleBuildDecisionModel() {
 
 // totalUsersProjection is a read model that counts all signed-up users.
 // Unlike decision model projections, it is long-lived and incrementally updated.
-func totalUsersProjection() *memory.Projection[int] {
-	return memory.NewProjection(eventstore.Projection[int]{
+func totalUsersProjection() *memory.CheckpointProjection[int] {
+	return memory.NewCheckpointProjection(eventstore.DefaultProjection[int]{
 		Query: eventstore.QueryItem{
 			Types: []string{"UserSignedUp"},
 		},

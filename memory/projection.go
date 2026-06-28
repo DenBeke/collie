@@ -7,27 +7,28 @@ import (
 	"eventstore"
 )
 
-// Projection is an in-memory [eventstore.CheckpointProjector]. It wraps a
-// [eventstore.Projection] and tracks the stream position so that
+// CheckpointProjection is an in-memory [eventstore.CheckpointProjection]. It
+// wraps a [eventstore.DefaultProjection] and tracks the stream position so that
 // [eventstore.UpdateProjection] only processes new events on each call.
-type Projection[S any] struct {
-	eventstore.Projection[S]
+type CheckpointProjection[S any] struct {
+	eventstore.DefaultProjection[S]
 	position uint64
 }
 
-// NewProjection returns an in-memory [Projection] that starts at position 0.
-func NewProjection[S any](p eventstore.Projection[S]) *Projection[S] {
-	return &Projection[S]{Projection: p}
+// NewCheckpointProjection returns an in-memory [CheckpointProjection] that
+// starts at position 0.
+func NewCheckpointProjection[S any](p eventstore.DefaultProjection[S]) *CheckpointProjection[S] {
+	return &CheckpointProjection[S]{DefaultProjection: p}
 }
 
 // After returns the sequence number of the last applied event.
-func (p *Projection[S]) After() int64 {
-	return int64(p.position)
+func (p *CheckpointProjection[S]) After() uint64 {
+	return p.position
 }
 
 // Apply applies a single event and advances the checkpoint.
-func (p *Projection[S]) Apply(ctx context.Context, e eventstore.SequencedEvent) error {
-	err := p.Projection.Apply(ctx, e)
+func (p *CheckpointProjection[S]) Apply(ctx context.Context, e eventstore.SequencedEvent) error {
+	err := p.DefaultProjection.Apply(ctx, e)
 	if err != nil {
 		return fmt.Errorf("could not apply event: %w", err)
 	}

@@ -11,8 +11,8 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// Compile-time check that RowProjection implements CheckpointProjector.
-var _ eventstore.CheckpointProjector = (*RowProjection[any])(nil)
+// Compile-time check that RowProjection implements CheckpointProjection.
+var _ eventstore.CheckpointProjection = (*RowProjection[any])(nil)
 
 // RowHandler defines how events map to individual rows in a [RowProjection].
 // Each event produces a key identifying which row to update and a
@@ -27,7 +27,7 @@ type RowHandler[V any] interface {
 	Apply(eventstore.SequencedEvent, *V) (*V, error)
 }
 
-// RowProjection is a postgres-backed [eventstore.CheckpointProjector] that
+// RowProjection is a postgres-backed [eventstore.CheckpointProjection] that
 // stores one row per entity. It does not keep the full projection in memory —
 // each [Apply] loads the affected row, calls the handler, and writes it back.
 type RowProjection[V any] struct {
@@ -60,8 +60,8 @@ func (p *RowProjection[V]) EventQuery() eventstore.QueryItem {
 }
 
 // After returns the sequence number of the last applied event.
-func (p *RowProjection[V]) After() int64 {
-	return int64(p.position)
+func (p *RowProjection[V]) After() uint64 {
+	return p.position
 }
 
 // Apply extracts the row key, loads the current value, calls the handler, and

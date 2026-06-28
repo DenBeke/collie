@@ -6,30 +6,15 @@ import (
 	"math"
 )
 
-// Projector is satisfied by *Projection[S] for any S, or any custom type that
-// can apply events and report its query.
-type Projector interface {
-	EventQuery() QueryItem
-	Apply(context.Context, SequencedEvent) error
-}
-
-// CheckpointedProjector is an optional extension of Projector for stored
-// decision models. When a Projector also implements this interface,
-// BuildDecisionModel skips events the projection has already processed.
-type CheckpointedProjector interface {
-	Projector
-	After() uint64
-}
-
 // BuildDecisionModel reads events matching all projections in one pass, applies
 // each event to the projections it matches, and returns an AppendCondition
 // whose Query is the union of all projection queries and whose After is the
 // highest sequence number seen.
 //
-// Projections that implement CheckpointedProjector are treated as stored
+// Projections that implement CheckpointProjection are treated as stored
 // decision models: events at or before their checkpoint are skipped, and the
 // read starts from the lowest checkpoint across all projections.
-func BuildDecisionModel(ctx context.Context, store Store, projections ...Projector) (*AppendCondition, error) {
+func BuildDecisionModel(ctx context.Context, store Store, projections ...Projection) (*AppendCondition, error) {
 	var query Query
 	for _, projection := range projections {
 		query = append(query, projection.EventQuery())
@@ -48,7 +33,7 @@ func BuildDecisionModel(ctx context.Context, store Store, projections ...Project
 			if !projection.EventQuery().Matches(event) {
 				continue
 			}
-			if stored, ok := projection.(CheckpointedProjector); ok && event.SequenceNumber <= stored.After() {
+			if stored, ok := projection.(CheckpointProjection); ok && event.SequenceNumber <= stored.After() {
 				continue
 			}
 			if err := projection.Apply(ctx, event); err != nil {
@@ -70,10 +55,10 @@ func BuildDecisionModel(ctx context.Context, store Store, projections ...Project
 // and without maxAfter the AppendCondition would get After=0 ("reject if ANY
 // matching event exists"), which is wrong. maxAfter preserves the fact that we
 // already know about events up to that point.
-func readOffset(projections []Projector) (minAfter, maxAfter uint64) {
+func readOffset(projections []Projection) (minAfter, maxAfter uint64) {
 	minAfter = math.MaxUint64
 	for _, projection := range projections {
-		stored, ok := projection.(CheckpointedProjector)
+		stored, ok := projection.(CheckpointProjection)
 		if !ok {
 			return 0, 0 // fresh projection → full replay
 		}

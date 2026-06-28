@@ -11,28 +11,28 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// Compile-time check that Projection implements CheckpointProjector.
-var _ eventstore.CheckpointProjector = (*Projection[any])(nil)
+// Compile-time check that CheckpointProjection implements eventstore.CheckpointProjection.
+var _ eventstore.CheckpointProjection = (*CheckpointProjection[any])(nil)
 
-// Projection is a postgres-backed [eventstore.CheckpointProjector] that keeps
-// the full projection state in memory and persists it to the database on every
-// applied event. On construction it loads existing state from the database,
+// CheckpointProjection is a postgres-backed [eventstore.CheckpointProjection] that
+// keeps the full projection state in memory and persists it to the database on
+// every applied event. On construction it loads existing state from the database,
 // allowing it to survive restarts.
-type Projection[S any] struct {
-	eventstore.Projection[S]
+type CheckpointProjection[S any] struct {
+	eventstore.DefaultProjection[S]
 	db       *gorm.DB
 	name     string
 	position uint64
 }
 
-// NewProjection creates a postgres-backed projection. If a snapshot exists in
-// the database for the given name, the state and position are restored from it.
-// Otherwise the projection starts fresh with the initial state from p.
-func NewProjection[S any](db *gorm.DB, name string, p eventstore.Projection[S]) (*Projection[S], error) {
-	proj := &Projection[S]{
-		Projection: p,
-		db:         db,
-		name:       name,
+// NewCheckpointProjection creates a postgres-backed projection. If a snapshot
+// exists in the database for the given name, the state and position are restored
+// from it. Otherwise the projection starts fresh with the initial state from p.
+func NewCheckpointProjection[S any](db *gorm.DB, name string, p eventstore.DefaultProjection[S]) (*CheckpointProjection[S], error) {
+	proj := &CheckpointProjection[S]{
+		DefaultProjection: p,
+		db:                db,
+		name:              name,
 	}
 	err := proj.load()
 	if err != nil {
@@ -42,14 +42,14 @@ func NewProjection[S any](db *gorm.DB, name string, p eventstore.Projection[S]) 
 }
 
 // After returns the sequence number of the last applied event.
-func (p *Projection[S]) After() int64 {
-	return int64(p.position)
+func (p *CheckpointProjection[S]) After() uint64 {
+	return p.position
 }
 
 // Apply applies a single event to the in-memory state and persists the
 // snapshot and checkpoint to the database in a single transaction.
-func (p *Projection[S]) Apply(ctx context.Context, e eventstore.SequencedEvent) error {
-	err := p.Projection.Apply(ctx, e)
+func (p *CheckpointProjection[S]) Apply(ctx context.Context, e eventstore.SequencedEvent) error {
+	err := p.DefaultProjection.Apply(ctx, e)
 	if err != nil {
 		return fmt.Errorf("could not apply %s event: %w", e.Type, err)
 	}
@@ -59,7 +59,7 @@ func (p *Projection[S]) Apply(ctx context.Context, e eventstore.SequencedEvent) 
 
 // Reset deletes the snapshot and checkpoint from the database and resets the
 // in-memory state to its zero value.
-func (p *Projection[S]) Reset(ctx context.Context) error {
+func (p *CheckpointProjection[S]) Reset(ctx context.Context) error {
 	err := p.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		err := tx.Delete(&projectionSnapshot{}, "projection_name = ?", p.name).Error
 		if err != nil {
@@ -80,7 +80,7 @@ func (p *Projection[S]) Reset(ctx context.Context) error {
 	return nil
 }
 
-func (p *Projection[S]) load() error {
+func (p *CheckpointProjection[S]) load() error {
 	var checkpoint projectionCheckpoint
 	err := p.db.Where("projection_name = ?", p.name).First(&checkpoint).Error
 	if err != nil {
@@ -106,7 +106,7 @@ func (p *Projection[S]) load() error {
 	return nil
 }
 
-func (p *Projection[S]) save(ctx context.Context) error {
+func (p *CheckpointProjection[S]) save(ctx context.Context) error {
 	stateBytes, err := json.Marshal(p.State)
 	if err != nil {
 		return fmt.Errorf("could not marshal projection state: %w", err)
