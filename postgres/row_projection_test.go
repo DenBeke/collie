@@ -17,7 +17,11 @@ type testProfile struct {
 type testProfileHandler struct{}
 
 func (h testProfileHandler) Key(e eventstore.SequencedEvent) (string, error) {
-	return e.Tags["profile"], nil
+	vs := e.TagValues("profile")
+	if len(vs) == 0 {
+		return "", nil
+	}
+	return vs[0], nil
 }
 
 func (h testProfileHandler) Apply(e eventstore.SequencedEvent, current *testProfile) (*testProfile, error) {
@@ -75,11 +79,11 @@ func seedProfiles(t *testing.T) (*pgstore.RowProjection[testProfile], eventstore
 			Status: p.status,
 			Order:  p.order,
 		}
-		e, err := eventstore.NewEvent("ProfileCreated", data, map[string]string{
-			"profile": p.id,
-			"tenant":  p.tenant,
-			"status":  p.status,
-		})
+		e, err := eventstore.NewEvent("ProfileCreated", data, eventstore.NewTags(
+			"profile", p.id,
+			"tenant", p.tenant,
+			"status", p.status,
+		))
 		if err != nil {
 			t.Fatalf("could not create event: %v", err)
 		}
@@ -297,10 +301,10 @@ func TestRowProjectionDeletedRowsExcluded(t *testing.T) {
 	ctx := context.Background()
 
 	// Delete profile p2 (Bob).
-	e, _ := eventstore.NewEvent("ProfileDeleted", nil, map[string]string{
-		"profile": "p2",
-		"tenant":  "t1",
-	})
+	e, _ := eventstore.NewEvent("ProfileDeleted", nil, eventstore.NewTags(
+		"profile", "p2",
+		"tenant", "t1",
+	))
 	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
 		t.Fatalf("could not append: %v", err)
 	}

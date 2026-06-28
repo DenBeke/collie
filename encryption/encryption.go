@@ -153,8 +153,8 @@ func (enc *EventEncryptor) OnRead(ctx context.Context, e *eventstore.SequencedEv
 	return nil
 }
 
-// Forget deletes all keys whose tags are a superset of the provided tags.
-func (enc *EventEncryptor) Forget(ctx context.Context, tags map[string]string) error {
+// Forget deletes all keys whose subject is a superset of the provided tags.
+func (enc *EventEncryptor) Forget(ctx context.Context, tags []eventstore.Tag) error {
 	return enc.keys.Forget(ctx, tags)
 }
 
@@ -168,16 +168,21 @@ func encryptionKeys(metadata map[string]string) []string {
 }
 
 // subjectTags extracts the subject-identifying tags from an event's tag set
-// using the provided encryption key names. Returns an error if any key name
-// does not exist in tags.
-func subjectTags(tags map[string]string, keys []string) (map[string]string, error) {
-	subject := make(map[string]string, len(keys))
+// using the provided encryption key names. A name may carry multiple values
+// (e.g. a message between two users), all of which become part of the subject.
+// Returns ErrMissingTag if a name has no value on the event.
+func subjectTags(tags []eventstore.Tag, keys []string) ([]eventstore.Tag, error) {
+	var subject []eventstore.Tag
 	for _, name := range keys {
-		v, ok := tags[name]
-		if !ok {
+		before := len(subject)
+		for _, t := range tags {
+			if t.Key == name {
+				subject = append(subject, t)
+			}
+		}
+		if len(subject) == before {
 			return nil, fmt.Errorf("%w: %q", ErrMissingTag, name)
 		}
-		subject[name] = v
 	}
 	return subject, nil
 }

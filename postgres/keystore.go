@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"eventstore"
 	"eventstore/encryption"
 
 	"gorm.io/gorm"
@@ -42,7 +43,7 @@ func MigrateKeyStore(db *gorm.DB) error {
 
 // GetOrCreate returns the encryption key for the exact tag set,
 // creating a new random 32-byte key if none exists.
-func (s *KeyStore) GetOrCreate(ctx context.Context, tags map[string]string) ([]byte, error) {
+func (s *KeyStore) GetOrCreate(ctx context.Context, tags []eventstore.Tag) ([]byte, error) {
 	id := encryption.TagID(tags)
 
 	var existing encryptionKey
@@ -89,7 +90,7 @@ func (s *KeyStore) GetOrCreate(ctx context.Context, tags map[string]string) ([]b
 
 // Get returns the encryption key for the exact tag set.
 // Returns (nil, false, nil) if the key does not exist (e.g. it was forgotten).
-func (s *KeyStore) Get(ctx context.Context, tags map[string]string) ([]byte, bool, error) {
+func (s *KeyStore) Get(ctx context.Context, tags []eventstore.Tag) ([]byte, bool, error) {
 	id := encryption.TagID(tags)
 
 	var existing encryptionKey
@@ -105,7 +106,7 @@ func (s *KeyStore) Get(ctx context.Context, tags map[string]string) ([]byte, boo
 
 // Forget deletes all keys whose tag sets are a superset of the provided tags.
 // Uses PostgreSQL's JSONB containment operator (@>) for superset matching.
-func (s *KeyStore) Forget(ctx context.Context, tags map[string]string) error {
+func (s *KeyStore) Forget(ctx context.Context, tags []eventstore.Tag) error {
 	tagsJSON, err := json.Marshal(tags)
 	if err != nil {
 		return fmt.Errorf("could not marshal tags for forget: %w", err)

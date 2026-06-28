@@ -109,7 +109,7 @@ func (p *RowProjection[V]) Apply(ctx context.Context, e eventstore.SequencedEven
 			if err != nil {
 				return fmt.Errorf("could not marshal row %q: %w", key, err)
 			}
-			tagsBytes, err := json.Marshal(e.Tags)
+			tagsBytes, err := json.Marshal(tagsToMap(e.Tags))
 			if err != nil {
 				return fmt.Errorf("could not marshal tags for row %q: %w", key, err)
 			}
@@ -255,4 +255,17 @@ func (p *RowProjection[V]) loadRow(tx *gorm.DB, key string) (*V, error) {
 		return nil, fmt.Errorf("could not unmarshal row value: %w", err)
 	}
 	return &v, nil
+}
+
+// tagsToMap collapses an event's tags into a single-value map (first value per
+// key) — the form projection rows store, so List and MigrateIndexes can keep
+// filtering with tags->>'key'.
+func tagsToMap(tags []eventstore.Tag) map[string]string {
+	m := make(map[string]string, len(tags))
+	for _, t := range tags {
+		if _, ok := m[t.Key]; !ok {
+			m[t.Key] = t.Value
+		}
+	}
+	return m
 }

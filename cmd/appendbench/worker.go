@@ -66,7 +66,7 @@ func eventBody(cfg *Config) []byte {
 func entityID(id int) string { return entityIDPrefix + strconv.Itoa(id) }
 
 func entityTagJSON(id int) string {
-	b, _ := json.Marshal(map[string]string{entityTagKey: entityID(id)})
+	b, _ := json.Marshal(eventstore.NewTags(entityTagKey, entityID(id)))
 	return string(b)
 }
 
@@ -79,7 +79,7 @@ func logErr(err error) {
 }
 
 func makeEvents(cfg *Config, id int) []eventstore.Event {
-	tag := map[string]string{entityTagKey: entityID(id)}
+	tag := eventstore.NewTags(entityTagKey, entityID(id))
 	events := make([]eventstore.Event, cfg.EventsPerAppend)
 	for i := range events {
 		events[i] = eventstore.Event{Type: eventType, Data: eventBody(cfg), Tags: tag}
@@ -146,7 +146,7 @@ func runWorker(ctx context.Context, cancel context.CancelFunc, idx int, store *p
 func doOp(ctx context.Context, store *pgstore.Store, db *gorm.DB, cfg *Config, id int, rec bool, st *workerStats) (attempts int, success bool) {
 	// Include the type so the per-boundary lock key (type,tag,value) is defined;
 	// harmless for the global path (just a more selective check).
-	query := eventstore.Query{{Types: []string{eventType}, Tags: map[string]string{entityTagKey: entityID(id)}}}
+	query := eventstore.Query{{Types: []string{eventType}, Tags: eventstore.NewTags(entityTagKey, entityID(id))}}
 
 	switch cfg.Condition {
 	case condNone:
@@ -326,12 +326,10 @@ func doHead(ctx context.Context, store *pgstore.Store, db *gorm.DB, cfg *Config,
 // NOTE: this duplicates the single-key predicate shape from
 // postgres.applyQuery; keep in sync if the tag encoding there changes.
 func readHead(ctx context.Context, db *gorm.DB, indexed bool, eid, entityJSON string) (uint64, error) {
-	q := db.WithContext(ctx).Table("events")
-	if indexed {
-		q = q.Where("tags->>'"+entityTagKey+"' = ?", eid)
-	} else {
-		q = q.Where("tags @> ?::jsonb", entityJSON)
-	}
+	// Tags are a jsonb array now, so the GIN @> path is the only one (the per-key
+	// tags->>'key' B-tree was removed). indexed/eid are unused but kept so the
+	// caller and report columns don't change.
+	q := db.WithContext(ctx).Table("events").Where("tags @> ?::jsonb", entityJSON)
 	var head uint64
 	err := q.Select("COALESCE(MAX(sequence_number), 0)").Row().Scan(&head)
 	return head, err

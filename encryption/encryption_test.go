@@ -71,9 +71,9 @@ func TestEncryptedRoundTrip(t *testing.T) {
 	}
 	userData := user{Name: "Alice", Email: "alice@example.com"}
 
-	e, err := eventstore.NewEvent("UserSignedUp", userData, map[string]string{
-		"userId": "user-123",
-	}, encryption.WithEncryptionKeys("userId"))
+	e, err := eventstore.NewEvent("UserSignedUp", userData, eventstore.NewTags(
+		"userId", "user-123",
+	), encryption.WithEncryptionKeys("userId"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,9 +106,9 @@ func TestEncryptedAtRest(t *testing.T) {
 
 	ctx := context.Background()
 
-	e, err := eventstore.NewEvent("UserSignedUp", "secret-data", map[string]string{
-		"userId": "user-123",
-	}, encryption.WithEncryptionKeys("userId"))
+	e, err := eventstore.NewEvent("UserSignedUp", "secret-data", eventstore.NewTags(
+		"userId", "user-123",
+	), encryption.WithEncryptionKeys("userId"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,9 +138,9 @@ func TestForgetRedactsData(t *testing.T) {
 	store, enc := newStore()
 	ctx := context.Background()
 
-	e, err := eventstore.NewEvent("UserSignedUp", "alice-data", map[string]string{
-		"userId": "user-123",
-	}, encryption.WithEncryptionKeys("userId"))
+	e, err := eventstore.NewEvent("UserSignedUp", "alice-data", eventstore.NewTags(
+		"userId", "user-123",
+	), encryption.WithEncryptionKeys("userId"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,7 +149,7 @@ func TestForgetRedactsData(t *testing.T) {
 	}
 
 	// Forget the user — called directly on the middleware
-	if err := enc.Forget(ctx, map[string]string{"userId": "user-123"}); err != nil {
+	if err := enc.Forget(ctx, eventstore.NewTags("userId", "user-123")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -165,7 +165,7 @@ func TestForgetRedactsData(t *testing.T) {
 	if events[0].Type != "UserSignedUp" {
 		t.Fatalf("expected type preserved, got %s", events[0].Type)
 	}
-	if events[0].Tags["userId"] != "user-123" {
+	if vs := events[0].TagValues("userId"); len(vs) != 1 || vs[0] != "user-123" {
 		t.Fatalf("expected tags preserved, got %v", events[0].Tags)
 	}
 	if events[0].SequenceNumber != 1 {
@@ -177,17 +177,17 @@ func TestForgetDoesNotAffectOtherSubjects(t *testing.T) {
 	store, enc := newStore()
 	ctx := context.Background()
 
-	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", map[string]string{
-		"userId": "user-1",
-	}, encryption.WithEncryptionKeys("userId"))
-	e2, _ := eventstore.NewEvent("UserSignedUp", "bob", map[string]string{
-		"userId": "user-2",
-	}, encryption.WithEncryptionKeys("userId"))
+	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", eventstore.NewTags(
+		"userId", "user-1",
+	), encryption.WithEncryptionKeys("userId"))
+	e2, _ := eventstore.NewEvent("UserSignedUp", "bob", eventstore.NewTags(
+		"userId", "user-2",
+	), encryption.WithEncryptionKeys("userId"))
 	if err := store.Append(ctx, []eventstore.Event{e1, e2}, nil); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := enc.Forget(ctx, map[string]string{"userId": "user-1"}); err != nil {
+	if err := enc.Forget(ctx, eventstore.NewTags("userId", "user-1")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -213,13 +213,13 @@ func TestSameSubjectSameKey(t *testing.T) {
 	store, enc := newStore()
 	ctx := context.Background()
 
-	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", map[string]string{
-		"userId": "user-1",
-	}, encryption.WithEncryptionKeys("userId"))
-	e2, _ := eventstore.NewEvent("OrderPlaced", "order-data", map[string]string{
-		"userId":  "user-1",
-		"orderId": "order-99",
-	}, encryption.WithEncryptionKeys("userId"))
+	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", eventstore.NewTags(
+		"userId", "user-1",
+	), encryption.WithEncryptionKeys("userId"))
+	e2, _ := eventstore.NewEvent("OrderPlaced", "order-data", eventstore.NewTags(
+		"userId", "user-1",
+		"orderId", "order-99",
+	), encryption.WithEncryptionKeys("userId"))
 	if err := store.Append(ctx, []eventstore.Event{e1, e2}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +229,7 @@ func TestSameSubjectSameKey(t *testing.T) {
 		t.Fatalf("expected 2 events, got %d", len(events))
 	}
 
-	if err := enc.Forget(ctx, map[string]string{"userId": "user-1"}); err != nil {
+	if err := enc.Forget(ctx, eventstore.NewTags("userId", "user-1")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -245,10 +245,10 @@ func TestSupersetForgetWithMultiKeySubject(t *testing.T) {
 	store, enc := newStore()
 	ctx := context.Background()
 
-	e, _ := eventstore.NewEvent("FriendRequest", "request-data", map[string]string{
-		"senderId":   "user-1",
-		"receiverId": "user-2",
-	}, encryption.WithEncryptionKeys("senderId", "receiverId"))
+	e, _ := eventstore.NewEvent("FriendRequest", "request-data", eventstore.NewTags(
+		"senderId", "user-1",
+		"receiverId", "user-2",
+	), encryption.WithEncryptionKeys("senderId", "receiverId"))
 	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -259,7 +259,7 @@ func TestSupersetForgetWithMultiKeySubject(t *testing.T) {
 		t.Fatalf("expected request-data, got %s", data)
 	}
 
-	if err := enc.Forget(ctx, map[string]string{"senderId": "user-1"}); err != nil {
+	if err := enc.Forget(ctx, eventstore.NewTags("senderId", "user-1")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -273,23 +273,23 @@ func TestAppendConditionWorksThroughEncryption(t *testing.T) {
 	store, _ := newStore()
 	ctx := context.Background()
 
-	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", map[string]string{
-		"userId": "user-1",
-	}, encryption.WithEncryptionKeys("userId"))
+	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", eventstore.NewTags(
+		"userId", "user-1",
+	), encryption.WithEncryptionKeys("userId"))
 	if err := store.Append(ctx, []eventstore.Event{e1}, nil); err != nil {
 		t.Fatal(err)
 	}
 
 	condition := &eventstore.AppendCondition{
 		Query: eventstore.Query{
-			eventstore.QueryItem{Types: []string{"UserSignedUp"}, Tags: map[string]string{"userId": "user-1"}},
+			eventstore.QueryItem{Types: []string{"UserSignedUp"}, Tags: eventstore.NewTags("userId", "user-1")},
 		},
 		After: 0,
 	}
 
-	e2, _ := eventstore.NewEvent("UserSignedUp", "alice-again", map[string]string{
-		"userId": "user-1",
-	}, encryption.WithEncryptionKeys("userId"))
+	e2, _ := eventstore.NewEvent("UserSignedUp", "alice-again", eventstore.NewTags(
+		"userId", "user-1",
+	), encryption.WithEncryptionKeys("userId"))
 	err := store.Append(ctx, []eventstore.Event{e2}, condition)
 	if err != eventstore.ErrAppendConditionViolated {
 		t.Fatalf("expected ErrAppendConditionViolated, got %v", err)
@@ -301,14 +301,14 @@ func TestMixedEncryptedAndPlainEvents(t *testing.T) {
 	ctx := context.Background()
 
 	plain, _ := eventstore.NewEvent("SystemBooted", "v1.0", nil)
-	encrypted, _ := eventstore.NewEvent("UserSignedUp", "alice", map[string]string{
-		"userId": "user-1",
-	}, encryption.WithEncryptionKeys("userId"))
+	encrypted, _ := eventstore.NewEvent("UserSignedUp", "alice", eventstore.NewTags(
+		"userId", "user-1",
+	), encryption.WithEncryptionKeys("userId"))
 	if err := store.Append(ctx, []eventstore.Event{plain, encrypted}, nil); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := enc.Forget(ctx, map[string]string{"userId": "user-1"}); err != nil {
+	if err := enc.Forget(ctx, eventstore.NewTags("userId", "user-1")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -332,9 +332,9 @@ func TestNoMiddlewarePassthrough(t *testing.T) {
 	store := memory.New()
 	ctx := context.Background()
 
-	e, _ := eventstore.NewEvent("TestEvent", "data", map[string]string{
-		"userId": "user-1",
-	}, encryption.WithEncryptionKeys("userId"))
+	e, _ := eventstore.NewEvent("TestEvent", "data", eventstore.NewTags(
+		"userId", "user-1",
+	), encryption.WithEncryptionKeys("userId"))
 	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -350,9 +350,9 @@ func TestEncryptionKeysMustReferenceExistingTags(t *testing.T) {
 	store, _ := newStore()
 	ctx := context.Background()
 
-	e, _ := eventstore.NewEvent("UserSignedUp", "alice", map[string]string{
-		"userId": "user-1",
-	}, encryption.WithEncryptionKeys("nonExistentTag"))
+	e, _ := eventstore.NewEvent("UserSignedUp", "alice", eventstore.NewTags(
+		"userId", "user-1",
+	), encryption.WithEncryptionKeys("nonExistentTag"))
 
 	err := store.Append(ctx, []eventstore.Event{e}, nil)
 	if err == nil {
@@ -398,9 +398,9 @@ func TestFieldLevelRoundTrip(t *testing.T) {
 	}
 	u := user{Name: "Alice", Email: "alice@example.com", Role: "admin"}
 
-	e, err := eventstore.NewEvent("UserSignedUp", u, map[string]string{
-		"userId": "user-1",
-	}, encryption.WithEncryptionKeys("userId"), encryption.WithEncryptedFields("name", "email"))
+	e, err := eventstore.NewEvent("UserSignedUp", u, eventstore.NewTags(
+		"userId", "user-1",
+	), encryption.WithEncryptionKeys("userId"), encryption.WithEncryptedFields("name", "email"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -434,9 +434,9 @@ func TestFieldLevelEncryptedAtRest(t *testing.T) {
 	}
 	u := user{Name: "Alice", Email: "alice@example.com", Role: "admin"}
 
-	e, _ := eventstore.NewEvent("UserSignedUp", u, map[string]string{
-		"userId": "user-1",
-	}, encryption.WithEncryptionKeys("userId"), encryption.WithEncryptedFields("email"))
+	e, _ := eventstore.NewEvent("UserSignedUp", u, eventstore.NewTags(
+		"userId", "user-1",
+	), encryption.WithEncryptionKeys("userId"), encryption.WithEncryptedFields("email"))
 	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -464,14 +464,14 @@ func TestFieldLevelForgetRedactsOnlyEncryptedFields(t *testing.T) {
 	email := "alice@example.com"
 	u := user{Name: "Alice", Email: &email, Role: "admin"}
 
-	e, _ := eventstore.NewEvent("UserSignedUp", u, map[string]string{
-		"userId": "user-1",
-	}, encryption.WithEncryptionKeys("userId"), encryption.WithEncryptedFields("name", "email"))
+	e, _ := eventstore.NewEvent("UserSignedUp", u, eventstore.NewTags(
+		"userId", "user-1",
+	), encryption.WithEncryptionKeys("userId"), encryption.WithEncryptedFields("name", "email"))
 	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := enc.Forget(ctx, map[string]string{"userId": "user-1"}); err != nil {
+	if err := enc.Forget(ctx, eventstore.NewTags("userId", "user-1")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -518,9 +518,9 @@ func TestFieldLevelNestedStructRoundTrip(t *testing.T) {
 		Role:    "admin",
 	}
 
-	e, _ := eventstore.NewEvent("UserSignedUp", u, map[string]string{
-		"userId": "user-1",
-	}, encryption.WithEncryptionKeys("userId"), encryption.WithEncryptedFields("address"))
+	e, _ := eventstore.NewEvent("UserSignedUp", u, eventstore.NewTags(
+		"userId", "user-1",
+	), encryption.WithEncryptionKeys("userId"), encryption.WithEncryptedFields("address"))
 	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -543,9 +543,9 @@ func TestFieldLevelMissingFieldError(t *testing.T) {
 		Name string `json:"name"`
 	}
 
-	e, _ := eventstore.NewEvent("UserSignedUp", user{Name: "Alice"}, map[string]string{
-		"userId": "user-1",
-	}, encryption.WithEncryptionKeys("userId"), encryption.WithEncryptedFields("nonExistent"))
+	e, _ := eventstore.NewEvent("UserSignedUp", user{Name: "Alice"}, eventstore.NewTags(
+		"userId", "user-1",
+	), encryption.WithEncryptionKeys("userId"), encryption.WithEncryptedFields("nonExistent"))
 
 	err := store.Append(ctx, []eventstore.Event{e}, nil)
 	if err == nil {
@@ -564,14 +564,14 @@ func TestMixedFullBlobAndFieldLevelEvents(t *testing.T) {
 	}
 
 	// Full-blob encryption
-	fullBlob, _ := eventstore.NewEvent("UserSignedUp", "full-secret", map[string]string{
-		"userId": "user-1",
-	}, encryption.WithEncryptionKeys("userId"))
+	fullBlob, _ := eventstore.NewEvent("UserSignedUp", "full-secret", eventstore.NewTags(
+		"userId", "user-1",
+	), encryption.WithEncryptionKeys("userId"))
 
 	// Field-level encryption
-	fieldLevel, _ := eventstore.NewEvent("ProfileUpdated", user{Name: "Alice", Email: "a@b.c", Role: "admin"}, map[string]string{
-		"userId": "user-2",
-	}, encryption.WithEncryptionKeys("userId"), encryption.WithEncryptedFields("email"))
+	fieldLevel, _ := eventstore.NewEvent("ProfileUpdated", user{Name: "Alice", Email: "a@b.c", Role: "admin"}, eventstore.NewTags(
+		"userId", "user-2",
+	), encryption.WithEncryptionKeys("userId"), encryption.WithEncryptedFields("email"))
 
 	if err := store.Append(ctx, []eventstore.Event{fullBlob, fieldLevel}, nil); err != nil {
 		t.Fatal(err)
@@ -584,7 +584,7 @@ func TestMixedFullBlobAndFieldLevelEvents(t *testing.T) {
 	}
 
 	// Forget user-1 (full-blob)
-	if err := enc.Forget(ctx, map[string]string{"userId": "user-1"}); err != nil {
+	if err := enc.Forget(ctx, eventstore.NewTags("userId", "user-1")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -605,5 +605,71 @@ func TestMixedFullBlobAndFieldLevelEvents(t *testing.T) {
 	}
 	if data.Email != "a@b.c" {
 		t.Fatalf("expected field-level event unaffected, got email=%s", data.Email)
+	}
+}
+
+// TestEncryptedMultiUserSubject encrypts a message whose subject carries the same
+// key twice (a message between two users) and a sibling note touching one of them.
+// Both decrypt while keys exist; forgetting one participant shreds both, because
+// each subject is a superset of {user: user-A}.
+func TestEncryptedMultiUserSubject(t *testing.T) {
+	store, enc := newStore()
+	ctx := context.Background()
+
+	msg, err := eventstore.NewEvent("MessageSent", "hello", eventstore.NewTags("user", "user-A", "user", "user-B"),
+		encryption.WithEncryptionKeys("user"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	note, err := eventstore.NewEvent("NoteAdded", "private", eventstore.NewTags("user", "user-A"),
+		encryption.WithEncryptionKeys("user"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Append(ctx, []eventstore.Event{msg, note}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, e := range collectEvents(t, store, nil) {
+		if encryption.IsRedacted(e) {
+			t.Fatalf("event %s unexpectedly redacted before forget", e.Type)
+		}
+		if data, err := eventstore.EventData[string](e); err != nil || data == "" {
+			t.Fatalf("decrypt %s: data=%q err=%v", e.Type, data, err)
+		}
+	}
+
+	if err := enc.Forget(ctx, eventstore.NewTags("user", "user-A")); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, e := range collectEvents(t, store, nil) {
+		if !encryption.IsRedacted(e) {
+			t.Errorf("event %s should be redacted after forgetting user-A", e.Type)
+		}
+	}
+}
+
+// TestEncryptedMultiUserForgetEither proves a shared two-user message is shredded
+// when EITHER participant is forgotten.
+func TestEncryptedMultiUserForgetEither(t *testing.T) {
+	for _, forget := range []string{"user-A", "user-B"} {
+		t.Run("forget_"+forget, func(t *testing.T) {
+			store, enc := newStore()
+			ctx := context.Background()
+
+			msg, _ := eventstore.NewEvent("MessageSent", "hello", eventstore.NewTags("user", "user-A", "user", "user-B"),
+				encryption.WithEncryptionKeys("user"))
+			if err := store.Append(ctx, []eventstore.Event{msg}, nil); err != nil {
+				t.Fatal(err)
+			}
+			if err := enc.Forget(ctx, eventstore.NewTags("user", forget)); err != nil {
+				t.Fatal(err)
+			}
+			events := collectEvents(t, store, nil)
+			if len(events) != 1 || !encryption.IsRedacted(events[0]) {
+				t.Fatalf("message should be redacted after forgetting %s", forget)
+			}
+		})
 	}
 }

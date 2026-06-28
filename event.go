@@ -6,14 +6,55 @@ import (
 	"time"
 )
 
+// Tag is a single key/value label on an event, used for filtering and for
+// defining consistency boundaries. An event may carry the same key more than
+// once (e.g. a transfer tagged with two account ids), so tags are an ordered
+// list rather than a map.
+type Tag struct {
+	Key   string `json:"key"`
+	Value string `json:"value"`
+}
+
+// NewTag builds a single Tag.
+func NewTag(key, value string) Tag {
+	return Tag{Key: key, Value: value}
+}
+
+// NewTags builds a []Tag from alternating key, value arguments:
+//
+//	NewTags("student", "s1", "course", "c1")
+//
+// A trailing odd argument is ignored.
+func NewTags(keyValuePairs ...string) []Tag {
+	tags := make([]Tag, 0, len(keyValuePairs)/2)
+	for i := 0; i+1 < len(keyValuePairs); i += 2 {
+		tags = append(tags, Tag{Key: keyValuePairs[i], Value: keyValuePairs[i+1]})
+	}
+	return tags
+}
+
 // Event represents a domain event to be appended to the store.
-// Tags are optional key-value metadata used for filtering and partitioning.
+// Tags are optional key/value labels used for filtering and for defining
+// consistency boundaries; the same key may appear more than once.
 // Metadata carries middleware-specific data (e.g. encryption keys, blob refs).
 type Event struct {
 	Type     string
 	Data     []byte
-	Tags     map[string]string
+	Tags     []Tag
 	Metadata map[string]string
+}
+
+// TagValues returns all values of tags with the given key, in order, or nil if
+// the event has no such tag. A key may appear more than once (e.g. an event
+// touching two accounts), so this returns every match rather than one value.
+func (e Event) TagValues(key string) []string {
+	var values []string
+	for _, t := range e.Tags {
+		if t.Key == key {
+			values = append(values, t.Value)
+		}
+	}
+	return values
 }
 
 // SequencedEvent is an Event that has been persisted and assigned a unique,
@@ -38,7 +79,7 @@ func EventData[T any](e SequencedEvent) (T, error) {
 type EventOption func(*Event)
 
 // NewEvent creates an Event by JSON-marshaling data into the Data field.
-func NewEvent(eventType string, data any, tags map[string]string, opts ...EventOption) (Event, error) {
+func NewEvent(eventType string, data any, tags []Tag, opts ...EventOption) (Event, error) {
 	bytes, err := json.Marshal(data)
 	if err != nil {
 		return Event{}, fmt.Errorf("could not marshal event data: %w", err)

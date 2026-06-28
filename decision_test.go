@@ -24,7 +24,7 @@ type storedProjection[S any] struct {
 func (s *storedProjection[S]) After() uint64 { return s.after }
 
 // seed appends n events of the given type and returns the store.
-func seed(t *testing.T, n int, eventType string, tags map[string]string) *memory.Store {
+func seed(t *testing.T, n int, eventType string, tags []eventstore.Tag) *memory.Store {
 	t.Helper()
 	store := memory.New()
 	ctx := context.Background()
@@ -41,7 +41,7 @@ func seed(t *testing.T, n int, eventType string, tags map[string]string) *memory
 }
 
 func TestBuildDecisionModel_BackwardCompatible(t *testing.T) {
-	store := seed(t, 3, "UserSignedUp", map[string]string{"username": "alice"})
+	store := seed(t, 3, "UserSignedUp", eventstore.NewTags("username", "alice"))
 	ctx := context.Background()
 
 	counter := eventstore.DefaultProjection[int]{

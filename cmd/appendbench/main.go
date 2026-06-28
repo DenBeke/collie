@@ -76,9 +76,6 @@ func run() error {
 	}()
 
 	opts := []pgstore.Option{pgstore.WithBatchSize(cfg.BatchSize)}
-	if cfg.IndexedTags {
-		opts = append(opts, pgstore.WithIndexedTags(entityTagKey))
-	}
 	store := pgstore.New(db, opts...)
 	if cfg.Migrate {
 		if err := store.Migrate(); err != nil {

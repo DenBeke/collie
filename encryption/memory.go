@@ -3,11 +3,14 @@ package encryption
 import (
 	"context"
 	"crypto/rand"
+	"slices"
 	"sync"
+
+	"eventstore"
 )
 
 type memoryKey struct {
-	tags map[string]string
+	tags []eventstore.Tag
 	key  []byte
 }
 
@@ -22,9 +25,9 @@ func NewMemoryKeyStore() *MemoryKeyStore {
 	return &MemoryKeyStore{keys: make(map[string]memoryKey)}
 }
 
-// GetOrCreate returns the key for the tag set, generating a new one if needed.
-func (s *MemoryKeyStore) GetOrCreate(_ context.Context, tags map[string]string) ([]byte, error) {
-	id := TagID(tags)
+// GetOrCreate returns the key for the subject, generating a new one if needed.
+func (s *MemoryKeyStore) GetOrCreate(_ context.Context, subject []eventstore.Tag) ([]byte, error) {
+	id := TagID(subject)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if entry, ok := s.keys[id]; ok {
@@ -34,13 +37,13 @@ func (s *MemoryKeyStore) GetOrCreate(_ context.Context, tags map[string]string) 
 	if _, err := rand.Read(key); err != nil {
 		return nil, err
 	}
-	s.keys[id] = memoryKey{tags: copyTags(tags), key: key}
+	s.keys[id] = memoryKey{tags: canonicalTags(subject), key: key}
 	return key, nil
 }
 
-// Get returns the key for the exact tag set, or (nil, false, nil) if absent.
-func (s *MemoryKeyStore) Get(_ context.Context, tags map[string]string) ([]byte, bool, error) {
-	id := TagID(tags)
+// Get returns the key for the exact subject, or (nil, false, nil) if absent.
+func (s *MemoryKeyStore) Get(_ context.Context, subject []eventstore.Tag) ([]byte, bool, error) {
+	id := TagID(subject)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	entry, ok := s.keys[id]
@@ -50,8 +53,8 @@ func (s *MemoryKeyStore) Get(_ context.Context, tags map[string]string) ([]byte,
 	return entry.key, true, nil
 }
 
-// Forget deletes all keys whose tag sets are a superset of the provided tags.
-func (s *MemoryKeyStore) Forget(_ context.Context, tags map[string]string) error {
+// Forget deletes all keys whose subject is a superset of the provided tags.
+func (s *MemoryKeyStore) Forget(_ context.Context, tags []eventstore.Tag) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for id, entry := range s.keys {
@@ -62,20 +65,12 @@ func (s *MemoryKeyStore) Forget(_ context.Context, tags map[string]string) error
 	return nil
 }
 
-// containsAll returns true if superset contains every key-value pair in subset.
-func containsAll(superset, subset map[string]string) bool {
-	for k, v := range subset {
-		if superset[k] != v {
+// containsAll returns true if superset contains every tag in subset.
+func containsAll(superset, subset []eventstore.Tag) bool {
+	for _, t := range subset {
+		if !slices.Contains(superset, t) {
 			return false
 		}
 	}
 	return true
-}
-
-func copyTags(tags map[string]string) map[string]string {
-	cp := make(map[string]string, len(tags))
-	for k, v := range tags {
-		cp[k] = v
-	}
-	return cp
 }

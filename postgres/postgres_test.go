@@ -105,8 +105,8 @@ func TestAppendAndRead(t *testing.T) {
 	store := setupStore(t)
 	ctx := context.Background()
 
-	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", map[string]string{"username": "alice"})
-	e2, _ := eventstore.NewEvent("UserSignedUp", "bob", map[string]string{"username": "bob"})
+	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", eventstore.NewTags("username", "alice"))
+	e2, _ := eventstore.NewEvent("UserSignedUp", "bob", eventstore.NewTags("username", "bob"))
 
 	if err := store.Append(ctx, []eventstore.Event{e1, e2}, nil); err != nil {
 		t.Fatalf("append failed: %v", err)
@@ -126,11 +126,11 @@ func TestAppendAndRead(t *testing.T) {
 	if events[0].Type != "UserSignedUp" {
 		t.Errorf("expected type UserSignedUp, got %s", events[0].Type)
 	}
-	if events[0].Tags["username"] != "alice" {
-		t.Errorf("expected tag username=alice, got %s", events[0].Tags["username"])
+	if vs := events[0].TagValues("username"); len(vs) != 1 || vs[0] != "alice" {
+		t.Errorf("expected tag username=alice, got %v", vs)
 	}
-	if events[1].Tags["username"] != "bob" {
-		t.Errorf("expected tag username=bob, got %s", events[1].Tags["username"])
+	if vs := events[1].TagValues("username"); len(vs) != 1 || vs[0] != "bob" {
+		t.Errorf("expected tag username=bob, got %v", vs)
 	}
 	if events[0].SequenceNumber >= events[1].SequenceNumber {
 		t.Errorf("sequence numbers should be increasing")
@@ -141,7 +141,7 @@ func TestAppendConditionPasses(t *testing.T) {
 	store := setupStore(t)
 	ctx := context.Background()
 
-	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", map[string]string{"username": "alice"})
+	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", eventstore.NewTags("username", "alice"))
 	if err := store.Append(ctx, []eventstore.Event{e1}, nil); err != nil {
 		t.Fatalf("append failed: %v", err)
 	}
@@ -149,12 +149,12 @@ func TestAppendConditionPasses(t *testing.T) {
 	condition := &eventstore.AppendCondition{
 		Query: eventstore.Query{{
 			Types: []string{"UserSignedUp"},
-			Tags:  map[string]string{"username": "bob"},
+			Tags:  eventstore.NewTags("username", "bob"),
 		}},
 		After: 0,
 	}
 
-	e2, _ := eventstore.NewEvent("UserSignedUp", "bob", map[string]string{"username": "bob"})
+	e2, _ := eventstore.NewEvent("UserSignedUp", "bob", eventstore.NewTags("username", "bob"))
 	if err := store.Append(ctx, []eventstore.Event{e2}, condition); err != nil {
 		t.Fatalf("expected append to succeed, got: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestAppendConditionViolated(t *testing.T) {
 	store := setupStore(t)
 	ctx := context.Background()
 
-	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", map[string]string{"username": "alice"})
+	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", eventstore.NewTags("username", "alice"))
 	if err := store.Append(ctx, []eventstore.Event{e1}, nil); err != nil {
 		t.Fatalf("append failed: %v", err)
 	}
@@ -172,12 +172,12 @@ func TestAppendConditionViolated(t *testing.T) {
 	condition := &eventstore.AppendCondition{
 		Query: eventstore.Query{{
 			Types: []string{"UserSignedUp"},
-			Tags:  map[string]string{"username": "alice"},
+			Tags:  eventstore.NewTags("username", "alice"),
 		}},
 		After: 0,
 	}
 
-	e2, _ := eventstore.NewEvent("UserSignedUp", "alice2", map[string]string{"username": "alice"})
+	e2, _ := eventstore.NewEvent("UserSignedUp", "alice2", eventstore.NewTags("username", "alice"))
 	err := store.Append(ctx, []eventstore.Event{e2}, condition)
 	if err != eventstore.ErrAppendConditionViolated {
 		t.Fatalf("expected ErrAppendConditionViolated, got: %v", err)
@@ -188,14 +188,14 @@ func TestAppendConditionEmptyQueryMatchesAll(t *testing.T) {
 	store := setupStore(t)
 	ctx := context.Background()
 
-	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", map[string]string{"username": "alice"})
+	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", eventstore.NewTags("username", "alice"))
 	if err := store.Append(ctx, []eventstore.Event{e1}, nil); err != nil {
 		t.Fatalf("append failed: %v", err)
 	}
 
 	// A non-nil condition with an empty Query matches ALL events, so appending
 	// with After: 0 is rejected because an event already exists after 0.
-	e2, _ := eventstore.NewEvent("UserSignedUp", "bob", map[string]string{"username": "bob"})
+	e2, _ := eventstore.NewEvent("UserSignedUp", "bob", eventstore.NewTags("username", "bob"))
 	err := store.Append(ctx, []eventstore.Event{e2}, &eventstore.AppendCondition{Query: eventstore.Query{}, After: 0})
 	if err != eventstore.ErrAppendConditionViolated {
 		t.Fatalf("expected ErrAppendConditionViolated for empty-query match-all, got: %v", err)
@@ -219,16 +219,16 @@ func TestTagsFiltering(t *testing.T) {
 	store := setupStore(t)
 	ctx := context.Background()
 
-	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", map[string]string{"username": "alice", "tenant": "t1"})
-	e2, _ := eventstore.NewEvent("UserSignedUp", "bob", map[string]string{"username": "bob", "tenant": "t2"})
-	e3, _ := eventstore.NewEvent("UserSignedUp", "charlie", map[string]string{"username": "charlie", "tenant": "t1"})
+	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", eventstore.NewTags("username", "alice", "tenant", "t1"))
+	e2, _ := eventstore.NewEvent("UserSignedUp", "bob", eventstore.NewTags("username", "bob", "tenant", "t2"))
+	e3, _ := eventstore.NewEvent("UserSignedUp", "charlie", eventstore.NewTags("username", "charlie", "tenant", "t1"))
 	if err := store.Append(ctx, []eventstore.Event{e1, e2, e3}, nil); err != nil {
 		t.Fatalf("append failed: %v", err)
 	}
 
 	query := eventstore.Query{{
 		Types: []string{"UserSignedUp"},
-		Tags:  map[string]string{"tenant": "t1"},
+		Tags:  eventstore.NewTags("tenant", "t1"),
 	}}
 
 	var events []eventstore.SequencedEvent
@@ -303,19 +303,19 @@ func TestBatching(t *testing.T) {
 	}
 }
 
-func TestIndexedTags(t *testing.T) {
-	store := setupStore(t, pgstore.WithIndexedTags("tenant_id"))
+func TestMultiTagEventFiltering(t *testing.T) {
+	store := setupStore(t)
 	ctx := context.Background()
 
-	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", map[string]string{"tenant_id": "t1", "username": "alice"})
-	e2, _ := eventstore.NewEvent("UserSignedUp", "bob", map[string]string{"tenant_id": "t2", "username": "bob"})
-	e3, _ := eventstore.NewEvent("UserSignedUp", "charlie", map[string]string{"tenant_id": "t1", "username": "charlie"})
+	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", eventstore.NewTags("tenant_id", "t1", "username", "alice"))
+	e2, _ := eventstore.NewEvent("UserSignedUp", "bob", eventstore.NewTags("tenant_id", "t2", "username", "bob"))
+	e3, _ := eventstore.NewEvent("UserSignedUp", "charlie", eventstore.NewTags("tenant_id", "t1", "username", "charlie"))
 	if err := store.Append(ctx, []eventstore.Event{e1, e2, e3}, nil); err != nil {
 		t.Fatalf("append failed: %v", err)
 	}
 
 	query := eventstore.Query{{
-		Tags: map[string]string{"tenant_id": "t1"},
+		Tags: eventstore.NewTags("tenant_id", "t1"),
 	}}
 
 	var events []eventstore.SequencedEvent
@@ -331,7 +331,7 @@ func TestIndexedTags(t *testing.T) {
 	}
 
 	query2 := eventstore.Query{{
-		Tags: map[string]string{"username": "bob"},
+		Tags: eventstore.NewTags("username", "bob"),
 	}}
 
 	var events2 []eventstore.SequencedEvent
@@ -347,6 +347,80 @@ func TestIndexedTags(t *testing.T) {
 	}
 }
 
+// TestMultiValueTags exercises the jsonb array-containment path for events that
+// carry the same key with multiple values (a transfer touching two accounts).
+func TestMultiValueTags(t *testing.T) {
+	store := setupStore(t)
+	ctx := context.Background()
+
+	transfer, _ := eventstore.NewEvent("Transferred", nil, eventstore.NewTags("account", "A", "account", "B"))
+	other, _ := eventstore.NewEvent("Transferred", nil, eventstore.NewTags("account", "C", "account", "D"))
+	if err := store.Append(ctx, []eventstore.Event{transfer, other}, nil); err != nil {
+		t.Fatalf("append failed: %v", err)
+	}
+
+	read := func(q eventstore.Query) int {
+		t.Helper()
+		n := 0
+		for _, err := range store.Read(ctx, q, 0) {
+			if err != nil {
+				t.Fatalf("read error: %v", err)
+			}
+			n++
+		}
+		return n
+	}
+
+	if n := read(eventstore.Query{{Tags: eventstore.NewTags("account", "A")}}); n != 1 {
+		t.Errorf("touching A: got %d, want 1", n)
+	}
+	if n := read(eventstore.Query{{Tags: eventstore.NewTags("account", "B")}}); n != 1 {
+		t.Errorf("touching B: got %d, want 1", n)
+	}
+	if n := read(eventstore.Query{{Tags: eventstore.NewTags("account", "A", "account", "B")}}); n != 1 {
+		t.Errorf("touching A AND B (same event): got %d, want 1", n)
+	}
+	if n := read(eventstore.Query{{Tags: eventstore.NewTags("account", "A", "account", "C")}}); n != 0 {
+		t.Errorf("touching A AND C (no single event has both): got %d, want 0", n)
+	}
+	if n := read(eventstore.Query{{Tags: eventstore.NewTags("account", "Z")}}); n != 0 {
+		t.Errorf("touching Z: got %d, want 0", n)
+	}
+}
+
+// TestMultiValueConditionConflict checks the DCB condition fires when a new
+// append's guard query shares a value with a previously-written multi-value tag.
+func TestMultiValueConditionConflict(t *testing.T) {
+	store := setupStore(t)
+	ctx := context.Background()
+
+	t1, _ := eventstore.NewEvent("Transferred", nil, eventstore.NewTags("account", "A", "account", "B"))
+	if err := store.Append(ctx, []eventstore.Event{t1}, nil); err != nil {
+		t.Fatalf("append failed: %v", err)
+	}
+
+	t2, _ := eventstore.NewEvent("Transferred", nil, eventstore.NewTags("account", "A", "account", "C"))
+
+	// Guarded by "no Transferred touching account A since 0" — must be rejected,
+	// because t1 touched A.
+	condA := &eventstore.AppendCondition{
+		Query: eventstore.Query{{Types: []string{"Transferred"}, Tags: eventstore.NewTags("account", "A")}},
+		After: 0,
+	}
+	if err := store.Append(ctx, []eventstore.Event{t2}, condA); err != eventstore.ErrAppendConditionViolated {
+		t.Fatalf("expected ErrAppendConditionViolated for shared account-A boundary, got: %v", err)
+	}
+
+	// Guarded on an untouched account D — must succeed.
+	condD := &eventstore.AppendCondition{
+		Query: eventstore.Query{{Types: []string{"Transferred"}, Tags: eventstore.NewTags("account", "D")}},
+		After: 0,
+	}
+	if err := store.Append(ctx, []eventstore.Event{t2}, condD); err != nil {
+		t.Fatalf("expected append guarded on untouched account D to succeed, got: %v", err)
+	}
+}
+
 func TestAppendConditionConcurrency(t *testing.T) {
 	store := setupStore(t)
 	ctx := context.Background()
@@ -359,11 +433,11 @@ func TestAppendConditionConcurrency(t *testing.T) {
 	for range n {
 		go func() {
 			defer wg.Done()
-			e, _ := eventstore.NewEvent("UserSignedUp", "alice", map[string]string{"username": "alice"})
+			e, _ := eventstore.NewEvent("UserSignedUp", "alice", eventstore.NewTags("username", "alice"))
 			condition := &eventstore.AppendCondition{
 				Query: eventstore.Query{{
 					Types: []string{"UserSignedUp"},
-					Tags:  map[string]string{"username": "alice"},
+					Tags:  eventstore.NewTags("username", "alice"),
 				}},
 				After: 0,
 			}
@@ -429,11 +503,11 @@ func TestStagingSameBoundaryConcurrency(t *testing.T) {
 	for range n {
 		go func() {
 			defer wg.Done()
-			e, _ := eventstore.NewEvent("UserSignedUp", "alice", map[string]string{"username": "alice"})
+			e, _ := eventstore.NewEvent("UserSignedUp", "alice", eventstore.NewTags("username", "alice"))
 			condition := &eventstore.AppendCondition{
 				Query: eventstore.Query{{
 					Types: []string{"UserSignedUp"},
-					Tags:  map[string]string{"username": "alice"},
+					Tags:  eventstore.NewTags("username", "alice"),
 				}},
 				After: 0,
 			}
@@ -470,11 +544,11 @@ func TestStagingDisjointConcurrency(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			user := fmt.Sprintf("user-%d", i)
-			e, _ := eventstore.NewEvent("UserSignedUp", user, map[string]string{"username": user})
+			e, _ := eventstore.NewEvent("UserSignedUp", user, eventstore.NewTags("username", user))
 			condition := &eventstore.AppendCondition{
 				Query: eventstore.Query{{
 					Types: []string{"UserSignedUp"},
-					Tags:  map[string]string{"username": user},
+					Tags:  eventstore.NewTags("username", user),
 				}},
 				After: 0,
 			}
@@ -516,7 +590,7 @@ func TestStagingFlushMonotonic(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			ent := fmt.Sprintf("e-%d", i)
-			e, _ := eventstore.NewEvent("Thing", ent, map[string]string{"entity": ent})
+			e, _ := eventstore.NewEvent("Thing", ent, eventstore.NewTags("entity", ent))
 			if err := store.AppendStaging(ctx, []eventstore.Event{e}, nil); err != nil {
 				t.Errorf("append %s: %v", ent, err)
 			}
@@ -536,7 +610,8 @@ func TestStagingFlushMonotonic(t *testing.T) {
 			t.Fatalf("sequence numbers not strictly increasing: %d after %d", e.SequenceNumber, prev)
 		}
 		prev = e.SequenceNumber
-		if ent, ok := e.Tags["entity"]; ok {
+		if vs := e.TagValues("entity"); len(vs) > 0 {
+			ent := vs[0]
 			if seen[ent] {
 				t.Fatalf("duplicate event for %s", ent)
 			}
@@ -559,7 +634,7 @@ func TestStagingMultiBoundaryConsistent(t *testing.T) {
 	ctx := context.Background()
 
 	// X lands in staging (course c2), unconditional — not yet flushed to events.
-	x, _ := eventstore.NewEvent("Enrolled", nil, map[string]string{"course": "c2"})
+	x, _ := eventstore.NewEvent("Enrolled", nil, eventstore.NewTags("course", "c2"))
 	if err := store.AppendStaging(ctx, []eventstore.Event{x}, nil); err != nil {
 		t.Fatalf("append X: %v", err)
 	}
@@ -567,11 +642,11 @@ func TestStagingMultiBoundaryConsistent(t *testing.T) {
 	// Y guarded by (Enrolled@course:c2 OR Enrolled@student:s1) from After=0. X
 	// matches course:c2 and is pending in staging, so Y must conflict — even though
 	// X is not yet in events.
-	y, _ := eventstore.NewEvent("Enrolled", nil, map[string]string{"student": "s1"})
+	y, _ := eventstore.NewEvent("Enrolled", nil, eventstore.NewTags("student", "s1"))
 	cond := &eventstore.AppendCondition{
 		Query: eventstore.Query{
-			{Types: []string{"Enrolled"}, Tags: map[string]string{"course": "c2"}},
-			{Types: []string{"Enrolled"}, Tags: map[string]string{"student": "s1"}},
+			{Types: []string{"Enrolled"}, Tags: eventstore.NewTags("course", "c2")},
+			{Types: []string{"Enrolled"}, Tags: eventstore.NewTags("student", "s1")},
 		},
 		After: 0,
 	}
@@ -593,10 +668,10 @@ func TestStagingNoDeadlock(t *testing.T) {
 	for i := range n {
 		go func(i int) {
 			defer wg.Done()
-			tags := map[string]string{
-				fmt.Sprintf("slot%d", i%4):     "x",
-				fmt.Sprintf("slot%d", (i+1)%4): "x",
-			}
+			tags := eventstore.NewTags(
+				fmt.Sprintf("slot%d", i%4), "x",
+				fmt.Sprintf("slot%d", (i+1)%4), "x",
+			)
 			e, _ := eventstore.NewEvent("Slot", nil, tags)
 			errs <- store.AppendStaging(ctx, []eventstore.Event{e}, nil)
 		}(i)
@@ -618,12 +693,12 @@ func TestStagingNoDeadlock(t *testing.T) {
 func TestUnkeyableConditionRejected(t *testing.T) {
 	store := setupStore(t)
 	ctx := context.Background()
-	e, _ := eventstore.NewEvent("Thing", nil, map[string]string{"k": "v"})
+	e, _ := eventstore.NewEvent("Thing", nil, eventstore.NewTags("k", "v"))
 
 	unkeyable := []*eventstore.AppendCondition{
 		{Query: nil, After: 0}, // match-all (empty query)
-		{Query: eventstore.Query{{Tags: map[string]string{"email": "x"}}}, After: 0}, // type-less
-		{Query: eventstore.Query{{Types: []string{"Thing"}}}, After: 0},              // tag-less
+		{Query: eventstore.Query{{Tags: eventstore.NewTags("email", "x")}}, After: 0}, // type-less
+		{Query: eventstore.Query{{Types: []string{"Thing"}}}, After: 0},               // tag-less
 	}
 	for _, c := range unkeyable {
 		if err := store.AppendStaging(ctx, []eventstore.Event{e}, c); !errors.Is(err, pgstore.ErrUnkeyableCondition) {
@@ -633,7 +708,7 @@ func TestUnkeyableConditionRejected(t *testing.T) {
 
 	// A keyable condition is still accepted.
 	keyable := &eventstore.AppendCondition{
-		Query: eventstore.Query{{Types: []string{"Thing"}, Tags: map[string]string{"k": "v"}}},
+		Query: eventstore.Query{{Types: []string{"Thing"}, Tags: eventstore.NewTags("k", "v")}},
 		After: 0,
 	}
 	if err := store.AppendStaging(ctx, []eventstore.Event{e}, keyable); err != nil {
@@ -666,9 +741,9 @@ func TestPGEncryptedRoundTrip(t *testing.T) {
 	}
 	userData := user{Name: "Alice", Email: "alice@example.com"}
 
-	e, err := eventstore.NewEvent("UserSignedUp", userData, map[string]string{
-		"userId": "user-123",
-	}, encryption.WithEncryptionKeys("userId"))
+	e, err := eventstore.NewEvent("UserSignedUp", userData, eventstore.NewTags(
+		"userId", "user-123",
+	), encryption.WithEncryptionKeys("userId"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -706,9 +781,9 @@ func TestPGEncryptedAtRest(t *testing.T) {
 	)
 
 	ctx := context.Background()
-	e, _ := eventstore.NewEvent("UserSignedUp", "secret-data", map[string]string{
-		"userId": "user-123",
-	}, encryption.WithEncryptionKeys("userId"))
+	e, _ := eventstore.NewEvent("UserSignedUp", "secret-data", eventstore.NewTags(
+		"userId", "user-123",
+	), encryption.WithEncryptionKeys("userId"))
 	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -727,14 +802,14 @@ func TestPGForgetRedactsData(t *testing.T) {
 	store, enc := setupEncryptedStore(t)
 	ctx := context.Background()
 
-	e, _ := eventstore.NewEvent("UserSignedUp", "alice-data", map[string]string{
-		"userId": "user-123",
-	}, encryption.WithEncryptionKeys("userId"))
+	e, _ := eventstore.NewEvent("UserSignedUp", "alice-data", eventstore.NewTags(
+		"userId", "user-123",
+	), encryption.WithEncryptionKeys("userId"))
 	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := enc.Forget(ctx, map[string]string{"userId": "user-123"}); err != nil {
+	if err := enc.Forget(ctx, eventstore.NewTags("userId", "user-123")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -748,7 +823,7 @@ func TestPGForgetRedactsData(t *testing.T) {
 	if events[0].Type != "UserSignedUp" {
 		t.Fatalf("expected type preserved, got %s", events[0].Type)
 	}
-	if events[0].Tags["userId"] != "user-123" {
+	if vs := events[0].TagValues("userId"); len(vs) != 1 || vs[0] != "user-123" {
 		t.Fatalf("expected tags preserved, got %v", events[0].Tags)
 	}
 }
@@ -757,17 +832,17 @@ func TestPGForgetDoesNotAffectOtherSubjects(t *testing.T) {
 	store, enc := setupEncryptedStore(t)
 	ctx := context.Background()
 
-	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", map[string]string{
-		"userId": "user-1",
-	}, encryption.WithEncryptionKeys("userId"))
-	e2, _ := eventstore.NewEvent("UserSignedUp", "bob", map[string]string{
-		"userId": "user-2",
-	}, encryption.WithEncryptionKeys("userId"))
+	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", eventstore.NewTags(
+		"userId", "user-1",
+	), encryption.WithEncryptionKeys("userId"))
+	e2, _ := eventstore.NewEvent("UserSignedUp", "bob", eventstore.NewTags(
+		"userId", "user-2",
+	), encryption.WithEncryptionKeys("userId"))
 	if err := store.Append(ctx, []eventstore.Event{e1, e2}, nil); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := enc.Forget(ctx, map[string]string{"userId": "user-1"}); err != nil {
+	if err := enc.Forget(ctx, eventstore.NewTags("userId", "user-1")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -791,15 +866,15 @@ func TestPGSupersetForget(t *testing.T) {
 	store, enc := setupEncryptedStore(t)
 	ctx := context.Background()
 
-	e, _ := eventstore.NewEvent("FriendRequest", "request-data", map[string]string{
-		"senderId":   "user-1",
-		"receiverId": "user-2",
-	}, encryption.WithEncryptionKeys("senderId", "receiverId"))
+	e, _ := eventstore.NewEvent("FriendRequest", "request-data", eventstore.NewTags(
+		"senderId", "user-1",
+		"receiverId", "user-2",
+	), encryption.WithEncryptionKeys("senderId", "receiverId"))
 	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := enc.Forget(ctx, map[string]string{"senderId": "user-1"}); err != nil {
+	if err := enc.Forget(ctx, eventstore.NewTags("senderId", "user-1")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -814,14 +889,14 @@ func TestPGMixedEncryptedAndPlainEvents(t *testing.T) {
 	ctx := context.Background()
 
 	plain, _ := eventstore.NewEvent("SystemBooted", "v1.0", nil)
-	encrypted, _ := eventstore.NewEvent("UserSignedUp", "alice", map[string]string{
-		"userId": "user-1",
-	}, encryption.WithEncryptionKeys("userId"))
+	encrypted, _ := eventstore.NewEvent("UserSignedUp", "alice", eventstore.NewTags(
+		"userId", "user-1",
+	), encryption.WithEncryptionKeys("userId"))
 	if err := store.Append(ctx, []eventstore.Event{plain, encrypted}, nil); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := enc.Forget(ctx, map[string]string{"userId": "user-1"}); err != nil {
+	if err := enc.Forget(ctx, eventstore.NewTags("userId", "user-1")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -842,23 +917,23 @@ func TestPGAppendConditionThroughEncryption(t *testing.T) {
 	store, _ := setupEncryptedStore(t)
 	ctx := context.Background()
 
-	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", map[string]string{
-		"userId": "user-1",
-	}, encryption.WithEncryptionKeys("userId"))
+	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", eventstore.NewTags(
+		"userId", "user-1",
+	), encryption.WithEncryptionKeys("userId"))
 	if err := store.Append(ctx, []eventstore.Event{e1}, nil); err != nil {
 		t.Fatal(err)
 	}
 
 	condition := &eventstore.AppendCondition{
 		Query: eventstore.Query{
-			eventstore.QueryItem{Types: []string{"UserSignedUp"}, Tags: map[string]string{"userId": "user-1"}},
+			eventstore.QueryItem{Types: []string{"UserSignedUp"}, Tags: eventstore.NewTags("userId", "user-1")},
 		},
 		After: 0,
 	}
 
-	e2, _ := eventstore.NewEvent("UserSignedUp", "alice-again", map[string]string{
-		"userId": "user-1",
-	}, encryption.WithEncryptionKeys("userId"))
+	e2, _ := eventstore.NewEvent("UserSignedUp", "alice-again", eventstore.NewTags(
+		"userId", "user-1",
+	), encryption.WithEncryptionKeys("userId"))
 	err := store.Append(ctx, []eventstore.Event{e2}, condition)
 	if err != eventstore.ErrAppendConditionViolated {
 		t.Fatalf("expected ErrAppendConditionViolated, got %v", err)
@@ -875,11 +950,11 @@ func BenchmarkAppendConcurrent(b *testing.B) {
 		for pb.Next() {
 			id := counter.Add(1)
 			username := fmt.Sprintf("user-%d", id)
-			e, _ := eventstore.NewEvent("UserSignedUp", username, map[string]string{"username": username})
+			e, _ := eventstore.NewEvent("UserSignedUp", username, eventstore.NewTags("username", username))
 			condition := &eventstore.AppendCondition{
 				Query: eventstore.Query{{
 					Types: []string{"UserSignedUp"},
-					Tags:  map[string]string{"username": username},
+					Tags:  eventstore.NewTags("username", username),
 				}},
 				After: 0,
 			}

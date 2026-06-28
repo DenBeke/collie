@@ -39,9 +39,9 @@ const defaultBatchSize = 1000
 
 type event struct {
 	SequenceNumber uint64    `gorm:"primaryKey;autoIncrement"`
-	Type           string    `gorm:"not null;index"`
+	Type           string    `gorm:"not null"`
 	Data           []byte    `gorm:"type:bytea"`
-	Tags           []byte    `gorm:"type:jsonb;default:'{}'"`
+	Tags           []byte    `gorm:"type:jsonb;default:'[]'"`
 	Metadata       []byte    `gorm:"type:jsonb"`
 	CreatedAt      time.Time `gorm:"autoCreateTime;index"`
 }
@@ -56,7 +56,7 @@ type staging struct {
 	StagingID uint64    `gorm:"primaryKey;autoIncrement"`
 	Type      string    `gorm:"not null"`
 	Data      []byte    `gorm:"type:bytea"`
-	Tags      []byte    `gorm:"type:jsonb;default:'{}'"`
+	Tags      []byte    `gorm:"type:jsonb;default:'[]'"`
 	Metadata  []byte    `gorm:"type:jsonb"`
 	CreatedAt time.Time `gorm:"autoCreateTime"`
 }
@@ -65,11 +65,23 @@ type staging struct {
 // the SQL function and flush CTE can reference it directly.
 func (staging) TableName() string { return "staging" }
 
+// eventTag is the normalized tag index: one row per distinct (key,value) per
+// event. The composite primary key (key, value, sequence_number) doubles as the
+// seek index for filtered, sequence-ordered reads. Written only by the append
+// function and the flusher; read only by the query/condition SQL.
+type eventTag struct {
+	Key            string `gorm:"primaryKey"`
+	Value          string `gorm:"primaryKey"`
+	SequenceNumber uint64 `gorm:"primaryKey"`
+}
+
+// TableName pins the table name so the SQL functions can reference it directly.
+func (eventTag) TableName() string { return "event_tags" }
+
 // Store is a PostgreSQL-backed event store.
 type Store struct {
-	db          *gorm.DB
-	batchSize   int
-	indexedTags map[string]bool // tag keys with expression indexes
+	db        *gorm.DB
+	batchSize int
 }
 
 // Option configures a Store.
@@ -81,30 +93,21 @@ func WithBatchSize(n int) Option {
 	return func(s *Store) { s.batchSize = n }
 }
 
-// WithIndexedTags registers tag keys that get composite B-tree expression
-// indexes on (tags->>'key', sequence_number). This makes filtered reads
-// fast even at billions of rows. Call Migrate() after setting this option.
-func WithIndexedTags(keys ...string) Option {
-	return func(s *Store) {
-		for _, k := range keys {
-			s.indexedTags[k] = true
-		}
-	}
-}
-
 // New creates a PostgreSQL event store.
 func New(db *gorm.DB, opts ...Option) *Store {
-	s := &Store{db: db, batchSize: defaultBatchSize, indexedTags: make(map[string]bool)}
+	s := &Store{db: db, batchSize: defaultBatchSize}
 	for _, opt := range opts {
 		opt(s)
 	}
 	return s
 }
 
-// Migrate creates or updates the events table and expression indexes for
-// any tag keys registered with WithIndexedTags.
+// Migrate creates or updates the events, staging and event_tags tables, the
+// dcb_append / dcb_append_staging / dcb_flush functions, and the supporting
+// indexes. Tag filtering goes through the event_tags (key,value,sequence_number)
+// primary key; staging keeps a GIN index for its jsonb condition check.
 func (s *Store) Migrate() error {
-	if err := s.db.AutoMigrate(&event{}, &staging{}); err != nil {
+	if err := s.db.AutoMigrate(&event{}, &staging{}, &eventTag{}); err != nil {
 		return err
 	}
 	if err := s.db.Exec(fmt.Sprintf(dcbAppendFnTemplate, appendLock)).Error; err != nil {
@@ -113,20 +116,16 @@ func (s *Store) Migrate() error {
 	if err := s.db.Exec(fmt.Sprintf(dcbAppendStagingFnTemplate, appendLock)).Error; err != nil {
 		return fmt.Errorf("could not create dcb_append_staging function: %w", err)
 	}
-	if err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_events_tags ON events USING GIN (tags jsonb_path_ops)`).Error; err != nil {
-		return fmt.Errorf("could not create tags index: %w", err)
+	if err := s.db.Exec(dcbFlushFn).Error; err != nil {
+		return fmt.Errorf("could not create dcb_flush function: %w", err)
+	}
+	// Composite index for type-only query items (no tag to anchor on): an ordered
+	// scan by sequence_number within a type.
+	if err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_events_type_seq ON events (type, sequence_number)`).Error; err != nil {
+		return fmt.Errorf("could not create type index: %w", err)
 	}
 	if err := s.db.Exec(`CREATE INDEX IF NOT EXISTS idx_staging_tags ON staging USING GIN (tags jsonb_path_ops)`).Error; err != nil {
 		return fmt.Errorf("could not create staging tags index: %w", err)
-	}
-	for key := range s.indexedTags {
-		sql := fmt.Sprintf(
-			`CREATE INDEX IF NOT EXISTS idx_events_tag_%s_seq ON events ((tags->>'%s'), sequence_number)`,
-			key, key,
-		)
-		if err := s.db.Exec(sql).Error; err != nil {
-			return fmt.Errorf("could not create index for tag %q: %w", key, err)
-		}
 	}
 	return nil
 }
@@ -139,14 +138,8 @@ func (s *Store) Read(ctx context.Context, query eventstore.Query, after uint64) 
 		cursor := after
 		for {
 			var batch []event
-			db := s.db.WithContext(ctx).
-				Where("sequence_number > ?", cursor).
-				Order("sequence_number ASC").
-				Limit(s.batchSize)
-
-			db = s.applyQuery(db, query)
-
-			if err := db.Find(&batch).Error; err != nil {
+			sql, args := buildReadSQL(query, cursor, s.batchSize)
+			if err := s.db.WithContext(ctx).Raw(sql, args...).Scan(&batch).Error; err != nil {
 				yield(eventstore.SequencedEvent{}, fmt.Errorf("could not read events: %w", err))
 				return
 			}
@@ -172,6 +165,45 @@ func (s *Store) Read(ctx context.Context, query eventstore.Query, after uint64) 
 	}
 }
 
+// dcbItemConflictEvents is the per-query-item conflict predicate against the
+// committed events table, via the normalized event_tags index. An item WITH tags
+// is anchored on event_tags — each query (key,value) pair is an index seek on the
+// (key,value,sequence_number) PK, and GROUP BY ... HAVING count(*) = N requires the
+// event to carry ALL of the item's tags. A tag-LESS item (type-only / match-all)
+// falls back to an events-by-type scan. v_after, item, events and event_tags are in
+// scope in both dcb_append and dcb_append_staging.
+const dcbItemConflictEvents = `(
+                    EXISTS (
+                        SELECT 1
+                        FROM jsonb_array_elements(item->'tags') AS qt
+                        JOIN event_tags t
+                          ON t.key = qt->>'key' AND t.value = qt->>'value' AND t.sequence_number > v_after
+                        WHERE item->'types' IS NULL
+                           OR jsonb_typeof(item->'types') <> 'array'
+                           OR jsonb_array_length(item->'types') = 0
+                           OR EXISTS (
+                               SELECT 1 FROM events e
+                               WHERE e.sequence_number = t.sequence_number
+                                 AND e.type IN (SELECT jsonb_array_elements_text(item->'types'))
+                           )
+                        GROUP BY t.sequence_number
+                        HAVING count(*) = jsonb_array_length(item->'tags')
+                    )
+                    OR (
+                        COALESCE(jsonb_array_length(item->'tags'), 0) = 0
+                        AND EXISTS (
+                            SELECT 1 FROM events e
+                            WHERE e.sequence_number > v_after
+                              AND (
+                                  item->'types' IS NULL
+                                  OR jsonb_typeof(item->'types') <> 'array'
+                                  OR jsonb_array_length(item->'types') = 0
+                                  OR e.type IN (SELECT jsonb_array_elements_text(item->'types'))
+                              )
+                        )
+                    )
+                )`
+
 // dcbCheckBody is the DCB condition-check head of dcb_append: given v_after and
 // p_query it sets v_conflict and RETURNs false if a matching event exists after
 // v_after. (dcb_append_staging has its own variant that checks staging ∪ events
@@ -183,9 +215,8 @@ func (s *Store) Read(ctx context.Context, query eventstore.Query, after uint64) 
 // race-free in one call (a client-side CTE could not — one statement holds a
 // single pre-lock snapshot).
 //
-// The condition check is structured ITEMS-OUTER (for each query item, search
-// events) so the per-item `e.tags @> item.tags` is a parameterized GIN index
-// scan against the jsonb_path_ops index on tags.
+// The check is ITEMS-OUTER (for each query item, search committed events via the
+// event_tags index — see dcbItemConflictEvents).
 const dcbCheckBody = `
     -- p_query IS NULL => unconditional. '[]' => match all events after v_after.
     IF p_query IS NOT NULL THEN
@@ -194,17 +225,7 @@ const dcbCheckBody = `
         ELSE
             SELECT EXISTS (
                 SELECT 1 FROM jsonb_array_elements(p_query) AS item
-                WHERE EXISTS (
-                    SELECT 1 FROM events e
-                    WHERE e.sequence_number > v_after
-                      AND (
-                          item->'types' IS NULL
-                          OR jsonb_typeof(item->'types') <> 'array'
-                          OR jsonb_array_length(item->'types') = 0
-                          OR e.type IN (SELECT jsonb_array_elements_text(item->'types'))
-                      )
-                      AND e.tags @> COALESCE(item->'tags', '{}'::jsonb)
-                )
+                WHERE ` + dcbItemConflictEvents + `
             ) INTO v_conflict;
         END IF;
         IF v_conflict THEN
@@ -216,14 +237,20 @@ const dcbCheckBody = `
 // dcbInsertBody is the tail of dcb_append: the batched insert of p_events into
 // events, then RETURN true. It is appended after dcbCheckBody.
 const dcbInsertBody = `
-    INSERT INTO events (type, data, tags, metadata, created_at)
-    SELECT elem->>'type',
-           decode(elem->>'data', 'base64'),
-           COALESCE(elem->'tags', '{}'::jsonb),
-           CASE WHEN elem->'metadata' IS NULL OR jsonb_typeof(elem->'metadata') = 'null'
-                THEN NULL ELSE elem->'metadata' END,
-           now()
-    FROM jsonb_array_elements(p_events) AS elem;
+    WITH ins AS (
+        INSERT INTO events (type, data, tags, metadata, created_at)
+        SELECT elem->>'type',
+               decode(elem->>'data', 'base64'),
+               COALESCE(elem->'tags', '[]'::jsonb),
+               CASE WHEN elem->'metadata' IS NULL OR jsonb_typeof(elem->'metadata') = 'null'
+                    THEN NULL ELSE elem->'metadata' END,
+               now()
+        FROM jsonb_array_elements(p_events) AS elem
+        RETURNING sequence_number, tags
+    )
+    INSERT INTO event_tags (key, value, sequence_number)
+    SELECT DISTINCT tag->>'key', tag->>'value', ins.sequence_number
+    FROM ins CROSS JOIN LATERAL jsonb_array_elements(ins.tags) AS tag;
 
     RETURN true;
 END;
@@ -285,19 +312,9 @@ BEGIN
                           OR jsonb_array_length(item->'types') = 0
                           OR s.type IN (SELECT jsonb_array_elements_text(item->'types'))
                       )
-                      AND s.tags @> COALESCE(item->'tags', '{}'::jsonb)
+                      AND s.tags @> COALESCE(item->'tags', '[]'::jsonb)
                 )
-                OR EXISTS (
-                    SELECT 1 FROM events e
-                    WHERE e.sequence_number > v_after
-                      AND (
-                          item->'types' IS NULL
-                          OR jsonb_typeof(item->'types') <> 'array'
-                          OR jsonb_array_length(item->'types') = 0
-                          OR e.type IN (SELECT jsonb_array_elements_text(item->'types'))
-                      )
-                      AND e.tags @> COALESCE(item->'tags', '{}'::jsonb)
-                )
+                OR ` + dcbItemConflictEvents + `
             ) INTO v_conflict;
         END IF;
         IF v_conflict THEN
@@ -308,7 +325,7 @@ BEGIN
     INSERT INTO staging (type, data, tags, metadata, created_at)
     SELECT elem->>'type',
            decode(elem->>'data', 'base64'),
-           COALESCE(elem->'tags', '{}'::jsonb),
+           COALESCE(elem->'tags', '[]'::jsonb),
            CASE WHEN elem->'metadata' IS NULL OR jsonb_typeof(elem->'metadata') = 'null'
                 THEN NULL ELSE elem->'metadata' END,
            now()
@@ -324,7 +341,7 @@ $func$;`
 type appendEvent struct {
 	Type     string            `json:"type"`
 	Data     string            `json:"data"`
-	Tags     map[string]string `json:"tags"`
+	Tags     []eventstore.Tag  `json:"tags"`
 	Metadata map[string]string `json:"metadata,omitempty"`
 }
 
@@ -333,8 +350,8 @@ type appendEvent struct {
 // type and match what dcb_append reads (item->'types', item->'tags'); omitempty
 // makes an absent Types/Tags a SQL NULL (= no constraint) rather than json null.
 type queryItemDTO struct {
-	Types []string          `json:"types,omitempty"`
-	Tags  map[string]string `json:"tags,omitempty"`
+	Types []string         `json:"types,omitempty"`
+	Tags  []eventstore.Tag `json:"tags,omitempty"`
 }
 
 // appendArgs marshals events and an optional condition into the arguments shared
@@ -346,7 +363,7 @@ func appendArgs(events []eventstore.Event, condition *eventstore.AppendCondition
 	for i, e := range events {
 		tags := e.Tags
 		if tags == nil {
-			tags = map[string]string{}
+			tags = []eventstore.Tag{}
 		}
 		wire[i] = appendEvent{
 			Type:     e.Type,
@@ -451,15 +468,15 @@ func boundaryLockKeys(events []eventstore.Event, cond *eventstore.AppendConditio
 				return nil, false // type-less or tag-less => global lock
 			}
 			for _, t := range item.Types {
-				for k, v := range item.Tags {
-					set[lockKey(t, k, v)] = struct{}{}
+				for _, tag := range item.Tags {
+					set[lockKey(t, tag.Key, tag.Value)] = struct{}{}
 				}
 			}
 		}
 	}
 	for _, e := range events {
-		for k, v := range e.Tags {
-			set[lockKey(e.Type, k, v)] = struct{}{}
+		for _, tag := range e.Tags {
+			set[lockKey(e.Type, tag.Key, tag.Value)] = struct{}{}
 		}
 	}
 	keys = make([]int64, 0, len(set))
@@ -537,17 +554,38 @@ type FlushOptions struct {
 	BatchSize int
 }
 
-// flushSQL moves the oldest BatchSize staging rows into events in staging_id
-// order, in one atomic CTE. One writer (the flusher) ⇒ events.sequence_number is
-// assigned gap-free and monotonic; the ORDER BY preserves same-boundary append
-// order. created_at is carried over from staging (append time, not flush time).
-const flushSQL = `WITH moved AS (
-    DELETE FROM staging
-    WHERE staging_id IN (SELECT staging_id FROM staging ORDER BY staging_id LIMIT $1)
-    RETURNING *
-)
-INSERT INTO events (type, data, tags, metadata, created_at)
-SELECT type, data, tags, metadata, created_at FROM moved ORDER BY staging_id`
+// dcbFlushFn moves the oldest p_batch staging rows into events in staging_id
+// order AND populates event_tags, in one atomic statement, returning the number
+// of events moved. One writer (the flusher) ⇒ events.sequence_number is assigned
+// gap-free and monotonic; the ORDER BY preserves same-boundary append order.
+// created_at is carried over from staging (append time, not flush time). The
+// returned count comes from `ins` (events moved), not the event_tags insert, so
+// it stays correct even for batches whose events have no tags.
+const dcbFlushFn = `CREATE OR REPLACE FUNCTION dcb_flush(p_batch int)
+RETURNS bigint LANGUAGE plpgsql AS $func$
+DECLARE
+    v_moved bigint;
+BEGIN
+    WITH moved AS (
+        DELETE FROM staging
+        WHERE staging_id IN (SELECT staging_id FROM staging ORDER BY staging_id LIMIT p_batch)
+        RETURNING *
+    ),
+    ins AS (
+        INSERT INTO events (type, data, tags, metadata, created_at)
+        SELECT type, data, tags, metadata, created_at FROM moved ORDER BY staging_id
+        RETURNING sequence_number, tags
+    ),
+    tags_ins AS (
+        INSERT INTO event_tags (key, value, sequence_number)
+        SELECT DISTINCT tag->>'key', tag->>'value', ins.sequence_number
+        FROM ins CROSS JOIN LATERAL jsonb_array_elements(ins.tags) AS tag
+        RETURNING 1
+    )
+    SELECT count(*) FROM ins INTO v_moved;
+    RETURN v_moved;
+END;
+$func$;`
 
 // RunFlusher runs the singleton staging→events flusher until ctx is cancelled. It
 // holds a session-level advisory lock on a dedicated connection so that across N
@@ -586,14 +624,13 @@ func (s *Store) RunFlusher(ctx context.Context, opts FlushOptions) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		res, err := conn.ExecContext(ctx, flushSQL, opts.BatchSize)
-		if err != nil {
+		var moved int64
+		if err := conn.QueryRowContext(ctx, "SELECT dcb_flush($1)", opts.BatchSize).Scan(&moved); err != nil {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
 			return fmt.Errorf("flusher: flush failed: %w", err)
 		}
-		moved, _ := res.RowsAffected()
 		if moved == 0 {
 			select {
 			case <-ctx.Done():
@@ -616,57 +653,85 @@ func (s *Store) Flush(ctx context.Context, batchSize int) (int64, error) {
 	if err != nil {
 		return 0, fmt.Errorf("flush: %w", err)
 	}
-	res, err := sqlDB.ExecContext(ctx, flushSQL, batchSize)
-	if err != nil {
+	var moved int64
+	if err := sqlDB.QueryRowContext(ctx, "SELECT dcb_flush($1)", batchSize).Scan(&moved); err != nil {
 		return 0, fmt.Errorf("flush: %w", err)
 	}
-	return res.RowsAffected()
+	return moved, nil
 }
 
-// applyQuery adds WHERE clauses for an eventstore.Query to a GORM query.
-// Each QueryItem is OR'd; within a QueryItem, Types are OR'd and Tags are AND'd.
-// For tag keys registered with WithIndexedTags, uses tags->>'key' = ? (B-tree
-// friendly). For other tag keys, falls back to tags @> ?::jsonb (GIN).
-func (s *Store) applyQuery(db *gorm.DB, query eventstore.Query) *gorm.DB {
-	if len(query) == 0 {
-		return db
-	}
+// buildReadSQL builds one keyset-paginated read batch. For each query item it
+// produces an index-ordered, LIMIT-bounded candidate set of sequence_numbers
+// (each item fully type-coupled), UNIONs them (which dedups), and fetches the
+// matching events in sequence order. An empty query reads straight off the events
+// primary key. Placeholders are GORM "?" (rewritten to $N by the postgres
+// driver); args are appended in placeholder order.
+func buildReadSQL(query eventstore.Query, cursor uint64, limit int) (string, []any) {
+	const cols = "e.sequence_number, e.type, e.data, e.tags, e.metadata, e.created_at"
 
-	var clauses []string
 	var args []any
+	ph := func(v any) string {
+		args = append(args, v)
+		return "?"
+	}
 
-	for _, item := range query {
-		var parts []string
+	if len(query) == 0 {
+		sql := "SELECT " + cols + " FROM events e WHERE e.sequence_number > " + ph(cursor) +
+			" ORDER BY e.sequence_number LIMIT " + ph(limit)
+		return sql, args
+	}
 
+	arms := make([]string, len(query))
+	for i, item := range query {
+		arms[i] = buildReadItem(item, cursor, limit, ph)
+	}
+	sql := "WITH cand AS (\n" + strings.Join(arms, "\nUNION\n") + "\n)\n" +
+		"SELECT " + cols + " FROM events e " +
+		"JOIN (SELECT sequence_number FROM cand ORDER BY sequence_number LIMIT " + ph(limit) + ") c " +
+		"ON c.sequence_number = e.sequence_number ORDER BY e.sequence_number"
+	return sql, args
+}
+
+// buildReadItem builds one UNION arm: the ordered, bounded candidate
+// sequence_numbers matching a single query item. A tag-less item scans events
+// (optionally by type); a tagged item anchors on the first tag via event_tags,
+// requires the rest via EXISTS, and filters type with a primary-key join.
+func buildReadItem(item eventstore.QueryItem, cursor uint64, limit int, ph func(any) string) string {
+	typeIn := func(col string) string {
+		phs := make([]string, len(item.Types))
+		for i, t := range item.Types {
+			phs[i] = ph(t)
+		}
+		return col + " IN (" + strings.Join(phs, ", ") + ")"
+	}
+
+	if len(item.Tags) == 0 {
+		where := "sequence_number > " + ph(cursor)
 		if len(item.Types) > 0 {
-			parts = append(parts, "type IN ?")
-			args = append(args, item.Types)
+			where += " AND " + typeIn("type")
 		}
-
-		for k, v := range item.Tags {
-			if s.indexedTags[k] {
-				parts = append(parts, fmt.Sprintf("tags->>'%s' = ?", k))
-				args = append(args, v)
-			} else {
-				parts = append(parts, "tags @> ?::jsonb")
-				tagJSON, _ := json.Marshal(map[string]string{k: v})
-				args = append(args, string(tagJSON))
-			}
-		}
-
-		if len(parts) > 0 {
-			clauses = append(clauses, "("+strings.Join(parts, " AND ")+")")
-		}
+		return "(SELECT sequence_number FROM events WHERE " + where +
+			" ORDER BY sequence_number LIMIT " + ph(limit) + ")"
 	}
 
-	if len(clauses) > 0 {
-		return db.Where(strings.Join(clauses, " OR "), args...)
+	anchor := item.Tags[0]
+	from := "event_tags t"
+	where := "t.key = " + ph(anchor.Key) + " AND t.value = " + ph(anchor.Value) +
+		" AND t.sequence_number > " + ph(cursor)
+	if len(item.Types) > 0 {
+		from += " JOIN events e ON e.sequence_number = t.sequence_number"
+		where += " AND " + typeIn("e.type")
 	}
-	return db
+	for _, extra := range item.Tags[1:] {
+		where += " AND EXISTS (SELECT 1 FROM event_tags t2 WHERE t2.sequence_number = t.sequence_number" +
+			" AND t2.key = " + ph(extra.Key) + " AND t2.value = " + ph(extra.Value) + ")"
+	}
+	return "(SELECT t.sequence_number FROM " + from + " WHERE " + where +
+		" ORDER BY t.sequence_number LIMIT " + ph(limit) + ")"
 }
 
 func toSequencedEvent(e event) (eventstore.SequencedEvent, error) {
-	var tags map[string]string
+	var tags []eventstore.Tag
 	if len(e.Tags) > 0 {
 		if err := json.Unmarshal(e.Tags, &tags); err != nil {
 			return eventstore.SequencedEvent{}, fmt.Errorf("could not unmarshal event tags: %w", err)

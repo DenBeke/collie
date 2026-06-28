@@ -60,7 +60,7 @@ func appendSeed(ctx context.Context, store *pgstore.Store, cfg *Config, need int
 			events[i] = eventstore.Event{
 				Type: eventType,
 				Data: benchData,
-				Tags: map[string]string{entityTagKey: entityID(id)},
+				Tags: eventstore.NewTags(entityTagKey, entityID(id)),
 			}
 		}
 		if err := store.Append(ctx, events, nil); err != nil {

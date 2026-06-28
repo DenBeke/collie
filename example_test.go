@@ -17,7 +17,7 @@ func usernameExistsProjection(username string) eventstore.DefaultProjection[bool
 	return eventstore.DefaultProjection[bool]{
 		Query: eventstore.QueryItem{
 			Types: []string{"UserSignedUp"},
-			Tags:  map[string]string{"username": username},
+			Tags:  eventstore.NewTags("username", username),
 		},
 		State: false,
 		Handlers: map[string]eventstore.HandleFunc[bool]{
@@ -38,7 +38,7 @@ func signUp(ctx context.Context, store eventstore.Store, username string) error 
 	if exists.State {
 		return fmt.Errorf("username %q is already taken", username)
 	}
-	event, err := eventstore.NewEvent("UserSignedUp", username, map[string]string{"username": username})
+	event, err := eventstore.NewEvent("UserSignedUp", username, eventstore.NewTags("username", username))
 	if err != nil {
 		return fmt.Errorf("could not create event: %w", err)
 	}
