@@ -2,36 +2,58 @@ package memory
 
 import (
 	"context"
-	"fmt"
+	"sync"
 
 	"eventstore"
 )
 
-// CheckpointProjection is an in-memory [eventstore.CheckpointProjection]. It
-// wraps a [eventstore.DefaultProjection] and tracks the stream position so that
-// [eventstore.UpdateProjection] only processes new events on each call.
-type CheckpointProjection[S any] struct {
-	eventstore.DefaultProjection[S]
+// Compile-time check that SnapshotStore implements eventstore.SnapshotStore.
+var _ eventstore.SnapshotStore = (*SnapshotStore)(nil)
+
+// SnapshotStore is an in-memory [eventstore.SnapshotStore]. State is kept in a
+// map and lost when the process exits — useful for tests and for
+// [eventstore.StoredProjection]s that only need within-process checkpointing.
+type SnapshotStore struct {
+	mu        sync.RWMutex
+	snapshots map[string]snapshot
+}
+
+type snapshot struct {
+	state    []byte
 	position uint64
 }
 
-// NewCheckpointProjection returns an in-memory [CheckpointProjection] that
-// starts at position 0.
-func NewCheckpointProjection[S any](p eventstore.DefaultProjection[S]) *CheckpointProjection[S] {
-	return &CheckpointProjection[S]{DefaultProjection: p}
+// NewSnapshotStore creates an empty in-memory snapshot store.
+func NewSnapshotStore() *SnapshotStore {
+	return &SnapshotStore{snapshots: make(map[string]snapshot)}
 }
 
-// After returns the sequence number of the last applied event.
-func (p *CheckpointProjection[S]) After() uint64 {
-	return p.position
-}
-
-// Apply applies a single event and advances the checkpoint.
-func (p *CheckpointProjection[S]) Apply(ctx context.Context, e eventstore.SequencedEvent) error {
-	err := p.DefaultProjection.Apply(ctx, e)
-	if err != nil {
-		return fmt.Errorf("could not apply event: %w", err)
+// Load returns the stored state and position for name.
+func (store *SnapshotStore) Load(_ context.Context, name string) (state []byte, position uint64, found bool, err error) {
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	entry, ok := store.snapshots[name]
+	if !ok {
+		return nil, 0, false, nil
 	}
-	p.position = e.SequenceNumber
+	return entry.state, entry.position, true, nil
+}
+
+// Save stores state and position for name, copying state so later mutations by
+// the caller do not alias the stored snapshot.
+func (store *SnapshotStore) Save(_ context.Context, name string, state []byte, position uint64) error {
+	stateCopy := make([]byte, len(state))
+	copy(stateCopy, state)
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.snapshots[name] = snapshot{state: stateCopy, position: position}
+	return nil
+}
+
+// Delete removes the snapshot for name.
+func (store *SnapshotStore) Delete(_ context.Context, name string) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	delete(store.snapshots, name)
 	return nil
 }

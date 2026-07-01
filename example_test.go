@@ -62,8 +62,8 @@ func ExampleBuildDecisionModel() {
 
 // totalUsersProjection is a read model that counts all signed-up users.
 // Unlike decision model projections, it is long-lived and incrementally updated.
-func totalUsersProjection() *memory.CheckpointProjection[int] {
-	return memory.NewCheckpointProjection(eventstore.DefaultProjection[int]{
+func totalUsersProjection() *eventstore.StoredProjection[int] {
+	proj, _ := eventstore.NewStoredProjection(context.Background(), memory.NewSnapshotStore(), "total-users", eventstore.DefaultProjection[int]{
 		Query: eventstore.QueryItem{
 			Types: []string{"UserSignedUp"},
 		},
@@ -74,6 +74,7 @@ func totalUsersProjection() *memory.CheckpointProjection[int] {
 			},
 		},
 	})
+	return proj
 }
 
 func ExampleUpdateProjection() {
@@ -140,4 +141,44 @@ func ExampleServe() {
 	})
 
 	e.Start(":8080")
+}
+
+// SignUp is the same uniqueness check as signUp, expressed as a Command so it can
+// run through Execute — which adds the optimistic-concurrency retry that the bare
+// signUp helper lacks.
+type SignUp struct {
+	Username string `json:"username"`
+	exists   *eventstore.DefaultProjection[bool]
+}
+
+func (cmd *SignUp) Projections(_ context.Context) ([]eventstore.Projection, error) {
+	projection := usernameExistsProjection(cmd.Username)
+	cmd.exists = &projection
+	return []eventstore.Projection{cmd.exists}, nil
+}
+
+func (cmd *SignUp) Decide(_ context.Context) ([]eventstore.Event, error) {
+	if cmd.exists.State {
+		return nil, fmt.Errorf("username %q is already taken", cmd.Username)
+	}
+	event, err := eventstore.NewEvent("UserSignedUp", cmd.Username, eventstore.NewTags("username", cmd.Username))
+	if err != nil {
+		return nil, fmt.Errorf("could not create UserSignedUp event: %w", err)
+	}
+	return []eventstore.Event{event}, nil
+}
+
+func ExampleExecute() {
+	ctx := context.Background()
+	store := memory.New()
+
+	err := eventstore.Execute(ctx, store, &SignUp{Username: "alice"}, eventstore.WithMaxAttempts(3))
+	fmt.Println("first signup:", err)
+
+	err = eventstore.Execute(ctx, store, &SignUp{Username: "alice"}, eventstore.WithMaxAttempts(3))
+	fmt.Println("second signup:", err)
+
+	// Output:
+	// first signup: <nil>
+	// second signup: username "alice" is already taken
 }

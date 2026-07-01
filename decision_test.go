@@ -11,8 +11,8 @@ import (
 // The library's own stored read-model projection must satisfy
 // CheckpointProjection so BuildDecisionModel recognizes it as a decision model
 // and skips already-processed events. Regression guard for the projector-type
-// consolidation: *memory.CheckpointProjection must implement it.
-var _ eventstore.CheckpointProjection = (*memory.CheckpointProjection[int])(nil)
+// consolidation: *eventstore.StoredProjection must implement it.
+var _ eventstore.CheckpointProjection = (*eventstore.StoredProjection[int])(nil)
 
 // storedProjection wraps a DefaultProjection with a checkpoint, implementing
 // CheckpointProjection so BuildDecisionModel skips already-processed events.
@@ -226,15 +226,15 @@ func TestBuildDecisionModel_MultipleStoredAtDifferentCheckpoints(t *testing.T) {
 	}
 }
 
-// TestBuildDecisionModel_RealMemoryProjectionIsCheckpointed proves the checkpoint
-// path using the library's own *memory.CheckpointProjection (not the test-only
+// TestBuildDecisionModel_RealStoredProjectionIsCheckpointed proves the checkpoint
+// path using the library's own *eventstore.StoredProjection (not the test-only
 // storedProjection): a caught-up read model reused as a decision model must apply
 // only the events appended since its checkpoint, not replay from 0 and double-count.
-func TestBuildDecisionModel_RealMemoryProjectionIsCheckpointed(t *testing.T) {
+func TestBuildDecisionModel_RealStoredProjectionIsCheckpointed(t *testing.T) {
 	store := seed(t, 3, "UserSignedUp", nil)
 	ctx := context.Background()
 
-	proj := memory.NewCheckpointProjection(eventstore.DefaultProjection[int]{
+	proj, err := eventstore.NewStoredProjection(ctx, memory.NewSnapshotStore(), "total-users", eventstore.DefaultProjection[int]{
 		Query: eventstore.QueryItem{Types: []string{"UserSignedUp"}},
 		State: 0,
 		Handlers: map[string]eventstore.HandleFunc[int]{
@@ -243,6 +243,9 @@ func TestBuildDecisionModel_RealMemoryProjectionIsCheckpointed(t *testing.T) {
 			},
 		},
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Catch the read model up to the current head (checkpoint advances to 3).
 	if err := eventstore.UpdateProjection(ctx, store, proj); err != nil {

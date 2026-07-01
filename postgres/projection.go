@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	"eventstore"
@@ -11,131 +10,91 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// Compile-time check that CheckpointProjection implements eventstore.CheckpointProjection.
-var _ eventstore.CheckpointProjection = (*CheckpointProjection[any])(nil)
+// Compile-time check that SnapshotStore implements eventstore.SnapshotStore.
+var _ eventstore.SnapshotStore = (*SnapshotStore)(nil)
 
-// CheckpointProjection is a postgres-backed [eventstore.CheckpointProjection] that
-// keeps the full projection state in memory and persists it to the database on
-// every applied event. On construction it loads existing state from the database,
-// allowing it to survive restarts.
-type CheckpointProjection[S any] struct {
-	eventstore.DefaultProjection[S]
-	db       *gorm.DB
-	name     string
-	position uint64
+// SnapshotStore is a postgres-backed [eventstore.SnapshotStore]. It persists
+// projection snapshots and checkpoints to the projection_snapshots and
+// projection_checkpoints tables (created by [MigrateProjections]), so an
+// [eventstore.StoredProjection] survives restarts and resumes from its last
+// checkpoint.
+type SnapshotStore struct {
+	db *gorm.DB
 }
 
-// NewCheckpointProjection creates a postgres-backed projection. If a snapshot
-// exists in the database for the given name, the state and position are restored
-// from it. Otherwise the projection starts fresh with the initial state from p.
-func NewCheckpointProjection[S any](db *gorm.DB, name string, p eventstore.DefaultProjection[S]) (*CheckpointProjection[S], error) {
-	proj := &CheckpointProjection[S]{
-		DefaultProjection: p,
-		db:                db,
-		name:              name,
-	}
-	err := proj.load()
-	if err != nil {
-		return nil, fmt.Errorf("could not load projection %q: %w", name, err)
-	}
-	return proj, nil
+// NewSnapshotStore creates a postgres-backed snapshot store. Call
+// [MigrateProjections] on the same database before use.
+func NewSnapshotStore(db *gorm.DB) *SnapshotStore {
+	return &SnapshotStore{db: db}
 }
 
-// After returns the sequence number of the last applied event.
-func (p *CheckpointProjection[S]) After() uint64 {
-	return p.position
-}
-
-// Apply applies a single event to the in-memory state and persists the
-// snapshot and checkpoint to the database in a single transaction.
-func (p *CheckpointProjection[S]) Apply(ctx context.Context, e eventstore.SequencedEvent) error {
-	err := p.DefaultProjection.Apply(ctx, e)
-	if err != nil {
-		return fmt.Errorf("could not apply %s event: %w", e.Type, err)
-	}
-	p.position = e.SequenceNumber
-	return p.save(ctx)
-}
-
-// Reset deletes the snapshot and checkpoint from the database and resets the
-// in-memory state to its zero value.
-func (p *CheckpointProjection[S]) Reset(ctx context.Context) error {
-	err := p.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		err := tx.Delete(&projectionSnapshot{}, "projection_name = ?", p.name).Error
-		if err != nil {
-			return fmt.Errorf("could not delete snapshot: %w", err)
-		}
-		err = tx.Delete(&projectionCheckpoint{}, "projection_name = ?", p.name).Error
-		if err != nil {
-			return fmt.Errorf("could not delete checkpoint: %w", err)
-		}
-		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("could not reset projection %q: %w", p.name, err)
-	}
-	var zero S
-	p.State = zero
-	p.position = 0
-	return nil
-}
-
-func (p *CheckpointProjection[S]) load() error {
+// Load returns the persisted state and position for name. found is false when
+// no checkpoint exists yet.
+func (store *SnapshotStore) Load(ctx context.Context, name string) (state []byte, position uint64, found bool, err error) {
 	var checkpoint projectionCheckpoint
-	err := p.db.Where("projection_name = ?", p.name).First(&checkpoint).Error
+	err = store.db.WithContext(ctx).Where("projection_name = ?", name).First(&checkpoint).Error
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
-			return nil // fresh projection
+			return nil, 0, false, nil // fresh projection
 		}
-		return fmt.Errorf("could not load checkpoint: %w", err)
+		return nil, 0, false, fmt.Errorf("could not load checkpoint: %w", err)
 	}
-	p.position = uint64(checkpoint.Position)
+	position = uint64(checkpoint.Position)
 
 	var snapshot projectionSnapshot
-	err = p.db.Where("projection_name = ?", p.name).First(&snapshot).Error
+	err = store.db.WithContext(ctx).Where("projection_name = ?", name).First(&snapshot).Error
 	if err != nil {
 		if err == gorm.ErrRecordNotFound {
-			return nil
+			// Known position but no state snapshot yet.
+			return nil, position, true, nil
 		}
-		return fmt.Errorf("could not load snapshot: %w", err)
+		return nil, 0, false, fmt.Errorf("could not load snapshot: %w", err)
 	}
-	err = json.Unmarshal(snapshot.State, &p.State)
-	if err != nil {
-		return fmt.Errorf("could not unmarshal snapshot state: %w", err)
-	}
-	return nil
+	return snapshot.State, position, true, nil
 }
 
-func (p *CheckpointProjection[S]) save(ctx context.Context) error {
-	stateBytes, err := json.Marshal(p.State)
-	if err != nil {
-		return fmt.Errorf("could not marshal projection state: %w", err)
-	}
-	err = p.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		err := tx.Clauses(clause.OnConflict{
+// Save upserts the checkpoint and snapshot for name in a single transaction.
+func (store *SnapshotStore) Save(ctx context.Context, name string, state []byte, position uint64) error {
+	err := store.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "projection_name"}},
 			DoUpdates: clause.AssignmentColumns([]string{"position"}),
 		}).Create(&projectionCheckpoint{
-			ProjectionName: p.name,
-			Position:       int64(p.position),
-		}).Error
-		if err != nil {
+			ProjectionName: name,
+			Position:       int64(position),
+		}).Error; err != nil {
 			return fmt.Errorf("could not upsert checkpoint: %w", err)
 		}
-		err = tx.Clauses(clause.OnConflict{
+		if err := tx.Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "projection_name"}},
 			DoUpdates: clause.AssignmentColumns([]string{"state"}),
 		}).Create(&projectionSnapshot{
-			ProjectionName: p.name,
-			State:          stateBytes,
-		}).Error
-		if err != nil {
+			ProjectionName: name,
+			State:          state,
+		}).Error; err != nil {
 			return fmt.Errorf("could not upsert snapshot: %w", err)
 		}
 		return nil
 	})
 	if err != nil {
-		return fmt.Errorf("could not save projection %q: %w", p.name, err)
+		return fmt.Errorf("could not save projection %q: %w", name, err)
+	}
+	return nil
+}
+
+// Delete removes the snapshot and checkpoint for name.
+func (store *SnapshotStore) Delete(ctx context.Context, name string) error {
+	err := store.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Delete(&projectionSnapshot{}, "projection_name = ?", name).Error; err != nil {
+			return fmt.Errorf("could not delete snapshot: %w", err)
+		}
+		if err := tx.Delete(&projectionCheckpoint{}, "projection_name = ?", name).Error; err != nil {
+			return fmt.Errorf("could not delete checkpoint: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("could not delete projection %q: %w", name, err)
 	}
 	return nil
 }
