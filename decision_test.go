@@ -23,6 +23,9 @@ type storedProjection[S any] struct {
 
 func (s *storedProjection[S]) After() uint64 { return s.after }
 
+// Checkpoint is a no-op: this test double keeps state in memory only.
+func (s *storedProjection[S]) Checkpoint(context.Context) error { return nil }
+
 // seed appends n events of the given type and returns the store.
 func seed(t *testing.T, n int, eventType string, tags []eventstore.Tag) *memory.Store {
 	t.Helper()

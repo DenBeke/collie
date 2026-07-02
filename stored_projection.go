@@ -23,17 +23,19 @@ type SnapshotStore interface {
 }
 
 // StoredProjection is a CheckpointProjection whose state and position are
-// persisted through a SnapshotStore. It keeps the full state in memory (like
-// DefaultProjection) and writes a snapshot on every applied event, so it can
-// resume from its last checkpoint instead of replaying the whole stream.
+// persisted through a SnapshotStore, so it can resume from its last checkpoint
+// instead of replaying the whole stream. Apply only updates the in-memory
+// state; the snapshot is written by Checkpoint, which BuildDecisionModel and
+// UpdateProjection call once per catch-up.
 //
 // The state type S is marshaled to and from JSON here — in the constructor and
-// Apply — so the SnapshotStore only ever sees the resulting bytes.
+// Checkpoint — so the SnapshotStore only ever sees the resulting bytes.
 type StoredProjection[S any] struct {
 	DefaultProjection[S]
 	store    SnapshotStore
 	name     string
 	position uint64
+	dirty    bool
 }
 
 // Compile-time check that StoredProjection implements CheckpointProjection.
@@ -68,13 +70,24 @@ func (p *StoredProjection[S]) After() uint64 {
 	return p.position
 }
 
-// Apply applies a single event to the in-memory state, advances the position,
-// and persists the new snapshot through the store.
+// Apply applies a single event to the in-memory state and advances the
+// position. The snapshot is not persisted until Checkpoint.
 func (p *StoredProjection[S]) Apply(ctx context.Context, e SequencedEvent) error {
 	if err := p.DefaultProjection.Apply(ctx, e); err != nil {
 		return fmt.Errorf("could not apply %s event: %w", e.Type, err)
 	}
 	p.position = e.SequenceNumber
+	p.dirty = true
+	return nil
+}
+
+// Checkpoint records the catch-up's progress by persisting the in-memory state
+// and position through the store. It is a no-op when nothing was applied since
+// the last checkpoint.
+func (p *StoredProjection[S]) Checkpoint(ctx context.Context) error {
+	if !p.dirty {
+		return nil
+	}
 	state, err := json.Marshal(p.State)
 	if err != nil {
 		return fmt.Errorf("could not marshal projection %q state: %w", p.name, err)
@@ -82,6 +95,7 @@ func (p *StoredProjection[S]) Apply(ctx context.Context, e SequencedEvent) error
 	if err := p.store.Save(ctx, p.name, state, p.position); err != nil {
 		return fmt.Errorf("could not save projection %q: %w", p.name, err)
 	}
+	p.dirty = false
 	return nil
 }
 
@@ -94,5 +108,6 @@ func (p *StoredProjection[S]) Reset(ctx context.Context) error {
 	var zero S
 	p.State = zero
 	p.position = 0
+	p.dirty = false
 	return nil
 }

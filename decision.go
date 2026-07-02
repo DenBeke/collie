@@ -42,6 +42,14 @@ func BuildDecisionModel(ctx context.Context, store Store, projections ...Project
 		}
 	}
 
+	for _, projection := range projections {
+		if stored, ok := projection.(CheckpointProjection); ok {
+			if err := stored.Checkpoint(ctx); err != nil {
+				return nil, fmt.Errorf("could not checkpoint projection: %w", err)
+			}
+		}
+	}
+
 	return &AppendCondition{
 		Query: query,
 		After: maxAfter,

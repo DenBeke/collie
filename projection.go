@@ -17,9 +17,15 @@ type Projection interface {
 // skips events it has already processed, and UpdateProjection uses the position
 // to apply only new events. Implementations decide how state and position are
 // stored (in-memory, database snapshot, per-row, etc.).
+//
+// A catch-up is a batch: BuildDecisionModel and UpdateProjection call Apply for
+// each new event and then Checkpoint exactly once. Implementations that buffer
+// state in memory record it durably in Checkpoint (one write per catch-up
+// instead of one per event); implementations that persist in Apply return nil.
 type CheckpointProjection interface {
 	Projection
 	After() uint64
+	Checkpoint(ctx context.Context) error
 }
 
 // HandleFunc processes a single event and returns the updated state.
@@ -52,8 +58,8 @@ func (p *DefaultProjection[S]) Apply(_ context.Context, e SequencedEvent) error 
 }
 
 // UpdateProjection catches up a CheckpointProjection by applying all new events
-// since its last checkpoint. Only events matching the projection's query are
-// read and applied.
+// since its last checkpoint, then calling Checkpoint once to record the
+// progress. Only events matching the projection's query are read and applied.
 func UpdateProjection(ctx context.Context, store Store, p CheckpointProjection) error {
 	for e, err := range store.Read(ctx, Query{p.EventQuery()}, p.After()) {
 		if err != nil {
@@ -63,6 +69,9 @@ func UpdateProjection(ctx context.Context, store Store, p CheckpointProjection) 
 		if err != nil {
 			return fmt.Errorf("could not apply %s event: %w", e.Type, err)
 		}
+	}
+	if err := p.Checkpoint(ctx); err != nil {
+		return fmt.Errorf("could not checkpoint projection: %w", err)
 	}
 	return nil
 }

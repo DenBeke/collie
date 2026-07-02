@@ -64,6 +64,12 @@ func (p *RowProjection[V]) After() uint64 {
 	return p.position
 }
 
+// Checkpoint is a no-op: RowProjection persists each event's row and position
+// in its own transaction in Apply, so there is no buffered progress to record.
+func (p *RowProjection[V]) Checkpoint(context.Context) error {
+	return nil
+}
+
 // Apply extracts the row key, loads the current value, calls the handler, and
 // persists the result — all in a single transaction.
 func (p *RowProjection[V]) Apply(ctx context.Context, e eventstore.SequencedEvent) error {
