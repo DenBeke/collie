@@ -34,6 +34,13 @@ These were discussed and are now the framework's explicit stance:
 7. **Snapshots are caches, never sources of truth.** Racing writers can regress a snapshot's
    position; that is benign because state+position are saved atomically and the next catch-up
    re-applies the delta. Worth a README section — it's a genuinely nice property of the design.
+8. **Package boundary: `eventstore` is the DCB spec kernel, `command` is the command
+   framework.** The core holds what the specification defines (store, events, queries,
+   projections, decision model, snapshot seam) and privileges no command style; `Command`,
+   `Execute` and its options, `DecisionError`/`ErrCommandRejected` live in `command` beside the
+   `Registry`. Consequence: all command-outcome errors sit in one package (only the spec-level
+   `ErrAppendConditionViolated` stays core), and `command.Command` stutters — accepted, with
+   `context.Context` as precedent.
 
 ## Change list
 
@@ -100,17 +107,33 @@ Ordered by priority. Items 5–8 form one coherent piece of work (the projection
 
 ### Registry layer
 
-9. **Error taxonomy (transport-neutral).** `Dispatch`/`Execute` must let adapters distinguish,
-   via `errors.Is`/`errors.As`:
-   - `ErrUnknownCommand` — no factory registered (→ 404)
-   - `ErrInvalidPayload` — JSON decode or `Validate()` failure (→ 400)
-   - `DecisionError{Err}` — domain rejection from `Decide`; wraps the domain error so messages
-     and `errors.As` still reach it (→ 409/422, app's choice). Today `Decide` errors pass
-     through unwrapped by design — good for messages, but the transport can't tell a domain
-     rejection from an infrastructure failure.
-   - `ErrAppendConditionViolated` — conflict, retries exhausted (→ 409/503)
+9. **Error taxonomy (transport-neutral).** ✅ Implemented. Everything classifies with plain
+   `errors.Is`, demonstrated in `ExampleRegistry_errorTaxonomy`:
+   - `command.ErrUnknownCommand` — no factory registered (→ 404)
+   - `command.ErrInvalidPayload` — JSON decode failure (→ 400)
+   - `command.ErrValidationFailed` — decoded but failed `Validate()` (→ 422)
+   - `command.ErrCommandRejected` — domain rejection from `Decide` (→ 409/422, app's
+     choice). Mechanism: `Execute` wraps the `Decide` error in `command.DecisionError`,
+     whose `Error()` returns the domain message byte-identical, whose `Unwrap` keeps
+     application error types reachable via `errors.Is/As`, and whose `Is` method *claims* the
+     `ErrCommandRejected` sentinel — the sentinel is a pure identity token that never appears
+     in any chain or message.
+   - `eventstore.ErrAppendConditionViolated` — conflict, retries exhausted (→ 409/503)
    - anything else — infrastructure (→ 500)
-10. **`Validate() error` hook**, checked by `Dispatch` after decode, before `Execute`.
+10. **Validation.** ✅ Implemented, two layers, both wrapping `ErrValidationFailed` with the
+    cause chained (so e.g. `validator.ValidationErrors` stays `errors.As`-reachable for
+    per-field 422 bodies):
+    - `command.WithValidator(func(any) error)` — registry-wide, wired once, runs on every
+      decoded command. The seam for declarative libraries (go-playground/validator etc.);
+      the core stays dependency-free and never blesses a specific library.
+    - `command.Validator` (`Validate() error`) — per-command, for semantic/cross-field rules
+      the declarative layer can't express. Runs after the registry-wide check.
+    Deliberately wire-boundary only — commands constructed in code and run through `Execute`
+    directly are not validated. Validation must stay stateless: a rule that needs the event
+    store is a decision and belongs in `Decide` (guarded by the append condition), not in
+    validation. JSON Schema was considered and rejected as a validation source of truth (the
+    Go struct is the command definition; parallel schemas drift) — generating schemas *from*
+    registered commands for API docs remains a possible later feature.
 11. **Dispatch middleware**: `func(ctx, name, payload, next) error` for auth, logging, metrics,
     tracing. `ExecuteOption`s can't express cross-cutting dispatch concerns.
 

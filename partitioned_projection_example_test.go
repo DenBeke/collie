@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"eventstore"
+	"eventstore/command"
 	"eventstore/memory"
 )
 
@@ -105,7 +106,7 @@ func ExampleNewPartitionedProjection() {
 	snapshots := memory.NewSnapshotStore()
 
 	subscribe := func(student, course string) {
-		err := eventstore.Execute(ctx, store, &SubscribeStudentToCourse{
+		err := command.Execute(ctx, store, &SubscribeStudentToCourse{
 			StudentID: student,
 			CourseID:  course,
 			snapshots: snapshots,

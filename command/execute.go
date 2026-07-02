@@ -1,9 +1,11 @@
-package eventstore
+package command
 
 import (
 	"context"
 	"errors"
 	"fmt"
+
+	"eventstore"
 )
 
 // Command is a self-handling DCB command: it declares the projections that form
@@ -14,15 +16,38 @@ type Command interface {
 	// Projections declares the decision model for this command, built from the
 	// command's own fields. It is called once per attempt and must return FRESH
 	// projections each call (their state is mutated in place while loading). The
-	// context allows projections that load persisted state (e.g. StoredProjection);
-	// return an error if that loading fails. Returning no projections makes the
-	// append unconditional.
-	Projections(ctx context.Context) ([]Projection, error)
+	// context allows projections that load persisted state (e.g.
+	// [eventstore.StoredProjection]); return an error if that loading fails.
+	// Returning no projections makes the append unconditional.
+	Projections(ctx context.Context) ([]eventstore.Projection, error)
 	// Decide runs after the projections are loaded. It reads their state and
 	// returns the events to append, an error to abort (nothing is appended), or
 	// no events for a no-op.
-	Decide(ctx context.Context) ([]Event, error)
+	Decide(ctx context.Context) ([]eventstore.Event, error)
 }
+
+// ErrCommandRejected classifies domain rejections returned by Command.Decide,
+// letting transport adapters distinguish a business-rule refusal from an
+// infrastructure failure via errors.Is(err, ErrCommandRejected). It is a pure
+// identity token: it never appears in any error chain or message —
+// DecisionError claims it through its Is method.
+var ErrCommandRejected = errors.New("command rejected")
+
+// DecisionError wraps an error returned by Command.Decide: a domain rejection,
+// as opposed to an infrastructure failure. Error() returns the domain message
+// unchanged, Unwrap lets errors.Is/As reach application-defined error types,
+// and Is answers true for ErrCommandRejected.
+type DecisionError struct {
+	Err error
+}
+
+func (e *DecisionError) Error() string { return e.Err.Error() }
+
+func (e *DecisionError) Unwrap() error { return e.Err }
+
+// Is claims ErrCommandRejected, so errors.Is classifies any decision error
+// without the sentinel polluting the message.
+func (e *DecisionError) Is(target error) bool { return target == ErrCommandRejected }
 
 // ExecuteOption configures Execute.
 type ExecuteOption func(*executeConfig)
@@ -60,9 +85,11 @@ func WithBackoff(backoff func(ctx context.Context, attempt int)) ExecuteOption {
 // On an append-condition conflict it rebuilds the decision model and retries, up
 // to the configured number of attempts (one by default — opt in via
 // WithMaxAttempts). If Decide returns an error, Execute aborts without appending
-// and does not retry. If Decide returns no events, Execute is a no-op. A command
-// that declares no projections appends unconditionally.
-func Execute(ctx context.Context, store Store, command Command, options ...ExecuteOption) error {
+// and does not retry; the error comes back wrapped in a DecisionError (matching
+// errors.Is(err, ErrCommandRejected)) with the domain message unchanged. If
+// Decide returns no events, Execute is a no-op. A command that declares no
+// projections appends unconditionally.
+func Execute(ctx context.Context, store eventstore.Store, command Command, options ...ExecuteOption) error {
 	config := executeConfig{maxAttempts: 1}
 	for _, option := range options {
 		option(&config)
@@ -74,9 +101,9 @@ func Execute(ctx context.Context, store Store, command Command, options ...Execu
 			return fmt.Errorf("could not build projections: %w", err)
 		}
 
-		var condition *AppendCondition
+		var condition *eventstore.AppendCondition
 		if len(projections) > 0 {
-			built, err := BuildDecisionModel(ctx, store, projections...)
+			built, err := eventstore.BuildDecisionModel(ctx, store, projections...)
 			if err != nil {
 				return fmt.Errorf("could not build decision model: %w", err)
 			}
@@ -85,9 +112,9 @@ func Execute(ctx context.Context, store Store, command Command, options ...Execu
 
 		events, err := command.Decide(ctx)
 		if err != nil {
-			// Decide returns the command's own (already meaningful) decision error;
-			// pass it through unwrapped so callers see the domain message directly.
-			return err
+			// A DecisionError keeps the domain message byte-identical while marking
+			// the error as a business-rule rejection (ErrCommandRejected).
+			return &DecisionError{Err: err}
 		}
 		if len(events) == 0 {
 			return nil
@@ -97,7 +124,7 @@ func Execute(ctx context.Context, store Store, command Command, options ...Execu
 		if err == nil {
 			return nil
 		}
-		if !errors.Is(err, ErrAppendConditionViolated) || attempt >= config.maxAttempts {
+		if !errors.Is(err, eventstore.ErrAppendConditionViolated) || attempt >= config.maxAttempts {
 			return fmt.Errorf("could not append events: %w", err)
 		}
 		if config.backoff != nil {

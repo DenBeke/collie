@@ -71,8 +71,125 @@ func TestDispatch_RoutesByTypeName(t *testing.T) {
 func TestDispatch_UnknownCommand(t *testing.T) {
 	registry := command.NewRegistry(memory.New())
 	err := registry.Dispatch(context.Background(), "Nope", nil)
-	if err == nil || !strings.Contains(err.Error(), "unknown command") {
-		t.Fatalf("expected unknown command error, got %v", err)
+	if !errors.Is(err, command.ErrUnknownCommand) {
+		t.Fatalf("expected ErrUnknownCommand, got %v", err)
+	}
+	if !strings.Contains(err.Error(), `"Nope"`) {
+		t.Fatalf("expected the command name in the message, got %v", err)
+	}
+}
+
+func TestDispatch_InvalidPayload(t *testing.T) {
+	registry := command.NewRegistry(memory.New(), command.WithCommands(&signUp{}))
+	err := registry.Dispatch(context.Background(), "signUp", []byte(`{not json`))
+	if !errors.Is(err, command.ErrInvalidPayload) {
+		t.Fatalf("expected ErrInvalidPayload, got %v", err)
+	}
+}
+
+// validatedSignUp requires a username, via the Validator hook.
+type validatedSignUp struct {
+	signUp
+}
+
+func (cmd *validatedSignUp) Validate() error {
+	if cmd.Username == "" {
+		return errors.New("username is required")
+	}
+	return nil
+}
+
+func TestDispatch_ValidationFailed(t *testing.T) {
+	store := memory.New()
+	registry := command.NewRegistry(store, command.WithCommands(&validatedSignUp{}))
+
+	err := registry.Dispatch(context.Background(), "validatedSignUp", []byte(`{}`))
+	if !errors.Is(err, command.ErrValidationFailed) {
+		t.Fatalf("expected ErrValidationFailed, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "username is required") {
+		t.Fatalf("expected the validation detail in the message, got %v", err)
+	}
+	if got := usersNamed(t, store, ""); got != 0 {
+		t.Fatalf("expected no events after failed validation, got %d", got)
+	}
+
+	// A valid payload passes validation and executes.
+	if err := registry.Dispatch(context.Background(), "validatedSignUp", []byte(`{"username":"alice"}`)); err != nil {
+		t.Fatalf("expected valid dispatch to succeed, got %v", err)
+	}
+}
+
+// errTooShort is what the fake registry-wide validator returns, standing in for
+// e.g. validator.ValidationErrors; the test proves it stays errors.Is-reachable.
+var errTooShort = errors.New("username must be at least 3 characters")
+
+func TestDispatch_RegistryWideValidator(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	registry := command.NewRegistry(store,
+		command.WithValidator(func(cmd any) error {
+			if signUp, ok := cmd.(*signUp); ok && len(signUp.Username) < 3 {
+				return errTooShort
+			}
+			return nil
+		}),
+		command.WithCommands(&signUp{}),
+	)
+
+	err := registry.Dispatch(ctx, "signUp", []byte(`{"username":"al"}`))
+	if !errors.Is(err, command.ErrValidationFailed) {
+		t.Fatalf("expected ErrValidationFailed, got %v", err)
+	}
+	if !errors.Is(err, errTooShort) {
+		t.Fatalf("expected the validator's error in the chain, got %v", err)
+	}
+	if got := usersNamed(t, store, "al"); got != 0 {
+		t.Fatalf("expected no events after failed validation, got %d", got)
+	}
+
+	if err := registry.Dispatch(ctx, "signUp", []byte(`{"username":"alice"}`)); err != nil {
+		t.Fatalf("expected valid dispatch to succeed, got %v", err)
+	}
+}
+
+// TestDispatch_RegistryValidatorRunsBeforeCommandValidate pins the layering:
+// the registry-wide (shape) check runs first; the command's own Validate
+// (semantics) only runs once the shape check passes.
+func TestDispatch_RegistryValidatorRunsBeforeCommandValidate(t *testing.T) {
+	ctx := context.Background()
+	registryRejects := errors.New("shape check failed")
+	registry := command.NewRegistry(memory.New(),
+		command.WithValidator(func(any) error { return registryRejects }),
+		command.WithCommands(&validatedSignUp{}),
+	)
+
+	// Both layers would reject the empty username; the registry-wide error wins.
+	err := registry.Dispatch(ctx, "validatedSignUp", []byte(`{}`))
+	if !errors.Is(err, registryRejects) {
+		t.Fatalf("expected the registry-wide validator to run first, got %v", err)
+	}
+	if strings.Contains(err.Error(), "username is required") {
+		t.Fatalf("command Validate must not have run, got %v", err)
+	}
+}
+
+// TestDispatch_DomainRejectionClassifies proves a Decide rejection surfaces from
+// Dispatch matching command.ErrCommandRejected with the message unchanged.
+func TestDispatch_DomainRejectionClassifies(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	registry := command.NewRegistry(store, command.WithCommands(&signUp{}))
+
+	if err := registry.Dispatch(ctx, "signUp", []byte(`{"username":"alice"}`)); err != nil {
+		t.Fatalf("first dispatch: %v", err)
+	}
+	err := registry.Dispatch(ctx, "signUp", []byte(`{"username":"alice"}`))
+	if !errors.Is(err, command.ErrCommandRejected) {
+		t.Fatalf("expected ErrCommandRejected, got %v", err)
+	}
+	if err.Error() != `username "alice" is already taken` {
+		t.Fatalf("expected the domain message unchanged, got %q", err.Error())
 	}
 }
 

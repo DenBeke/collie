@@ -1,4 +1,4 @@
-package eventstore_test
+package command_test
 
 import (
 	"context"
@@ -8,8 +8,26 @@ import (
 	"testing"
 
 	"eventstore"
+	"eventstore/command"
 	"eventstore/memory"
 )
+
+// seed appends n events of the given type and returns the store.
+func seed(t *testing.T, n int, eventType string, tags []eventstore.Tag) *memory.Store {
+	t.Helper()
+	store := memory.New()
+	ctx := context.Background()
+	for range n {
+		event, err := eventstore.NewEvent(eventType, nil, tags)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Append(ctx, []eventstore.Event{event}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return store
+}
 
 // countAll returns the number of events in the store (nil query matches all).
 func countAll(t *testing.T, store eventstore.Store) int {
@@ -28,7 +46,7 @@ func TestExecute_AppendsOnSuccess(t *testing.T) {
 	ctx := context.Background()
 	store := memory.New()
 
-	if err := eventstore.Execute(ctx, store, &SignUp{Username: "alice"}); err != nil {
+	if err := command.Execute(ctx, store, &signUp{Username: "alice"}); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
 	if count := countAll(t, store); count != 1 {
@@ -40,7 +58,7 @@ func TestExecute_AbortsOnDecideError(t *testing.T) {
 	ctx := context.Background()
 	store := seed(t, 1, "UserSignedUp", eventstore.NewTags("username", "alice"))
 
-	err := eventstore.Execute(ctx, store, &SignUp{Username: "alice"})
+	err := command.Execute(ctx, store, &signUp{Username: "alice"})
 	if err == nil || !strings.Contains(err.Error(), "already taken") {
 		t.Fatalf("expected 'already taken' error, got %v", err)
 	}
@@ -54,7 +72,7 @@ func TestExecute_NoOpWhenNoEvents(t *testing.T) {
 	ctx := context.Background()
 	store := memory.New()
 
-	if err := eventstore.Execute(ctx, store, noopCommand{}); err != nil {
+	if err := command.Execute(ctx, store, noopCommand{}); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
 	if count := countAll(t, store); count != 0 {
@@ -66,7 +84,7 @@ func TestExecute_UnconditionalWhenNoProjections(t *testing.T) {
 	ctx := context.Background()
 	store := memory.New()
 
-	if err := eventstore.Execute(ctx, store, unconditionalCommand{}); err != nil {
+	if err := command.Execute(ctx, store, unconditionalCommand{}); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
 	if count := countAll(t, store); count != 1 {
@@ -79,7 +97,7 @@ func TestExecute_RetriesOnConflict(t *testing.T) {
 	store := memory.New()
 
 	cmd := &conflictOnce{store: store}
-	if err := eventstore.Execute(ctx, store, cmd, eventstore.WithMaxAttempts(3)); err != nil {
+	if err := command.Execute(ctx, store, cmd, command.WithMaxAttempts(3)); err != nil {
 		t.Fatalf("execute with retry: %v", err)
 	}
 	if cmd.attempts != 2 {
@@ -96,12 +114,71 @@ func TestExecute_NoRetryByDefault(t *testing.T) {
 	store := memory.New()
 
 	cmd := &conflictOnce{store: store}
-	err := eventstore.Execute(ctx, store, cmd) // default: one attempt
+	err := command.Execute(ctx, store, cmd) // default: one attempt
 	if !errors.Is(err, eventstore.ErrAppendConditionViolated) {
 		t.Fatalf("expected ErrAppendConditionViolated, got %v", err)
 	}
 	if cmd.attempts != 1 {
 		t.Fatalf("expected 1 attempt, got %d", cmd.attempts)
+	}
+}
+
+// errUsernameTaken is a domain sentinel a command wraps into its Decide error,
+// proving application error types survive the trip through Execute.
+var errUsernameTaken = errors.New("username taken")
+
+// rejectingCommand always rejects with a wrapped domain sentinel.
+type rejectingCommand struct{}
+
+func (rejectingCommand) Projections(context.Context) ([]eventstore.Projection, error) {
+	return nil, nil
+}
+func (rejectingCommand) Decide(context.Context) ([]eventstore.Event, error) {
+	return nil, fmt.Errorf("%w: %q", errUsernameTaken, "alice")
+}
+
+// TestExecute_DecisionErrorClassification proves the error taxonomy on domain
+// rejections: errors.Is matches ErrCommandRejected, the message is the domain
+// message unchanged, and application sentinels wrapped by Decide stay reachable.
+func TestExecute_DecisionErrorClassification(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+
+	err := command.Execute(ctx, store, rejectingCommand{})
+	if err == nil {
+		t.Fatal("expected a rejection")
+	}
+	if !errors.Is(err, command.ErrCommandRejected) {
+		t.Fatalf("expected errors.Is(err, ErrCommandRejected), got %v", err)
+	}
+	if err.Error() != `username taken: "alice"` {
+		t.Fatalf("expected the domain message unchanged, got %q", err.Error())
+	}
+	if !errors.Is(err, errUsernameTaken) {
+		t.Fatalf("expected the domain sentinel to be reachable, got %v", err)
+	}
+	var decision *command.DecisionError
+	if !errors.As(err, &decision) || decision.Err.Error() != `username taken: "alice"` {
+		t.Fatalf("expected errors.As to yield the DecisionError, got %v", err)
+	}
+	if countAll(t, store) != 0 {
+		t.Fatal("expected no events appended on rejection")
+	}
+}
+
+// TestExecute_ConflictIsNotADecisionError proves the two 4xx-ish classes stay
+// distinct: an exhausted optimistic retry matches ErrAppendConditionViolated
+// but not ErrCommandRejected.
+func TestExecute_ConflictIsNotADecisionError(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+
+	err := command.Execute(ctx, store, &conflictOnce{store: store}) // one attempt: conflict surfaces
+	if !errors.Is(err, eventstore.ErrAppendConditionViolated) {
+		t.Fatalf("expected ErrAppendConditionViolated, got %v", err)
+	}
+	if errors.Is(err, command.ErrCommandRejected) {
+		t.Fatalf("conflict must not classify as a command rejection: %v", err)
 	}
 }
 
