@@ -1,5 +1,11 @@
 # Pluggable projection persistence — `SnapshotStore`
 
+> **Status: built.** This design shipped as the `snapshot` package: the seam below is
+> `snapshot.Store`, the checkpoint projection is `snapshot.Projection[S]`, and the constructor
+> is `snapshot.NewProjection(ctx, store, name, def, partition ...Tag)` — with partition tags
+> extending the idea to per-entity snapshots. Names below are the design-time ones; see
+> `design-review.md` for the decision records.
+
 The seam that lets **checkpointed/cached projections** (used to avoid replaying a long-lived
 entity's whole history on every decision) be backed by *any* store — postgres today, Mongo or a
 gorm-free driver tomorrow — **without rewriting a single command/handler**.

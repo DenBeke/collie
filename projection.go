@@ -3,6 +3,8 @@ package eventstore
 import (
 	"context"
 	"fmt"
+	"maps"
+	"slices"
 )
 
 // Projection is satisfied by *DefaultProjection[S] for any S, or any custom type
@@ -32,17 +34,25 @@ type CheckpointProjection interface {
 type HandleFunc[S any] func(S, SequencedEvent) (S, error)
 
 // DefaultProjection defines how to apply matching events into a state of type S.
-// Query controls which events are read from the store. Handlers maps event
-// types to functions that update state; unhandled types are ignored.
+// Query controls which events are read from the store; when Query.Types is
+// empty, the types derive from the Handlers keys — the usual case, since an
+// event type without a handler cannot change the state (and so cannot change
+// any decision built on it). Handlers maps event types to functions that update
+// state; unhandled types are ignored.
 type DefaultProjection[S any] struct {
 	Query    QueryItem
 	State    S
 	Handlers map[string]HandleFunc[S]
 }
 
-// EventQuery returns the projection's QueryItem.
+// EventQuery returns the projection's QueryItem. When Query.Types is empty, the
+// types are the sorted Handlers keys, so query and handlers cannot drift apart.
 func (p *DefaultProjection[S]) EventQuery() QueryItem {
-	return p.Query
+	query := p.Query
+	if len(query.Types) == 0 && len(p.Handlers) > 0 {
+		query.Types = slices.Sorted(maps.Keys(p.Handlers))
+	}
+	return query
 }
 
 // Apply applies a single event to State.

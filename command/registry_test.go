@@ -10,6 +10,7 @@ import (
 	"eventstore"
 	"eventstore/command"
 	"eventstore/memory"
+	"eventstore/snapshot"
 )
 
 // signUp is a test command mirroring the library example.
@@ -234,10 +235,10 @@ func TestDispatch_NoInjectionWhenStoreMissing(t *testing.T) {
 
 // needsSnapshotStore errors unless the registry injected a snapshot store.
 type needsSnapshotStore struct {
-	snapshotStore eventstore.SnapshotStore
+	snapshotStore snapshot.Store
 }
 
-func (cmd *needsSnapshotStore) UseSnapshotStore(snapshotStore eventstore.SnapshotStore) {
+func (cmd *needsSnapshotStore) UseSnapshotStore(snapshotStore snapshot.Store) {
 	cmd.snapshotStore = snapshotStore
 }
 
@@ -263,11 +264,11 @@ type touchCounter struct {
 	command.SnapshotStoreAccess
 	ID string `json:"id"`
 
-	touches *eventstore.StoredProjection[int]
+	touches *snapshot.Projection[int]
 }
 
 func (cmd *touchCounter) Projections(ctx context.Context) ([]eventstore.Projection, error) {
-	projection, err := eventstore.NewStoredProjection(ctx, cmd.SnapshotStore(), "touch-"+cmd.ID,
+	projection, err := snapshot.NewProjection(ctx, cmd.SnapshotStore(), "touch-"+cmd.ID,
 		eventstore.DefaultProjection[int]{
 			Query: eventstore.QueryItem{Types: []string{"Touched"}, Tags: eventstore.NewTags("id", cmd.ID)},
 			Handlers: map[string]eventstore.HandleFunc[int]{

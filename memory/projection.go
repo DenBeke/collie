@@ -4,39 +4,39 @@ import (
 	"context"
 	"sync"
 
-	"eventstore"
+	"eventstore/snapshot"
 )
 
-// Compile-time check that SnapshotStore implements eventstore.SnapshotStore.
-var _ eventstore.SnapshotStore = (*SnapshotStore)(nil)
+// Compile-time check that SnapshotStore implements snapshot.Store.
+var _ snapshot.Store = (*SnapshotStore)(nil)
 
-// SnapshotStore is an in-memory [eventstore.SnapshotStore]. State is kept in a
+// SnapshotStore is an in-memory [snapshot.Store]. State is kept in a
 // map and lost when the process exits — useful for tests and for
-// [eventstore.StoredProjection]s that only need within-process checkpointing.
+// [snapshot.Projection]s that only need within-process checkpointing.
 type SnapshotStore struct {
 	mu        sync.RWMutex
-	snapshots map[string]snapshot
+	snapshots map[string]entry
 }
 
-type snapshot struct {
+type entry struct {
 	state    []byte
 	position uint64
 }
 
 // NewSnapshotStore creates an empty in-memory snapshot store.
 func NewSnapshotStore() *SnapshotStore {
-	return &SnapshotStore{snapshots: make(map[string]snapshot)}
+	return &SnapshotStore{snapshots: make(map[string]entry)}
 }
 
 // Load returns the stored state and position for name.
 func (store *SnapshotStore) Load(_ context.Context, name string) (state []byte, position uint64, found bool, err error) {
 	store.mu.RLock()
 	defer store.mu.RUnlock()
-	entry, ok := store.snapshots[name]
+	stored, ok := store.snapshots[name]
 	if !ok {
 		return nil, 0, false, nil
 	}
-	return entry.state, entry.position, true, nil
+	return stored.state, stored.position, true, nil
 }
 
 // Save stores state and position for name, copying state so later mutations by
@@ -46,7 +46,7 @@ func (store *SnapshotStore) Save(_ context.Context, name string, state []byte, p
 	copy(stateCopy, state)
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	store.snapshots[name] = snapshot{state: stateCopy, position: position}
+	store.snapshots[name] = entry{state: stateCopy, position: position}
 	return nil
 }
 

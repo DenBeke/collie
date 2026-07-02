@@ -8,6 +8,7 @@ import (
 
 	"eventstore"
 	"eventstore/memory"
+	"eventstore/snapshot"
 
 	"github.com/labstack/echo/v4"
 )
@@ -62,8 +63,8 @@ func ExampleBuildDecisionModel() {
 
 // totalUsersProjection is a read model that counts all signed-up users.
 // Unlike decision model projections, it is long-lived and incrementally updated.
-func totalUsersProjection() *eventstore.StoredProjection[int] {
-	proj, _ := eventstore.NewStoredProjection(context.Background(), memory.NewSnapshotStore(), "total-users", eventstore.DefaultProjection[int]{
+func totalUsersProjection() *snapshot.Projection[int] {
+	proj, _ := snapshot.NewProjection(context.Background(), memory.NewSnapshotStore(), "total-users", eventstore.DefaultProjection[int]{
 		Query: eventstore.QueryItem{
 			Types: []string{"UserSignedUp"},
 		},

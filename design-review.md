@@ -34,13 +34,15 @@ These were discussed and are now the framework's explicit stance:
 7. **Snapshots are caches, never sources of truth.** Racing writers can regress a snapshot's
    position; that is benign because state+position are saved atomically and the next catch-up
    re-applies the delta. Worth a README section — it's a genuinely nice property of the design.
-8. **Package boundary: `eventstore` is the DCB spec kernel, `command` is the command
-   framework.** The core holds what the specification defines (store, events, queries,
-   projections, decision model, snapshot seam) and privileges no command style; `Command`,
-   `Execute` and its options, `DecisionError`/`ErrCommandRejected` live in `command` beside the
-   `Registry`. Consequence: all command-outcome errors sit in one package (only the spec-level
-   `ErrAppendConditionViolated` stays core), and `command.Command` stutters — accepted, with
-   `context.Context` as precedent.
+8. **Package boundary: `eventstore` is the DCB spec kernel; frameworks live beside it.** The
+   core holds what the specification defines (store, events, queries, projections, decision
+   model) and privileges no command style or caching strategy. `command` is the command
+   framework (`Command`, `Execute` and its options, `DecisionError`/`ErrCommandRejected`,
+   `Registry`). `snapshot` is the projection-caching framework (`snapshot.Store` — the seam
+   from snapshot-store.md — and `snapshot.Projection` with `snapshot.NewProjection`).
+   Consequences: all command-outcome errors sit in one package (only the spec-level
+   `ErrAppendConditionViolated` stays core); `command.Command` stutters — accepted, with
+   `context.Context` as precedent; a typical command file imports all three packages.
 
 ## Change list
 
@@ -80,20 +82,22 @@ Ordered by priority. Items 5–8 form one coherent piece of work (the projection
    boundary. Go's structural typing can't distinguish identical method sets, so add a marker
    (e.g. `DecisionModel()`) to decision-capable projections; `BuildDecisionModel` accepts only
    those.
-6. **`PartitionedProjection` — first-class per-key decision snapshots.** ✅ Implemented
-   (`partitioned_projection.go`, example in `partitioned_projection_example_test.go`; includes
-   the catch-up `End` lifecycle — one snapshot write per catch-up — see the decision record
-   below). Formalizes the hand-rolled `"seats-" + room` pattern (see full design below).
-   Constructor:
+6. **Per-key decision snapshots.** ✅ Implemented, after several design rounds (see the
+   partition decision record below), as one variadic parameter — no dedicated type:
 
    ```go
-   NewPartitionedProjection[S](ctx, snapshots SnapshotStore, name string, partition []Tag,
-       def DefaultProjection[S]) (*PartitionedProjection[S], error)
+   snapshot.NewProjection[S](ctx, store snapshot.Store, name string,
+       def eventstore.DefaultProjection[S], partition ...Tag) (*snapshot.Projection[S], error)
    ```
 
-   Includes: canonical snapshot-name encoding from the tag set, per-partition checkpoints,
-   a version knob for handler-logic changes, and one `Save` at the end of catch-up instead of
-   per applied event (also fix this in `StoredProjection`).
+   Partition tags are AND-ed into the query and the snapshot name is canonically derived
+   (sorted + escaped → order-insensitive, collision-free) with a per-partition checkpoint;
+   zero tags = the fixed-name singleton. Versioning is a naming convention
+   (`"course-seats/v2"`), not API. Includes the catch-up `Checkpoint` lifecycle (one snapshot
+   write per catch-up — see that decision record) and `DefaultProjection` deriving
+   `Query.Types` from the `Handlers` keys when unset, which kills the
+   add-a-handler-forget-the-query-type footgun. Example: `snapshot/example_test.go`
+   (course subscriptions, three differently-scoped boundaries).
 7. **Multi-entity events in `RowHandler`.** `Key(e) (string, error)` assumes one entity per
    event; a transfer-between-accounts event (the reason `Tag` allows duplicate keys) can't
    update both rows. Change to `Keys(e) ([]string, error)` with `Apply` receiving the key it is
@@ -153,7 +157,7 @@ Ordered by priority. Items 5–8 form one coherent piece of work (the projection
     `MigrateIndexes` breaks on projection names containing dashes and mentions a `Count` that
     doesn't exist (add it or fix the doc).
 
-## The projection model — why the split, and the PartitionedProjection design
+## The projection model — why the split, and the partitioned-snapshot design
 
 ### Two concepts, one interface (the original problem)
 
@@ -165,10 +169,10 @@ Ordered by priority. Items 5–8 form one coherent piece of work (the projection
 `RowProjection` is the second thing. Using it in a decision model is quietly catastrophic
 (boundary = the whole projection), hence item 5. But the observation that "almost all DCB
 examples carry a tag" is correct — decisions constantly need *per-entity* state. The
-`ReserveSeat` example already hand-rolls exactly that: a `StoredProjection` named
+`ReserveSeat` example already hand-rolled exactly that: a snapshot projection named
 `"seats-" + room` is a row projection where key = room, **except each "row" carries its own
-checkpoint** — which is precisely what makes it safe for decisions. That pattern deserves to be
-first-class: `PartitionedProjection`.
+checkpoint** — which is precisely what makes it safe for decisions. That pattern is now
+first-class: the `partition ...Tag` parameter of `snapshot.NewProjection`.
 
 ### Partition key = tag set, not a single tag
 
@@ -177,16 +181,16 @@ The canonical course-subscription command needs three differently-scoped pieces 
 ```go
 func (cmd *SubscribeToCourse) Projections(ctx context.Context) ([]eventstore.Projection, error) {
     // Partition key {course: c1} — one snapshot per course
-    capacity, _ := eventstore.NewPartitionedProjection(ctx, cmd.SnapshotStore(), "course-capacity",
-        eventstore.NewTags("course", cmd.CourseID), capacityDef())
+    capacity, _ := snapshot.NewProjection(ctx, cmd.SnapshotStore(), "course-capacity",
+        capacityDef, eventstore.NewTag("course", cmd.CourseID))
 
     // Partition key {student: s1} — one snapshot per student
-    count, _ := eventstore.NewPartitionedProjection(ctx, cmd.SnapshotStore(), "student-subscriptions",
-        eventstore.NewTags("student", cmd.StudentID), countDef())
+    count, _ := snapshot.NewProjection(ctx, cmd.SnapshotStore(), "student-subscriptions",
+        countDef, eventstore.NewTag("student", cmd.StudentID))
 
     // Partition key {student: s1, course: c1} — one snapshot per pair
-    already, _ := eventstore.NewPartitionedProjection(ctx, cmd.SnapshotStore(), "subscription",
-        eventstore.NewTags("student", cmd.StudentID, "course", cmd.CourseID), existsDef())
+    already, _ := snapshot.NewProjection(ctx, cmd.SnapshotStore(), "subscription",
+        existsDef, eventstore.NewTag("student", cmd.StudentID), eventstore.NewTag("course", cmd.CourseID))
 
     return []eventstore.Projection{capacity, count, already}, nil
 }
@@ -207,9 +211,9 @@ Design points:
   partitions couples unrelated boundaries. Speed: catch-up reads only events matching the
   partition's tags after its own checkpoint (tag-indexed, typically zero-to-few rows), and
   commands on different partitions never contend.
-- **Versioning**: a snapshot is only valid for the handler logic that built it. Include a
-  version in the snapshot name (or derive it from the projection definition) so changing
-  handlers invalidates old snapshots explicitly instead of silently reading wrong state.
+- **Versioning**: a snapshot is only valid for the handler logic that built it. Convention,
+  not API: put a version in the name (`"course-seats/v2"`) so changing handlers invalidates
+  old snapshots explicitly instead of silently reading wrong state.
 - **Memory profile**: a command touches one key, so it loads one partition's state (one room's
   count, one patient's allergies). The "whole projection" exists only as N independent snapshot
   rows in the store; no process ever holds them all. Memory is O(one entity) regardless of
@@ -229,6 +233,31 @@ Design points:
   if it ever is: bounded per-projection reads — pin the store head H, read each projection's
   delta from its own checkpoint up to H, set the condition's `After = H`. That requires `head()`
   and an `until` read option the interface deliberately lacks today. Noted, not built.
+
+## Decision record: partitioned snapshots — from a type to a parameter
+
+The per-key decision snapshot went through four designs; recording them so the losers stay
+lost:
+
+1. *`PartitionedProjection[S]` type + `PartitionedOption`/`WithVersion`* — worked, but was a
+   whole API surface (type, options, accessor) wrapping "a stored projection whose name came
+   from tags".
+2. *Definition struct + `For()` method* (`def.For(ctx, store, tags)`) — killed the inline
+   re-declaration and the shared-name/divergent-handlers hazard, but `For` was a preposition
+   pretending to be a verb, called on something that read like a projection.
+3. *Flattened `StoredProjectionDef` + constructor* — flat literal, but still a helper struct;
+   the nesting had been shifted, not removed.
+4. **Chosen: no new type at all.** `DefaultProjection` stays the only definition carrier
+   (explicitly desired); the existing constructor gains a variadic partition:
+   `snapshot.NewProjection(ctx, store, name, def, partition ...Tag)`. Tags are arguments, not
+   options, because the partition determines *identity* (which snapshot you get), and options
+   are for behavior. Canonical name encoding became an internal concern. Versioning is a
+   naming convention (`"name/v2"`), not a knob. Two lasting extras rescued from rounds 2–3:
+   `Query.Types` derives from `Handlers` keys when unset (drift footgun eliminated, and safe —
+   an unhandled type cannot change state, so it cannot change a decision; narrowing only
+   removes false conflicts), and the machinery moved to its own `snapshot` package per settled
+   decision 8, renaming `StoredProjection` → `snapshot.Projection` and `SnapshotStore` →
+   `snapshot.Store` along the way (which also resolved part of the naming-family confusion).
 
 ## Decision record: the catch-up `Checkpoint` lifecycle
 

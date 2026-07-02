@@ -17,7 +17,7 @@ type Command interface {
 	// command's own fields. It is called once per attempt and must return FRESH
 	// projections each call (their state is mutated in place while loading). The
 	// context allows projections that load persisted state (e.g.
-	// [eventstore.StoredProjection]); return an error if that loading fails.
+	// [snapshot.Projection]); return an error if that loading fails.
 	// Returning no projections makes the append unconditional.
 	Projections(ctx context.Context) ([]eventstore.Projection, error)
 	// Decide runs after the projections are loaded. It reads their state and

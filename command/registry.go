@@ -12,6 +12,7 @@ import (
 	"reflect"
 
 	"eventstore"
+	"eventstore/snapshot"
 )
 
 // Dispatch errors, classifiable with errors.Is so a transport adapter (HTTP,
@@ -41,11 +42,11 @@ type Validator interface {
 }
 
 // SnapshotStoreUser is implemented by commands that need the registry's shared
-// snapshot store injected (to build [eventstore.StoredProjection]s). The Registry
+// snapshot store injected (to build [snapshot.Projection]s). The Registry
 // calls UseSnapshotStore on each freshly constructed command that implements it,
 // before decoding the payload and executing.
 type SnapshotStoreUser interface {
-	UseSnapshotStore(eventstore.SnapshotStore)
+	UseSnapshotStore(snapshot.Store)
 }
 
 // SnapshotStoreAccess is an embeddable helper that satisfies [SnapshotStoreUser].
@@ -59,22 +60,22 @@ type SnapshotStoreUser interface {
 //	}
 //
 //	func (cmd *ReserveSeat) Projections(ctx context.Context) ([]eventstore.Projection, error) {
-//	    p, err := eventstore.NewStoredProjection(ctx, cmd.SnapshotStore(), "seats-"+cmd.Room, def)
+//	    p, err := snapshot.NewProjection(ctx, cmd.SnapshotStore(), "seats-"+cmd.Room, def)
 //	    // ...
 //	}
 type SnapshotStoreAccess struct {
-	snapshotStore eventstore.SnapshotStore
+	snapshotStore snapshot.Store
 }
 
 var _ SnapshotStoreUser = (*SnapshotStoreAccess)(nil)
 
 // UseSnapshotStore receives the store from the registry.
-func (access *SnapshotStoreAccess) UseSnapshotStore(snapshotStore eventstore.SnapshotStore) {
+func (access *SnapshotStoreAccess) UseSnapshotStore(snapshotStore snapshot.Store) {
 	access.snapshotStore = snapshotStore
 }
 
 // SnapshotStore returns the injected store (nil until the registry injects it).
-func (access *SnapshotStoreAccess) SnapshotStore() eventstore.SnapshotStore {
+func (access *SnapshotStoreAccess) SnapshotStore() snapshot.Store {
 	return access.snapshotStore
 }
 
@@ -83,7 +84,7 @@ func (access *SnapshotStoreAccess) SnapshotStore() eventstore.SnapshotStore {
 // with the With... options.
 type Registry struct {
 	store          eventstore.Store
-	snapshotStore  eventstore.SnapshotStore
+	snapshotStore  snapshot.Store
 	factories      map[string]func() Command
 	executeOptions []ExecuteOption
 	validator      func(command any) error
@@ -134,7 +135,7 @@ func WithCommandFunc(name string, newCommand func() Command) Option {
 
 // WithSnapshotStore sets the snapshot store injected into commands that implement
 // [SnapshotStoreUser].
-func WithSnapshotStore(snapshotStore eventstore.SnapshotStore) Option {
+func WithSnapshotStore(snapshotStore snapshot.Store) Option {
 	return func(registry *Registry) {
 		registry.snapshotStore = snapshotStore
 	}

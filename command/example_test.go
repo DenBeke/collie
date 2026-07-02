@@ -8,6 +8,7 @@ import (
 	"eventstore"
 	"eventstore/command"
 	"eventstore/memory"
+	"eventstore/snapshot"
 )
 
 // roomCapacity caps how many seats a room can hold.
@@ -25,7 +26,7 @@ type ReserveSeat struct {
 	command.SnapshotStoreAccess
 	Room string `json:"room"`
 
-	seatsTaken *eventstore.StoredProjection[int]
+	seatsTaken *snapshot.Projection[int]
 }
 
 // Validate rejects a reservation without a room. Dispatch calls it after
@@ -38,7 +39,7 @@ func (cmd *ReserveSeat) Validate() error {
 }
 
 func (cmd *ReserveSeat) Projections(ctx context.Context) ([]eventstore.Projection, error) {
-	projection, err := eventstore.NewStoredProjection(ctx, cmd.SnapshotStore(), "seats-"+cmd.Room,
+	projection, err := snapshot.NewProjection(ctx, cmd.SnapshotStore(), "seats-"+cmd.Room,
 		eventstore.DefaultProjection[int]{
 			Query: eventstore.QueryItem{
 				Types: []string{"SeatReserved"},
@@ -173,9 +174,9 @@ func ExampleRegistry_errorTaxonomy() {
 	}
 
 	for _, dispatch := range []struct{ name, payload string }{
-		{"CancelSeat", `{}`},            // never registered
-		{"ReserveSeat", `{oops`},        // malformed JSON
-		{"ReserveSeat", `{}`},           // decodes, but no room
+		{"CancelSeat", `{}`},     // never registered
+		{"ReserveSeat", `{oops`}, // malformed JSON
+		{"ReserveSeat", `{}`},    // decodes, but no room
 		{"ReserveSeat", `{"room":"R1"}`},
 		{"ReserveSeat", `{"room":"R1"}`},
 		{"ReserveSeat", `{"room":"R1"}`},

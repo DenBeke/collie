@@ -4,19 +4,19 @@ import (
 	"context"
 	"fmt"
 
-	"eventstore"
+	"eventstore/snapshot"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
-// Compile-time check that SnapshotStore implements eventstore.SnapshotStore.
-var _ eventstore.SnapshotStore = (*SnapshotStore)(nil)
+// Compile-time check that SnapshotStore implements snapshot.Store.
+var _ snapshot.Store = (*SnapshotStore)(nil)
 
-// SnapshotStore is a postgres-backed [eventstore.SnapshotStore]. It persists
+// SnapshotStore is a postgres-backed [snapshot.Store]. It persists
 // projection snapshots and checkpoints to the projection_snapshots and
 // projection_checkpoints tables (created by [MigrateProjections]), so an
-// [eventstore.StoredProjection] survives restarts and resumes from its last
+// [snapshot.Projection] survives restarts and resumes from its last
 // checkpoint.
 type SnapshotStore struct {
 	db *gorm.DB

@@ -6,13 +6,14 @@ import (
 
 	"eventstore"
 	"eventstore/memory"
+	"eventstore/snapshot"
 )
 
 // The library's own stored read-model projection must satisfy
 // CheckpointProjection so BuildDecisionModel recognizes it as a decision model
 // and skips already-processed events. Regression guard for the projector-type
-// consolidation: *eventstore.StoredProjection must implement it.
-var _ eventstore.CheckpointProjection = (*eventstore.StoredProjection[int])(nil)
+// consolidation: *snapshot.Projection must implement it.
+var _ eventstore.CheckpointProjection = (*snapshot.Projection[int])(nil)
 
 // storedProjection wraps a DefaultProjection with a checkpoint, implementing
 // CheckpointProjection so BuildDecisionModel skips already-processed events.
@@ -230,14 +231,14 @@ func TestBuildDecisionModel_MultipleStoredAtDifferentCheckpoints(t *testing.T) {
 }
 
 // TestBuildDecisionModel_RealStoredProjectionIsCheckpointed proves the checkpoint
-// path using the library's own *eventstore.StoredProjection (not the test-only
+// path using the library's own *snapshot.Projection (not the test-only
 // storedProjection): a caught-up read model reused as a decision model must apply
 // only the events appended since its checkpoint, not replay from 0 and double-count.
 func TestBuildDecisionModel_RealStoredProjectionIsCheckpointed(t *testing.T) {
 	store := seed(t, 3, "UserSignedUp", nil)
 	ctx := context.Background()
 
-	proj, err := eventstore.NewStoredProjection(ctx, memory.NewSnapshotStore(), "total-users", eventstore.DefaultProjection[int]{
+	proj, err := snapshot.NewProjection(ctx, memory.NewSnapshotStore(), "total-users", eventstore.DefaultProjection[int]{
 		Query: eventstore.QueryItem{Types: []string{"UserSignedUp"}},
 		State: 0,
 		Handlers: map[string]eventstore.HandleFunc[int]{

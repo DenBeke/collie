@@ -6,6 +6,7 @@ import (
 
 	"eventstore"
 	pgstore "eventstore/postgres"
+	"eventstore/snapshot"
 )
 
 // TestSnapshotStore_ResumesFromSnapshot proves the postgres SnapshotStore
@@ -41,7 +42,7 @@ func TestSnapshotStore_ResumesFromSnapshot(t *testing.T) {
 	}
 
 	// First instance catches up to head and persists its snapshot to postgres.
-	projection, err := eventstore.NewStoredProjection(ctx, snapshotStore, "users", projectionDef)
+	projection, err := snapshot.NewProjection(ctx, snapshotStore, "users", projectionDef)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -53,7 +54,7 @@ func TestSnapshotStore_ResumesFromSnapshot(t *testing.T) {
 	}
 
 	// A fresh instance loads the persisted snapshot — no replay.
-	resumed, err := eventstore.NewStoredProjection(ctx, snapshotStore, "users", projectionDef)
+	resumed, err := snapshot.NewProjection(ctx, snapshotStore, "users", projectionDef)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +66,7 @@ func TestSnapshotStore_ResumesFromSnapshot(t *testing.T) {
 	if err := resumed.Reset(ctx); err != nil {
 		t.Fatal(err)
 	}
-	afterReset, err := eventstore.NewStoredProjection(ctx, snapshotStore, "users", projectionDef)
+	afterReset, err := snapshot.NewProjection(ctx, snapshotStore, "users", projectionDef)
 	if err != nil {
 		t.Fatal(err)
 	}
