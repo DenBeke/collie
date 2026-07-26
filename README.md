@@ -130,7 +130,7 @@ Three implementations are provided:
 |----------------|---------|----------|
 | `memory.Projection[S]` | In-memory | Testing, ephemeral state |
 | `postgres.Projection[S]` | Snapshot to DB | Full state persisted, survives restarts |
-| `postgres.RowProjection[V]` | Row per entity in DB | Large projections where full state doesn't fit in memory |
+| `postgres.KeyedProjection[V]` / `memory.KeyedProjection[V]` | One value per key | The read side: state you address by key and list, and state too large to fold per command |
 
 #### In-memory and postgres snapshot projections
 
@@ -165,67 +165,94 @@ eventstore.UpdateProjection(ctx, store, totalUsers)
 fmt.Println(totalUsers.State)
 ```
 
-#### Postgres row projection
+#### Keyed projections — the read side
 
-Stores one row per entity. Each event loads the affected row, applies a handler, and writes it back in a single transaction. Does not keep the full projection in memory.
+A keyed projection folds every event of its types and routes each one to a value
+by key, so unlike the other two you can address a single value and list across
+them. It is what a read endpoint reads.
 
-Implement the `RowHandler[V]` interface:
+`keyedprojection.Projection[V]` is the interface; `postgres.KeyedProjection[V]`
+and `memory.KeyedProjection[V]` implement it, so the same handler and the same
+queries work with or without a database.
+
+Implement `keyedprojection.Handler[V]`:
 
 ```go
 type UserProfile struct {
-    Name  string
-    Email string
+    Name   string `json:"name"`
+    Email  string `json:"email"`
+    Status string `json:"status"`
 }
 
 type userProfileHandler struct{}
 
-func (h userProfileHandler) Key(e eventstore.SequencedEvent) (string, error) {
-    return e.Tags["user_id"], nil
+func (userProfileHandler) Key(e eventstore.SequencedEvent) (string, error) {
+    ids := e.TagValues("userId")
+    if len(ids) == 0 {
+        return "", fmt.Errorf("%s carries no userId tag", e.Type)
+    }
+    return ids[0], nil
 }
 
-func (h userProfileHandler) Apply(e eventstore.SequencedEvent, current *UserProfile) (*UserProfile, error) {
+func (userProfileHandler) Apply(e eventstore.SequencedEvent, current *UserProfile) (*UserProfile, error) {
     switch e.Type {
     case "UserSignedUp":
-        var data struct{ Name, Email string }
-        json.Unmarshal(e.Data, &data)
-        return &UserProfile{Name: data.Name, Email: data.Email}, nil
+        d, err := eventstore.EventData[UserProfile](e)
+        if err != nil {
+            return nil, err
+        }
+        return &d, nil
     case "UserEmailChanged":
-        var data struct{ Email string }
-        json.Unmarshal(e.Data, &data)
-        current.Email = data.Email
+        d, err := eventstore.EventData[UserProfile](e)
+        if err != nil {
+            return nil, err
+        }
+        current.Email = d.Email
         return current, nil
     case "UserDeleted":
-        return nil, nil // nil deletes the row
+        return nil, nil // nil deletes the value
     }
     return current, nil
 }
 ```
 
-Then create the projection:
+Then create it and read from it:
 
 ```go
-profiles, err := postgres.NewRowProjection(db, "user_profiles",
+profiles, err := postgres.NewKeyedProjection[UserProfile](db, "user_profiles",
     eventstore.QueryItem{Types: []string{"UserSignedUp", "UserEmailChanged", "UserDeleted"}},
     userProfileHandler{},
 )
 
+// Catch up before serving. There are no subscriptions: a read is what pulls
+// the projection forward. Safe to call concurrently — Apply skips an event it
+// has already applied, so racing catch-ups converge instead of double-counting.
 eventstore.UpdateProjection(ctx, store, profiles)
 
-// Retrieve a single row.
-profile, err := profiles.Get(ctx, "user-123")
+// One value by key.
+entry, found, err := profiles.Get(ctx, "user-123")
+fmt.Println(entry.Key, entry.Value.Name)
 
-// List rows filtered by event tags.
-active, err := profiles.List(ctx, postgres.WithMatchTag("status", "active"))
+// A page. Entries carry their key, because folded state usually does not
+// contain its own id.
+page, err := profiles.List(ctx, keyedprojection.ListQuery{
+    Where: []keyedprojection.FieldEquals{{Field: "status", Value: "active"}},
+    Tags:  []eventstore.Tag{eventstore.NewTag("tenant", "acme")},
+    Order: []keyedprojection.SortKey{{Field: "name"}},
+    Limit: 20,
+})
+```
 
-// Multiple values match any (IN logic).
-subset, err := profiles.List(ctx, postgres.WithMatchTag("userId", "user-1", "user-2"))
+`Where` filters on fields of the folded value; `Tags` filters on the tags of the
+events folded into it, accumulated across all of them. Field names are values,
+never fragments of SQL, and anything that is not a plain identifier is refused —
+so a `?sort=` parameter can be passed through safely.
 
-// Combine filters (AND), add ordering and pagination.
-page, err := profiles.List(ctx,
-    postgres.WithMatchTag("tenant", "acme"),
-    postgres.WithOrderBy("name", false),
-    postgres.WithPagination(0, 20),
-)
+For anything you filter or sort on regularly, add the indexes:
+
+```go
+profiles.MigrateFieldIndexes("status", "name")
+profiles.MigrateTagIndexes("tenant")
 ```
 
 ## Example: enforcing uniqueness on signup
@@ -327,7 +354,7 @@ strategies that were evaluated and rejected) are written up in
 
 ### PostgreSQL projection tables
 
-Call `MigrateProjections` to create the tables used by `postgres.Projection[S]` and `postgres.RowProjection[V]`:
+Call `MigrateProjections` to create the tables used by `postgres.Projection[S]` and `postgres.KeyedProjection[V]`:
 
 ```go
 postgres.MigrateProjections(db)
