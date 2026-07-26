@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"eventstore"
+	"github.com/DenBeke/collie"
 )
 
 // Store is a minimal in-memory event store.

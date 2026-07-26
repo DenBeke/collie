@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"eventstore"
-	pgstore "eventstore/postgres"
+	"github.com/DenBeke/collie"
+	pgstore "github.com/DenBeke/collie/postgres"
 )
 
 // TestReadPlanUsesEventTagsIndex seeds enough events that the planner prefers the

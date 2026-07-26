@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"eventstore/snapshot"
+	"github.com/DenBeke/collie/snapshot"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"

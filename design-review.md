@@ -5,6 +5,10 @@ projections, examples), with the goal of making this a clean, generic framework 
 building DCB event sourcing applications. This is a living document: settled decisions first,
 then the change list to build from, then the detailed reasoning behind each item.
 
+Second pass (July 2026): the earlier decisions were re-challenged with fresh eyes and held up;
+the pass added the read-model view subsystem design (the "next step" work), the append-strategy
+constructor mode, and a handful of new findings. Everything is consolidated here.
+
 ## Settled design decisions
 
 These were discussed and are now the framework's explicit stance:
@@ -14,6 +18,8 @@ These were discussed and are now the framework's explicit stance:
    flush time, so read-your-writes tokens are structurally impossible. On-demand catch-up
    (`UpdateProjection` before serving a query) gives freshness only when the same instance
    serves the read and the non-staging path is used. Document this; don't fight it.
+   Reaffirmed in the second pass: `Read` serves only the `events` table and never looks at
+   staging — the staging condition check is what keeps *decisions* correct in the gap.
 2. **Commands are fire-and-forget at the framework level.** `Dispatch`/`Execute` return only
    `error` — either the command succeeded or it failed. No result values, no idempotency keys;
    retry semantics belong to the caller/application.
@@ -24,7 +30,8 @@ These were discussed and are now the framework's explicit stance:
 4. **`command.Registry` is the primary entry point.** Commands arrive as name + JSON payload
    (typically over HTTP); handlers call `Dispatch`, which calls `Execute`. The registry stays
    **transport-neutral**: it exposes a typed error taxonomy and adapters do their own status
-   mapping. No HTTP adapter ships with the core.
+   mapping. No HTTP adapter ships with the core (a ready-made adapter *package* may come later,
+   beside the core).
 5. **Row projections are read-side views and must be excluded from commands** — enforced in the
    type system (marker method), not just documented. The decision-side answer to "tagged state
    in commands" is the partitioned decision snapshot (below), not row projections.
@@ -43,45 +50,113 @@ These were discussed and are now the framework's explicit stance:
    Consequences: all command-outcome errors sit in one package (only the spec-level
    `ErrAppendConditionViolated` stays core); `command.Command` stutters — accepted, with
    `context.Context` as precedent; a typical command file imports all three packages.
+9. **Staging is the committed append strategy, selected at store construction.** The
+   staging design (per-boundary locks + singleton flusher assigning gap-free positions) stays
+   on its own merits. But it must be reachable through `eventstore.Store` — today
+   `command.Execute` and `BuildDecisionModel` call `Append`, and `AppendStaging` is a sibling
+   method the framework can't see. Fix: **constructor mode** — `postgres.New(db)` keeps the
+   simple direct append (no flusher needed; right for small apps, dev, tests), and
+   `postgres.New(db, WithStagingAppend())` makes `Store.Append` *be* the staging path. One
+   store instance = one strategy; the unsafe mixing of the two paths (a direct append's
+   condition check never looks at staging, and the global and per-boundary locks don't
+   compose) becomes unrepresentable instead of a doc warning. In staging mode,
+   `ErrUnkeyableCondition` is promoted from "use the other method" to a real constraint of the
+   mode: every condition item needs at least one type and one tag — which real DCB queries
+   always have.
+10. **Read-model views are a generic row store.** Key → JSON value with `Get`/`List`/`Count`,
+    evolving today's `RowProjection`. Clients wanting custom SQL schemas hand-roll their own
+    consumers; the framework does not provide an app-owned-tables mode.
+11. **Views are portable via a storage seam** (`view.Store`, parallel to `snapshot.Store`):
+    memory implementation for tests, postgres implementation for production. The new view code
+    is gorm-free from the start (`database/sql` in the public API).
+12. **View catch-up is pluggable, one contract, two shipped drivers.** The contract is the
+    existing `CheckpointProjection` lifecycle driven by `eventstore.UpdateProjection`. Driver A:
+    on-demand pull (call `UpdateProjection` before serving a read). Driver B: a background
+    runner woken by Postgres LISTEN/NOTIFY with a polling fallback (and a `Tick` waker for any
+    store). See the view subsystem section.
+13. **Views stay in the `CheckpointProjection` family, guarded by the marker method.** A
+    standalone view type outside the projection interfaces was designed and considered (safety
+    by subtraction: it *can't* be passed to `BuildDecisionModel`); decided against — views keep
+    riding `UpdateProjection` as the one catch-up primitive, and decision-eligibility is
+    expressed by the marker (settled decision 5 / item 5 as originally written).
+14. **Poison events halt the projection, loudly.** An `Apply` error stops catch-up with an
+    error naming the event type and sequence number; the checkpoint parks just before the
+    poison event; reads keep serving stale-but-internally-consistent data. Silently skipping is
+    corruption nobody notices; dead-lettering needs an inspect/replay surface that isn't earned
+    yet. Recovery = fix the handler, rebuild under a versioned name.
+15. **Rebuild/versioning is a naming convention, for views exactly as for snapshots.**
+    `"user-profiles/v2"` is an empty view at position 0; blue-green = build v2 alongside v1,
+    flip reads when v2's position catches v1's (the honest proxy — there is deliberately no
+    `head()` primitive), then `Reset` v1. Recipe in docs; no orchestration API.
 
 ## Change list
 
-Ordered by priority. Items 5–8 form one coherent piece of work (the projection-model split).
+Ordered by priority. Items 5–8 formed one coherent piece of work (the projection-model split);
+items 1, 5, 7, 8 and 14 are now consolidated into the **view subsystem** design below.
 
 ### Correctness (do first)
 
 1. **Checkpoint guard in `RowProjection.Apply`.** Two instances catching up the same view
    concurrently currently double-apply events (both load row at state v, both apply event 101,
-   both write). Fix inside the existing per-event transaction: advance the checkpoint with
-   `... SET position = ? WHERE projection_name = ? AND position < ?`; if zero rows were
-   affected, another instance already applied this event — skip it. Also: stop assigning
-   `p.position` inside the transaction closure — on transaction failure the in-memory position
-   currently stays advanced and the instance skips that event until restart
-   (`postgres/row_projection.go:89`).
-2. **Clone-per-attempt in `Execute`.** The `Projections()` contract ("must return FRESH
-   projections each call") is a silent-corruption footgun: a command that caches its projection
-   in a field re-applies events onto already-populated state on retry (a counter doubles,
-   nothing errors). Fix without touching the `Command` interface: keep the caller's command
-   pristine and run each attempt on a fresh shallow copy (same reflection trick as
-   `command.cloneFactory`). Stashed pointers keep working because `Projections` and `Decide`
-   run on the same clone. Optionally add a `dcbtest` helper that forces a conflict+retry and
-   fails if the second attempt's decision differs from a fresh run.
-3. **Concurrency rule for `StoredProjection`.** Two concurrent `UpdateProjection` calls on the
+   both write). Also: `p.position` is assigned inside the transaction closure — on transaction
+   failure the in-memory position stays advanced and the instance skips that event until
+   restart (`postgres/row_projection.go:95`).
+   → **Subsumed by the view subsystem**: `view.Store.Commit` is a CAS on the checkpoint base
+   (see below), and the in-memory position advances only after a successful commit. Both
+   failure modes become impossible by construction; `RowProjection` is deleted.
+2. **Clone-per-attempt in `Execute`.** ✅ Implemented. The `Projections()` contract ("must
+   return FRESH projections each call") was a silent-corruption footgun: a command that caches
+   its projection in a field re-applies events onto already-populated state on retry (a counter
+   doubles, nothing errors). Fixed without touching the `Command` interface:
+   `command.commandForAttempt` runs *every* attempt (including the first) on a fresh shallow
+   copy of the caller's command, which is never mutated — consistent with fire-and-forget
+   (settled decision 2). Stashed pointers keep working because `Projections` and `Decide` run
+   on the same copy; caching a projection in a field is now the blessed pattern (docs updated).
+   Non-pointer-to-struct commands run as-is (a value receiver can't retain state between calls
+   anyway). Documented caveat: the copy is *shallow* — map/slice/pointer fields are shared
+   across attempts, so commands must not mutate shared reference fields in
+   `Projections`/`Decide` (deliberate cross-attempt state goes behind a pointer field, as
+   `conflictOnce` in the tests demonstrates). The optional `dcbtest` retry-safety helper was
+   skipped; regression coverage lives in `TestExecute_RetryDecidesFromFreshState` and
+   `TestExecute_CallerCommandStaysPristine`.
+3. **Concurrency rule for stored projections.** Two concurrent `UpdateProjection` calls on the
    same instance are a literal Go data race on `State`/`position` (the `ExampleServe` GET
-   handler teaches this pattern). Either add a mutex or document a strict
-   one-goroutine-per-projection-instance rule — and fix the example.
-4. **`NewTags` panics on odd argument count.** Silently dropping a trailing tag
-   (`event.go:27`) silently widens a consistency boundary. Programmer error → panic.
+   handler teaches this pattern). For the new `view.View`, an internal mutex serializes
+   catch-ups on one instance (a long-lived server-shared object gets a mutex, not a documented
+   rule). For `snapshot.Projection` used as a long-lived read model, the same treatment or the
+   one-goroutine rule still applies — and fix the example.
+4. **`NewTags` panics on odd argument count.** ✅ Implemented. Silently dropping a trailing
+   tag silently widens a consistency boundary. Programmer error → panic, like
+   `strings.NewReplacer` (the direct stdlib precedent — variadic pairs, panics on odd count;
+   `slog`'s tolerate-and-mark `!BADKEY` stance was considered and rejected: a log line is
+   disposable, a consistency boundary is not). Error returns were rejected because they detect
+   at the same moment (first execution) while taxing every correct call site and being
+   swallowable (`tags, _ :=`). Removing the constructor in favor of compile-safe
+   `[]Tag{{k, v}}` literals was considered and rejected: the dominant call shape is a single
+   pair, where the arity bug is nearly impossible and the constructor reads best.
 
 ### Interface shape (breaking; cheapest while the library is young)
 
-5. **Marker method separating decision projections from views.** `RowProjection` structurally
-   satisfies `CheckpointProjection`, so nothing stops it being passed to `BuildDecisionModel` —
-   and then the append condition covers the projection's entire broad query: any concurrent
-   event touching any row violates the condition, serializing the whole app through one
-   boundary. Go's structural typing can't distinguish identical method sets, so add a marker
-   (e.g. `DecisionModel()`) to decision-capable projections; `BuildDecisionModel` accepts only
-   those.
+5. **Marker method separating decision projections from views.** ✅ Design settled.
+   `RowProjection` structurally satisfies `CheckpointProjection`, so nothing stops it being
+   passed to `BuildDecisionModel` — and then the append condition covers the projection's
+   entire broad query: any concurrent event touching any row violates the condition,
+   serializing the whole app through one boundary. Go's structural typing can't distinguish
+   identical method sets, so:
+
+   ```go
+   // eventstore: marks projections whose query is narrow enough for a consistency boundary.
+   type DecisionProjection interface {
+       Projection
+       DecisionModel() // marker; no behavior
+   }
+   ```
+
+   `BuildDecisionModel(ctx, store, projections ...DecisionProjection)`;
+   `command.Command.Projections` returns `[]eventstore.DecisionProjection`.
+   `DefaultProjection[S]` and `snapshot.Projection[S]` gain the no-op marker; `view.View[V]`
+   implements `CheckpointProjection` but **not** the marker — passing a view to a decision is a
+   compile error, while views keep riding `UpdateProjection` (settled decision 13).
 6. **Per-key decision snapshots.** ✅ Implemented, after several design rounds (see the
    partition decision record below), as one variadic parameter — no dedicated type:
 
@@ -100,14 +175,14 @@ Ordered by priority. Items 5–8 form one coherent piece of work (the projection
    (course subscriptions, three differently-scoped boundaries).
 7. **Multi-entity events in `RowHandler`.** `Key(e) (string, error)` assumes one entity per
    event; a transfer-between-accounts event (the reason `Tag` allows duplicate keys) can't
-   update both rows. Change to `Keys(e) ([]string, error)` with `Apply` receiving the key it is
-   being applied for. Interface shape can't be retrofitted cheaply — do it now.
-8. **`RowProjection.List` returns key+value pairs**, not bare `[]V` — unless V redundantly
-   embeds its own ID, rows are currently unidentifiable. Also resolve the split-brain filtering:
-   `WithMatchTag` filters on the *last event's* tags (upserted last-writer-wins, duplicate tag
-   keys dropped by `tagsToMap`) while `WithOrderBy` reads the JSON *value* — two data sources
-   with different staleness. Preferred: drop event-tag storage on rows entirely and filter on
-   `value` fields, which the handler fully controls.
+   update both rows. → **Folded into the view subsystem**: `view.Handler.Keys(e) ([]string,
+   error)`, with `Apply` receiving the key it is being applied for.
+8. **`RowProjection.List` returns key+value pairs**, not bare `[]V`. Also resolve the
+   split-brain filtering: `WithMatchTag` filters on the *last event's* tags (upserted
+   last-writer-wins, duplicate tag keys dropped by `tagsToMap`) while `WithOrderBy` reads the
+   JSON *value* — two data sources with different staleness. → **Folded into the view
+   subsystem**: `List` returns `[]Entry[V]{Key, Value}`, rows store **no tags column** at all,
+   and all filtering/ordering is on value fields, which the handler fully controls.
 
 ### Registry layer
 
@@ -147,15 +222,215 @@ Ordered by priority. Items 5–8 form one coherent piece of work (the projection
     `NewRowProjection`, `NewSnapshotStore`, `NewKeyStore`), making gorm part of the public API
     contract — a gorm v3 or a switch to pgx breaks every user's wiring. Take `*sql.DB` (or a
     DSN) and open gorm internally; gorm becomes a swappable implementation detail.
+    Status: the **new** view store and listener are gorm-free from day one (settled decision
+    11); migrating the existing constructors (`New`, `NewSnapshotStore`, `NewKeyStore`) is
+    deferred to a later sweep.
 13. **Rewrite the README against the actual API.** It currently documents `map[string]string`
     tags, `Projection[S]`, `CheckpointedProjector`, and `memory.NewProjection` /
     `postgres.NewProjection` — none of which exist. Add explicit design sections: eventual
-    consistency stance, snapshots-are-caches, decision projections vs views.
+    consistency stance, snapshots-are-caches, decision projections vs views, the staging
+    append mode and its operational notes (item 16).
 14. **SQL hardening in the row projection.** `whereClause` and `WithOrderBy` splice key names
     into SQL via `Sprintf` (`postgres/list_option.go`, `row_projection.go:170`) — the moment an
-    HTTP handler wires `?sort=` to `WithOrderBy`, that's injection. Whitelist or quote.
-    `MigrateIndexes` breaks on projection names containing dashes and mentions a `Count` that
-    doesn't exist (add it or fix the doc).
+    HTTP handler wires `?sort=` to `WithOrderBy`, that's injection. `MigrateIndexes` breaks on
+    projection names containing dashes and mentions a `Count` that doesn't exist.
+    → **Subsumed by the view subsystem**: the injection dies structurally (field names are bind
+    parameters, never identifiers — see the seam design), `MigrateIndexes` whitelists field
+    names and hashes index names, and `Count` becomes real.
+
+### New findings (July 2026 re-challenge)
+
+15. **The committed append path was unreachable from the framework.** Resolved by settled
+    decision 9 (constructor mode). Implementation: `postgres.WithStagingAppend()`; `Append`
+    dispatches; `AppendStaging` stops being public API (or stays as the documented internal).
+16. **The flusher is load-bearing infrastructure in staging mode.** If it dies, appends still
+    succeed (durable in staging) but nothing ever becomes visible to `Read`. Consequences to
+    document and design in: supervision/restart guidance for `RunFlusher`; the flusher is the
+    natural single emitter of LISTEN/NOTIFY (positions exist only after flush — see the view
+    subsystem); and **same-boundary command latency couples to flush cadence** — command B on
+    the boundary of just-staged command A fails its condition check (the staging row matches)
+    until the flush lands, so `Execute` retry/backoff defaults should be documented relative to
+    the flush interval (a non-issue at the default 5ms; a real one if operators raise it).
+17. **Poison events permanently stall projections.** `UpdateProjection`: an `Apply` error
+    returns before `Checkpoint`, so buffered progress is lost and the next catch-up re-reads
+    from the old checkpoint and hits the same event, forever. In a decision boundary, a poison
+    event bricks the boundary until a code fix ships. Policy settled (decision 14): halt
+    loudly. The view design's sub-batch commits additionally preserve pre-poison progress.
+18. **`postgres.Store.Read` can loop on an undecodable row.** On a `toSequencedEvent` decode
+    error the cursor does not advance (`postgres/postgres.go:147–159`); if the *last* event of
+    a batch fails decoding, an error-tolerant consumer refetches the same batch and re-yields
+    the same error forever. Advance the cursor past undecodable rows — the yielded error
+    already identifies the event.
+19. **`Projection.EventQuery()` returning a single `QueryItem` blocks OR-views** (e.g. current
+    + legacy event shapes in one view — promoted from the findings-for-the-record section,
+    since views now live in the projection family). Recommended, tiny and mechanical: widen to
+    `EventQuery() Query`; `BuildDecisionModel` changes `append(query, p.EventQuery())` to
+    `append(query, p.EventQuery()...)`; `DefaultProjection` returns a one-item `Query`. Do it
+    inside the view sweep or explicitly accept single-item views.
+
+## The view subsystem (consolidates items 1, 5, 7, 8, 14)
+
+New top-level package `view`, parallel to `snapshot`: `snapshot` is the decision-side cache,
+`view` is the read side. `postgres/row_projection.go` and `postgres/list_option.go` are deleted.
+
+### Storage seam — untyped, closed query descriptor, no SQL crosses it
+
+```go
+package view
+
+type Row struct{ Key string; Value []byte }
+type Op struct{ Key string; Value []byte } // nil Value = delete
+
+// Filter matches rows whose top-level JSON field equals any of Values
+// (one value = equality, several = IN; text comparison, Postgres ->> semantics).
+// Filters combine with AND.
+type Filter struct{ Field string; Values []string }
+
+type ListQuery struct {
+    Filters []Filter
+    OrderBy string // top-level JSON field; "" = order by key
+    Desc    bool
+    Numeric bool   // order numerically instead of lexicographically
+    Offset  int
+    Limit   int    // 0 = no limit
+}
+
+type Store interface {
+    Position(ctx context.Context, view string) (uint64, error)
+    Get(ctx context.Context, view, key string) (value []byte, found bool, err error)
+    List(ctx context.Context, view string, q ListQuery) ([]Row, error)
+    Count(ctx context.Context, view string, filters []Filter) (int64, error)
+    // Commit atomically applies one catch-up batch: it advances the checkpoint
+    // from base to position and applies ops in one transaction. If the stored
+    // checkpoint no longer equals base (another instance advanced it), Commit
+    // writes NOTHING and returns false.
+    Commit(ctx context.Context, view string, base, position uint64, ops []Op) (bool, error)
+    Reset(ctx context.Context, view string) error
+}
+```
+
+- **Injection dies structurally**: the postgres implementation binds JSON field names as
+  parameters (`value->>$1 = $2`, `ORDER BY value->>$1` — `->>` takes a text operand, so no
+  splicing is ever needed); `ASC`/`DESC` and `::numeric` come from two-value enums. Index DDL
+  is the only place a name must enter SQL as an identifier, so it lives on the postgres type,
+  not the seam: `MigrateIndexes(ctx, view, fields...)` validates fields against
+  `^[A-Za-z_][A-Za-z0-9_]*$` and names indexes from a hash of (view, field) — fixing the
+  dashes-in-names bug too.
+- **CAS on the base position, not `position < new`**: during a catch-up the handler reads
+  current row values as it goes; if another instance commits mid-batch, the buffered fold was
+  built on mixed row states and committing it would double-apply. `position = base` invalidates
+  the batch wholesale — correctness by abandonment. (`position < new` would let it through.)
+- Tables: `view_rows(view_name, key, value jsonb, PRIMARY KEY(view_name, key))` and
+  `view_checkpoints(view_name PK, position)`. **No tags column** (item 8).
+- Implementations: `postgres.NewViewStore(db *sql.DB)` — no gorm — and `memory.ViewStore`
+  (map-of-maps behind a mutex; `List` compares text forms, documented to match `->>`).
+
+### View type and handler
+
+```go
+package view
+
+type Handler[V any] interface {
+    // Keys returns the row keys affected by e — several for multi-entity
+    // events (a transfer touches both accounts).                    (item 7)
+    Keys(e eventstore.SequencedEvent) ([]string, error)
+    // Apply transforms the row for one key. current is nil when the row does
+    // not exist; return nil to delete it.
+    Apply(e eventstore.SequencedEvent, key string, current *V) (*V, error)
+}
+
+func New[V any](store Store, name string, query eventstore.Query, handler Handler[V],
+    opts ...Option) *View[V]
+func FlushEvery(n int) Option // ops per Commit during catch-up; default 1000
+
+type Entry[V any] struct{ Key string; Value V }
+
+// View[V] implements eventstore.CheckpointProjection — but NOT DecisionProjection
+// (item 5), so it cannot enter BuildDecisionModel. Plus the read API:
+//   Get(ctx, key) (*V, error)                       // nil = absent
+//   List(ctx, ...ListOption) ([]Entry[V], error)    // item 8: keys included
+//   Count(ctx, ...ListOption) (int64, error)
+//   Position(ctx) (uint64, error)
+//   Reset(ctx) error
+// ListOptions: Where(field, values...), OrderBy(field, desc),
+//              OrderByNumeric(field, desc), Page(offset, limit).
+```
+
+Lifecycle, mapped onto the settled `Checkpoint` batch-close contract:
+
+- `After()` returns the base loaded fresh from `Store.Position` at the start of each catch-up;
+  an internal mutex serializes concurrent catch-ups on one instance (item 3).
+- `Apply` skips events ≤ base, buffers ops **read-through** (first touch of a key loads the
+  row; later events in the batch hit the buffer), and every `FlushEvery` ops commits a guarded
+  sub-batch — bounded memory on cold rebuilds, one transaction per ~1000 events instead of per
+  event (also fixes the rebuild-runs-one-tx-per-event finding).
+- `Checkpoint(ctx)` does the final `Commit`. **On CAS failure** (another instance advanced the
+  checkpoint): drop the buffer, reload base, continue — subsequent `Apply` calls skip covered
+  events and re-read rows fresh beyond it. Self-healing, no error surfaced; under
+  many-instances-pulling-on-demand, contention silently dedupes work.
+- The in-memory position advances only after a successful `Commit` — the
+  `row_projection.go:95` failure mode (position advanced despite a rolled-back transaction)
+  becomes impossible.
+- Poison event: `Apply` returns the error; committed sub-batches persist; every instance halts
+  deterministically at the same event (settled decision 14).
+
+### Catch-up drivers — one contract, two drivers
+
+- **Pull** (unchanged core pattern): `eventstore.UpdateProjection(ctx, store, v)` before
+  `v.Get`/`v.List`.
+- **Runner**:
+
+  ```go
+  // Waker blocks until new events may be available. Wakes may be spurious;
+  // the runner treats every wake as "check now".
+  type Waker interface{ Wait(ctx context.Context) error }
+  func Tick(interval time.Duration) Waker // polling; works with any store
+
+  type RunOptions struct {
+      // OnError is invoked when a view's catch-up fails; Run continues and
+      // retries that view on the next wake. Nil (default) makes Run return.
+      OnError func(view string, err error)
+  }
+  // Run catches up views on every wake until ctx is cancelled. It runs on the
+  // caller's goroutine (house style: postgres.Store.RunFlusher).
+  func Run(ctx context.Context, events eventstore.Store, w Waker, opts RunOptions,
+      views ...eventstore.CheckpointProjection) error
+  ```
+
+- **Wake seam implementations**: `postgres.NewListener(dsn, ...) *Listener` owns one dedicated
+  connection (LISTEN is incompatible with pooled `*sql.DB` connections, hence DSN), executes
+  `LISTEN dcb_events`, and `Wait` blocks with a deadline equal to the poll-fallback interval
+  (default ~30s) — lost notifications and dropped connections degrade to polling; reconnects
+  with backoff inside `Wait`; `Close()` releases the connection. `memory.Store.Waker()` returns
+  a 1-buffered channel poked non-blockingly on append. The subsystem itself owns **zero
+  goroutines**; the caller owns one per `Run`.
+- **The NOTIFY contract lives in SQL, not Go**: `pg_notify('dcb_events', '')` at the tail of
+  `dcb_append` (transactional NOTIFY fires at commit, exactly when events become readable) and
+  in `dcb_flush` when rows moved (the flusher is where staged events become visible —
+  `dcb_append_staging` deliberately does *not* notify). Empty payload = pure wake; max-sequence
+  or type hints can be added later without breaking anyone.
+
+### Migration from `RowProjection`
+
+Breaking, one sweep: add `view` + memory/postgres implementations + `pg_notify` (re-run
+`Migrate`; `CREATE OR REPLACE` is idempotent); delete `RowProjection`, `RowHandler`, the list
+options, old `MigrateIndexes`, the `projectionRow` model (checkpoint/snapshot tables stay for
+`snapshot`). No data migration tool — views are derived state: construct under the new store
+and replay. Port callers: `Key` → `Keys` (one-element slice), `Apply(e, *V)` →
+`Apply(e, key, *V)`, `WithMatchTag(tag)` → put the field in `V` and `Where(field, ...)`.
+Rewrite `ExampleServe`'s GET handler and the README section.
+
+### Deliberately not built (recorded)
+
+- **Selective NOTIFY** (type/tag hints in the payload): wake-everything is fine at current
+  scale; the payload is reserved.
+- **Per-view-goroutine runner**: views update sequentially within one `Run`; split only if one
+  slow view ever starves others.
+- **Jittered wake delay** against N-instance read amplification (N instances read the delta,
+  one wins the CAS): fine for small N; jitter — not leader election — is the mitigation if it
+  ever hurts.
+- **Skip-and-log poison policy**: a per-view `OnApplyError` option is the future escape hatch;
+  don't ship it now.
 
 ## The projection model — why the split, and the partitioned-snapshot design
 
@@ -306,30 +581,69 @@ the last checkpoint instead of the failure point (mitigation if ever needed: a
 `CheckpointEvery(K)` knob; pre-warming advice stands), and anyone driving `Apply` manually must
 call `Checkpoint` — discoverable on the interface.
 
+Second-pass postscript: the view subsystem realizes the anticipated hook — `view.View` buffers
+ops and commits guarded sub-batches every `FlushEvery` events plus once in `Checkpoint`, so the
+mid-catch-up-crash trade-off shrinks to at most one sub-batch of lost progress.
+
+## Decision record: view type — in the projection family, not beside it
+
+Two shapes were designed for `view.View[V]`:
+
+1. *Standalone type with its own `Update(ctx, events)` driver, outside the `Projection`
+   interfaces entirely.* Safety by subtraction — a view can't be passed to `BuildDecisionModel`
+   because it doesn't satisfy the parameter type; no marker method needed; a full
+   `eventstore.Query` (OR over items) without touching the root interface; the checkpoint can
+   be re-read from the store at the start of every catch-up because `Update` owns the whole
+   lifecycle.
+2. **Chosen: stay a `CheckpointProjection`, guarded by the `DecisionProjection` marker
+   (item 5).** Views keep riding `eventstore.UpdateProjection` as the single catch-up
+   primitive — one lifecycle concept in the whole framework instead of two ("catch up a
+   projection" vs "update a view"), and `Run` can drive any `CheckpointProjection`, snapshot
+   read models included. Costs accepted: the marker interface is new API (but it was already
+   item 5); OR-views need the `EventQuery() Query` widening (item 19) or stay single-item;
+   fresh-base-per-catch-up must be implemented inside `After()`/`Checkpoint()` rather than
+   falling naturally out of an owned `Update`.
+
+## Decision record: append strategy — constructor mode
+
+`Append` (global advisory lock, immediate visibility) and `AppendStaging` (per-boundary locks,
+staging table, singleton flusher, gap-free positions) are both correct alone and unsafe mixed:
+a direct append's condition check never looks at staging, and the global lock and per-boundary
+locks share no key, so a conflict between the two paths goes unnoticed. The old shape — two
+public sibling methods and a doc warning — also left the staging path unreachable from
+`command.Execute`/`BuildDecisionModel`, which only see `eventstore.Store.Append`.
+
+Options: (a) staging only — delete the direct path; every deployment, including tests and toy
+apps, runs a flusher. (b) Keep both methods and document. (c) **Constructor mode — chosen**:
+the strategy is fixed per store instance at construction (`postgres.New(db)` = direct;
+`postgres.New(db, WithStagingAppend())` = staging behind `Store.Append`). The framework stays
+strategy-blind, small apps keep the zero-infra path, and the unsafe mix is unrepresentable
+(one instance, one strategy; two instances with different modes on one database remain a
+misconfiguration to warn about in docs).
+
 ## Multi-instance semantics (summary)
 
 | Concern | Status | Mechanism |
 |---|---|---|
 | Concurrent commands, same boundary | Safe today | Append condition enforced atomically by the store |
-| Snapshot write races (`StoredProjection`/partitions) | Benign today | State+position saved atomically; regression just re-applies delta |
-| Concurrent `UpdateProjection` on a shared view (cross-instance) | **Broken** → item 1 | Checkpoint guard (`position < ?`) makes event application idempotent |
-| Concurrent `UpdateProjection` on the same in-memory instance | **Data race** → item 3 | Mutex or one-goroutine rule |
+| Snapshot write races (`snapshot.Projection`/partitions) | Benign today | State+position saved atomically; regression just re-applies delta |
+| Concurrent catch-up on a shared view (cross-instance) | Design settled → view subsystem | `view.Store.Commit` CAS on the checkpoint base; losing batch abandoned wholesale, loser self-heals |
+| Concurrent catch-up on the same in-memory instance | Design settled → view subsystem | Mutex inside `view.View`; `snapshot.Projection` as long-lived read model still needs the same treatment (item 3) |
+| Flusher liveness (staging mode) | Documented risk → item 16 | Session advisory lock elects one live flusher; supervision/restart is the operator's job |
 
 No leader election, no projection ownership: any instance may run any command and update any
 view. Flexibility was an explicit requirement.
 
 ## Other findings kept for the record
 
-- `Projection.EventQuery()` returns a single `QueryItem`, so one projection can't OR over
-  differently-tagged items (e.g. current + legacy event shapes). Consider returning `Query`.
-- No subscription/notification mechanism (polling `UpdateProjection` is the only catch-up).
-  Acceptable under the eventual-consistency stance; LISTEN/NOTIFY could come later without
-  interface changes.
-- `StoredProjection` saves a snapshot per applied event during catch-up; a cold snapshot over a
-  long history means N writes for one decision. Folded into item 6 (save once at end of
-  catch-up). Pre-warming cold snapshots off the hot path (background `UpdateProjection`)
-  remains good advice (see `snapshot-store.md`).
-- Rebuilding a `RowProjection` runs one transaction per event; a batch/rebuild path is missing.
-  Not urgent; note for when rebuilds hurt.
+- ~~`Projection.EventQuery()` returns a single `QueryItem`~~ → promoted to item 19.
+- ~~No subscription/notification mechanism~~ → designed: LISTEN/NOTIFY waker + `Tick` polling
+  fallback in the view subsystem, with the NOTIFY living in `dcb_append`/`dcb_flush`.
+- ~~`StoredProjection` saves a snapshot per applied event during catch-up~~ → fixed by the
+  `Checkpoint` lifecycle (item 6 ✅).
+- ~~Rebuilding a `RowProjection` runs one transaction per event~~ → fixed by the view design's
+  `FlushEvery` sub-batch commits.
 - Naming: `DefaultProjection` is a non-name, and the `CheckpointProjection` (interface) /
-  `StoredProjection` (struct) family is confusing. Revisit when touching items 5–6 anyway.
+  `snapshot.Projection` (struct) family is confusing. A `Projector`/`Projection[S]` flip was
+  considered in the second pass and **deferred** — not a passenger on the view sweep.
+- `postgres.Read` cursor loop on undecodable rows → item 18.

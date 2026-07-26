@@ -17,9 +17,9 @@ import (
 	"testing"
 	"time"
 
-	"eventstore"
-	"eventstore/encryption"
-	pgstore "eventstore/postgres"
+	"github.com/DenBeke/collie"
+	"github.com/DenBeke/collie/encryption"
+	pgstore "github.com/DenBeke/collie/postgres"
 
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/modules/postgres"
@@ -33,7 +33,7 @@ func setupDB(tb testing.TB) *gorm.DB {
 	ctx := context.Background()
 
 	container, err := postgres.Run(ctx, "postgres:17",
-		postgres.WithDatabase("eventstore_test"),
+		postgres.WithDatabase("github.com/DenBeke/collie_test"),
 		postgres.WithUsername("test"),
 		postgres.WithPassword("test"),
 		testcontainers.WithWaitStrategy(

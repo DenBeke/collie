@@ -6,7 +6,7 @@ import (
 	"slices"
 	"sync"
 
-	"eventstore"
+	"github.com/DenBeke/collie"
 )
 
 type memoryKey struct {

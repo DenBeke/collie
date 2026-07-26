@@ -10,7 +10,7 @@ import (
 	"slices"
 	"strings"
 
-	"eventstore"
+	"github.com/DenBeke/collie"
 )
 
 // KeyStore manages per-subject encryption keys for crypto-shredding. A subject

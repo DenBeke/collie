@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"eventstore"
-	"eventstore/memory"
-	"eventstore/snapshot"
+	"github.com/DenBeke/collie"
+	"github.com/DenBeke/collie/memory"
+	"github.com/DenBeke/collie/snapshot"
 )
 
 // seed appends n events of the given type and returns the store.

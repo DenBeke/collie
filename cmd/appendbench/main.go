@@ -21,7 +21,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	pgstore "eventstore/postgres"
+	pgstore "github.com/DenBeke/collie/postgres"
 
 	"gorm.io/gorm"
 )

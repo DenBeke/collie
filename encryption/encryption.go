@@ -12,7 +12,7 @@ import (
 	"io"
 	"strings"
 
-	"eventstore"
+	"github.com/DenBeke/collie"
 )
 
 // MetadataKey is the metadata key used to store encryption key names.

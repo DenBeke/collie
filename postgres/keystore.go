@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"eventstore"
-	"eventstore/encryption"
+	"github.com/DenBeke/collie"
+	"github.com/DenBeke/collie/encryption"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"

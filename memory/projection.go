@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"eventstore/snapshot"
+	"github.com/DenBeke/collie/snapshot"
 )
 
 // Compile-time check that SnapshotStore implements snapshot.Store.

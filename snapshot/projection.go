@@ -8,7 +8,7 @@ import (
 	"slices"
 	"strings"
 
-	"eventstore"
+	"github.com/DenBeke/collie"
 )
 
 // Projection is an [eventstore.CheckpointProjection] whose state and position

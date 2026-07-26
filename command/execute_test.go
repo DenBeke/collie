@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"eventstore"
-	"eventstore/command"
-	"eventstore/memory"
+	"github.com/DenBeke/collie"
+	"github.com/DenBeke/collie/command"
+	"github.com/DenBeke/collie/memory"
 )
 
 // seed appends n events of the given type and returns the store.
@@ -96,12 +96,12 @@ func TestExecute_RetriesOnConflict(t *testing.T) {
 	ctx := context.Background()
 	store := memory.New()
 
-	cmd := &conflictOnce{store: store}
+	cmd := newConflictOnce(store)
 	if err := command.Execute(ctx, store, cmd, command.WithMaxAttempts(3)); err != nil {
 		t.Fatalf("execute with retry: %v", err)
 	}
-	if cmd.attempts != 2 {
-		t.Fatalf("expected 2 attempts (1 conflict + 1 success), got %d", cmd.attempts)
+	if cmd.state.attempts != 2 {
+		t.Fatalf("expected 2 attempts (1 conflict + 1 success), got %d", cmd.state.attempts)
 	}
 	// The injected competing event plus the command's own event.
 	if count := countAll(t, store); count != 2 {
@@ -113,13 +113,51 @@ func TestExecute_NoRetryByDefault(t *testing.T) {
 	ctx := context.Background()
 	store := memory.New()
 
-	cmd := &conflictOnce{store: store}
+	cmd := newConflictOnce(store)
 	err := command.Execute(ctx, store, cmd) // default: one attempt
 	if !errors.Is(err, eventstore.ErrAppendConditionViolated) {
 		t.Fatalf("expected ErrAppendConditionViolated, got %v", err)
 	}
-	if cmd.attempts != 1 {
-		t.Fatalf("expected 1 attempt, got %d", cmd.attempts)
+	if cmd.state.attempts != 1 {
+		t.Fatalf("expected 1 attempt, got %d", cmd.state.attempts)
+	}
+}
+
+// TestExecute_RetryDecidesFromFreshState is the regression test for
+// clone-per-attempt: a command that builds its projection once and caches it
+// in a field would, without the per-attempt copy, hand the already-populated
+// projection to the retry's decision model — the whole history re-applies onto
+// existing state (the count doubles) and Decide falsely hits capacity.
+func TestExecute_RetryDecidesFromFreshState(t *testing.T) {
+	ctx := context.Background()
+	store := seed(t, 1, "Touched", nil)
+
+	cmd := newCachingCommand(store)
+	if err := command.Execute(ctx, store, cmd, command.WithMaxAttempts(3)); err != nil {
+		t.Fatalf("execute with retry: %v", err)
+	}
+	// The seeded event, the injected competing event, and the command's own.
+	if count := countAll(t, store); count != 3 {
+		t.Fatalf("expected 3 events, got %d", count)
+	}
+}
+
+// TestExecute_CallerCommandStaysPristine proves Execute never mutates the
+// caller's command: attempts run on shallow copies, so the projection an
+// attempt stashed never appears on the original.
+func TestExecute_CallerCommandStaysPristine(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+
+	cmd := newCachingCommand(store)
+	if err := command.Execute(ctx, store, cmd, command.WithMaxAttempts(3)); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if cmd.seen != nil {
+		t.Fatal("expected the caller's command untouched: stashed projection must stay nil")
+	}
+	if cmd.state.attempts != 2 {
+		t.Fatalf("expected shared pointer state to survive copies (2 attempts), got %d", cmd.state.attempts)
 	}
 }
 
@@ -173,7 +211,7 @@ func TestExecute_ConflictIsNotADecisionError(t *testing.T) {
 	ctx := context.Background()
 	store := memory.New()
 
-	err := command.Execute(ctx, store, &conflictOnce{store: store}) // one attempt: conflict surfaces
+	err := command.Execute(ctx, store, newConflictOnce(store)) // one attempt: conflict surfaces
 	if !errors.Is(err, eventstore.ErrAppendConditionViolated) {
 		t.Fatalf("expected ErrAppendConditionViolated, got %v", err)
 	}
@@ -207,14 +245,25 @@ func (unconditionalCommand) Decide(context.Context) ([]eventstore.Event, error) 
 // conflictOnce forces exactly one append-condition conflict: on the first attempt
 // it slips a competing event into the store after the decision model is built
 // (in Decide), so Execute's guarded append fails; the retry then succeeds.
-type conflictOnce struct {
-	store    eventstore.Store
+// Execute runs each attempt on a shallow copy of the command, so cross-attempt
+// bookkeeping lives behind a pointer field the copies share — the documented
+// way to carry state across attempts.
+type conflictState struct {
 	attempts int
 	injected bool
 }
 
+type conflictOnce struct {
+	store eventstore.Store
+	state *conflictState
+}
+
+func newConflictOnce(store eventstore.Store) *conflictOnce {
+	return &conflictOnce{store: store, state: &conflictState{}}
+}
+
 func (cmd *conflictOnce) Projections(context.Context) ([]eventstore.Projection, error) {
-	cmd.attempts++
+	cmd.state.attempts++
 	return []eventstore.Projection{
 		&eventstore.DefaultProjection[int]{
 			Query: eventstore.QueryItem{Types: []string{"Touched"}},
@@ -226,8 +275,55 @@ func (cmd *conflictOnce) Projections(context.Context) ([]eventstore.Projection, 
 }
 
 func (cmd *conflictOnce) Decide(ctx context.Context) ([]eventstore.Event, error) {
-	if !cmd.injected {
-		cmd.injected = true
+	if !cmd.state.injected {
+		cmd.state.injected = true
+		competing, err := eventstore.NewEvent("Touched", nil, nil)
+		if err != nil {
+			return nil, fmt.Errorf("could not create competing event: %w", err)
+		}
+		if err := cmd.store.Append(ctx, []eventstore.Event{competing}, nil); err != nil {
+			return nil, fmt.Errorf("could not append competing event: %w", err)
+		}
+	}
+	event, err := eventstore.NewEvent("Touched", nil, nil)
+	if err != nil {
+		return nil, fmt.Errorf("could not create Touched event: %w", err)
+	}
+	return []eventstore.Event{event}, nil
+}
+
+// cachingCommand builds its projection once and stashes it in a field, reading
+// it in Decide — the pattern the per-attempt copy makes safe. Like conflictOnce
+// it injects one competing event in Decide to force a retry, and it rejects
+// when the count reaches capacity — which a doubled count would falsely hit.
+type cachingCommand struct {
+	store eventstore.Store
+	state *conflictState
+	seen  *eventstore.DefaultProjection[int]
+}
+
+func newCachingCommand(store eventstore.Store) *cachingCommand {
+	return &cachingCommand{store: store, state: &conflictState{}}
+}
+
+func (cmd *cachingCommand) Projections(context.Context) ([]eventstore.Projection, error) {
+	cmd.state.attempts++
+	if cmd.seen == nil {
+		cmd.seen = &eventstore.DefaultProjection[int]{
+			Handlers: map[string]eventstore.HandleFunc[int]{
+				"Touched": func(seen int, _ eventstore.SequencedEvent) (int, error) { return seen + 1, nil },
+			},
+		}
+	}
+	return []eventstore.Projection{cmd.seen}, nil
+}
+
+func (cmd *cachingCommand) Decide(ctx context.Context) ([]eventstore.Event, error) {
+	if cmd.seen.State >= 3 {
+		return nil, fmt.Errorf("capacity reached: %d touched", cmd.seen.State)
+	}
+	if !cmd.state.injected {
+		cmd.state.injected = true
 		competing, err := eventstore.NewEvent("Touched", nil, nil)
 		if err != nil {
 			return nil, fmt.Errorf("could not create competing event: %w", err)

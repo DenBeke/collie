@@ -11,9 +11,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"eventstore"
-	"eventstore/cmd/appendbench/internal/loadgen"
-	pgstore "eventstore/postgres"
+	"github.com/DenBeke/collie"
+	"github.com/DenBeke/collie/cmd/appendbench/internal/loadgen"
+	pgstore "github.com/DenBeke/collie/postgres"
 
 	"gorm.io/gorm"
 )

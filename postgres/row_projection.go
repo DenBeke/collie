@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"eventstore"
+	"github.com/DenBeke/collie"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"

@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"eventstore"
+	"github.com/DenBeke/collie"
 
 	"gorm.io/gorm"
 )

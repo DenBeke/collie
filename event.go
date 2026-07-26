@@ -24,8 +24,12 @@ func NewTag(key, value string) Tag {
 //
 //	NewTags("student", "s1", "course", "c1")
 //
-// A trailing odd argument is ignored.
+// NewTags panics on an odd argument count (like strings.NewReplacer): a
+// silently dropped trailing key would widen a consistency boundary.
 func NewTags(keyValuePairs ...string) []Tag {
+	if len(keyValuePairs)%2 != 0 {
+		panic("eventstore.NewTags: odd argument count")
+	}
 	tags := make([]Tag, 0, len(keyValuePairs)/2)
 	for i := 0; i+1 < len(keyValuePairs); i += 2 {
 		tags = append(tags, Tag{Key: keyValuePairs[i], Value: keyValuePairs[i+1]})

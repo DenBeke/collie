@@ -5,8 +5,8 @@ import (
 	"slices"
 	"testing"
 
-	"eventstore"
-	"eventstore/memory"
+	"github.com/DenBeke/collie"
+	"github.com/DenBeke/collie/memory"
 )
 
 func TestTagsConstructor(t *testing.T) {
@@ -20,10 +20,14 @@ func TestTagsConstructor(t *testing.T) {
 			t.Errorf("tag %d = %+v, want %+v", i, got[i], want[i])
 		}
 	}
-	// A trailing odd argument is ignored.
-	if n := len(eventstore.NewTags("a", "1", "dangling")); n != 1 {
-		t.Errorf("odd args: got %d tags, want 1", n)
-	}
+	// An odd argument count is a programmer error: silently dropping the
+	// trailing key would widen a consistency boundary, so it panics.
+	defer func() {
+		if recover() == nil {
+			t.Errorf("odd args: expected panic")
+		}
+	}()
+	eventstore.NewTags("a", "1", "dangling")
 }
 
 func TestTagValues(t *testing.T) {

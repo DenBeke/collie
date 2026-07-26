@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"eventstore"
-	pgstore "eventstore/postgres"
-	"eventstore/snapshot"
+	"github.com/DenBeke/collie"
+	pgstore "github.com/DenBeke/collie/postgres"
+	"github.com/DenBeke/collie/snapshot"
 )
 
 // TestSnapshotStore_ResumesFromSnapshot proves the postgres SnapshotStore

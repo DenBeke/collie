@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"net/http"
 
-	"eventstore"
-	"eventstore/memory"
-	"eventstore/snapshot"
+	"github.com/DenBeke/collie"
+	"github.com/DenBeke/collie/memory"
+	"github.com/DenBeke/collie/snapshot"
 
 	"github.com/labstack/echo/v4"
 )

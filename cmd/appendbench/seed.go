@@ -6,8 +6,8 @@ import (
 	"log"
 	"time"
 
-	"eventstore"
-	pgstore "eventstore/postgres"
+	"github.com/DenBeke/collie"
+	pgstore "github.com/DenBeke/collie/postgres"
 
 	"gorm.io/gorm"
 )

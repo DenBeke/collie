@@ -4,8 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 
-	"eventstore"
+	"github.com/DenBeke/collie"
 )
 
 // Command is a self-handling DCB command: it declares the projections that form
@@ -14,9 +15,13 @@ import (
 // parameters as fields; Execute runs it.
 type Command interface {
 	// Projections declares the decision model for this command, built from the
-	// command's own fields. It is called once per attempt and must return FRESH
-	// projections each call (their state is mutated in place while loading). The
-	// context allows projections that load persisted state (e.g.
+	// command's own fields. It is called once per attempt; Execute runs every
+	// attempt on a fresh shallow copy of the command, so it is safe to cache a
+	// projection in a field here and read it in Decide — a retry starts from
+	// the caller's pristine command and builds anew. The copy is shallow:
+	// map, slice, and pointer fields are shared across attempts, so do not
+	// mutate shared reference fields in Projections or Decide. The context
+	// allows projections that load persisted state (e.g.
 	// [snapshot.Projection]); return an error if that loading fails.
 	// Returning no projections makes the append unconditional.
 	Projections(ctx context.Context) ([]eventstore.Projection, error)
@@ -84,7 +89,10 @@ func WithBackoff(backoff func(ctx context.Context, attempt int)) ExecuteOption {
 //
 // On an append-condition conflict it rebuilds the decision model and retries, up
 // to the configured number of attempts (one by default — opt in via
-// WithMaxAttempts). If Decide returns an error, Execute aborts without appending
+// WithMaxAttempts). Execute never mutates the caller's command: every attempt
+// runs on a fresh shallow copy of it, so state a command stashes in its fields
+// (a cached projection, say) lives and dies with that attempt.
+// If Decide returns an error, Execute aborts without appending
 // and does not retry; the error comes back wrapped in a DecisionError (matching
 // errors.Is(err, ErrCommandRejected)) with the domain message unchanged. If
 // Decide returns no events, Execute is a no-op. A command that declares no
@@ -96,7 +104,9 @@ func Execute(ctx context.Context, store eventstore.Store, command Command, optio
 	}
 
 	for attempt := 1; ; attempt++ {
-		projections, err := command.Projections(ctx)
+		cmd := commandForAttempt(command)
+
+		projections, err := cmd.Projections(ctx)
 		if err != nil {
 			return fmt.Errorf("could not build projections: %w", err)
 		}
@@ -110,7 +120,7 @@ func Execute(ctx context.Context, store eventstore.Store, command Command, optio
 			condition = built
 		}
 
-		events, err := command.Decide(ctx)
+		events, err := cmd.Decide(ctx)
 		if err != nil {
 			// A DecisionError keeps the domain message byte-identical while marking
 			// the error as a business-rule rejection (ErrCommandRejected).
@@ -131,4 +141,19 @@ func Execute(ctx context.Context, store eventstore.Store, command Command, optio
 			config.backoff(ctx, attempt)
 		}
 	}
+}
+
+// commandForAttempt returns the command instance one attempt runs on: a
+// shallow copy of the caller's pristine command, so state stashed by a
+// previous attempt never leaks into the next. Commands that are not a
+// pointer to a struct are returned as-is (their methods cannot retain
+// state between calls anyway).
+func commandForAttempt(command Command) Command {
+	value := reflect.ValueOf(command)
+	if value.Kind() != reflect.Pointer || value.Elem().Kind() != reflect.Struct {
+		return command
+	}
+	clone := reflect.New(value.Elem().Type())
+	clone.Elem().Set(value.Elem())
+	return clone.Interface().(Command)
 }

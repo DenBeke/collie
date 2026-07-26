@@ -3,7 +3,7 @@ package main
 import (
 	"math"
 
-	"eventstore/cmd/appendbench/internal/loadgen"
+	"github.com/DenBeke/collie/cmd/appendbench/internal/loadgen"
 )
 
 // workerStats is accumulated by a single worker with no shared atomics on the

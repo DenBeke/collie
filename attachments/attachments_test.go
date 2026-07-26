@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"eventstore"
-	"eventstore/attachments"
-	"eventstore/memory"
+	"github.com/DenBeke/collie"
+	"github.com/DenBeke/collie/attachments"
+	"github.com/DenBeke/collie/memory"
 )
 
 func newStore() (*eventstore.MiddlewareStore, *attachments.MemoryBlobStore) {

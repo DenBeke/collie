@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"eventstore"
+	"github.com/DenBeke/collie"
 )
 
 // FieldsMetadataKey is the metadata key set by WithAttachments to list field

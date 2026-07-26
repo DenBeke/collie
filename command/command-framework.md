@@ -21,10 +21,12 @@ their own; the `Registry` is an opt-in convenience on top.
 ```go
 type Command interface {
 	// Projections declares the decision model, built from the command's own
-	// fields. It is called once per attempt and must return FRESH projections
-	// each call (their state is mutated in place while loading). It returns an
-	// error if a projection fails to load; returning no projections makes the
-	// append unconditional.
+	// fields. It is called once per attempt; Execute runs every attempt on a
+	// fresh shallow copy of the command, so caching a projection in a field
+	// here and reading it in Decide is safe — a retry starts from the caller's
+	// pristine command and builds anew. (The copy is shallow: don't mutate
+	// shared map/slice/pointer fields.) It returns an error if a projection
+	// fails to load; returning no projections makes the append unconditional.
 	Projections(ctx context.Context) ([]Projection, error)
 	// Decide reads the loaded projections' state and returns the events to
 	// append, an error to abort (nothing is appended), or no events for a no-op.

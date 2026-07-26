@@ -11,8 +11,8 @@ import (
 	"fmt"
 	"reflect"
 
-	"eventstore"
-	"eventstore/snapshot"
+	"github.com/DenBeke/collie"
+	"github.com/DenBeke/collie/snapshot"
 )
 
 // Dispatch errors, classifiable with errors.Is so a transport adapter (HTTP,

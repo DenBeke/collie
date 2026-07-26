@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 
-	"eventstore"
-	"eventstore/command"
-	"eventstore/memory"
-	"eventstore/snapshot"
+	"github.com/DenBeke/collie"
+	"github.com/DenBeke/collie/command"
+	"github.com/DenBeke/collie/memory"
+	"github.com/DenBeke/collie/snapshot"
 )
 
 const (

@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"eventstore"
-	"eventstore/encryption"
-	"eventstore/memory"
+	"github.com/DenBeke/collie"
+	"github.com/DenBeke/collie/encryption"
+	"github.com/DenBeke/collie/memory"
 )
 
 func newEncryptor() *encryption.EventEncryptor {
