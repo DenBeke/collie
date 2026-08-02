@@ -194,6 +194,59 @@ func TestDispatch_DomainRejectionClassifies(t *testing.T) {
 	}
 }
 
+// TestExecute_TypedCommand pins what Registry.Execute keeps and what it drops:
+// no name lookup and no decoding, but the same injection, the same validation
+// layers and the same classification as a dispatch off the wire.
+func TestExecute_TypedCommand(t *testing.T) {
+	ctx := context.Background()
+	store := memory.New()
+	registry := command.NewRegistry(store,
+		command.WithSnapshotStore(memory.NewSnapshotStore()),
+		command.WithValidator(func(cmd any) error {
+			if signUp, ok := cmd.(*validatedSignUp); ok && len(signUp.Username) == 1 {
+				return errTooShort
+			}
+			return nil
+		}),
+		// Deliberately not registered: Execute has no name to look up.
+		command.WithCommands(&touchCounter{}),
+	)
+
+	err := registry.Execute(ctx, &validatedSignUp{signUp: signUp{Username: "alice"}})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if got := usersNamed(t, store, "alice"); got != 1 {
+		t.Fatalf("expected 1 alice signup, got %d", got)
+	}
+
+	// A domain refusal classifies exactly as it does through Dispatch, with the
+	// message the command wrote for its caller.
+	err = registry.Execute(ctx, &validatedSignUp{signUp: signUp{Username: "alice"}})
+	if !errors.Is(err, command.ErrCommandRejected) {
+		t.Fatalf("expected ErrCommandRejected, got %v", err)
+	}
+	if err.Error() != `username "alice" is already taken` {
+		t.Fatalf("expected the domain message unchanged, got %q", err.Error())
+	}
+
+	// Both validation layers still run, registry-wide one first.
+	err = registry.Execute(ctx, &validatedSignUp{signUp: signUp{Username: "a"}})
+	if !errors.Is(err, command.ErrValidationFailed) || !errors.Is(err, errTooShort) {
+		t.Fatalf("expected the registry-wide validator to reject, got %v", err)
+	}
+	err = registry.Execute(ctx, &validatedSignUp{})
+	if !errors.Is(err, command.ErrValidationFailed) || !strings.Contains(err.Error(), "username is required") {
+		t.Fatalf("expected the command's own Validate to reject, got %v", err)
+	}
+
+	// The snapshot store is injected here too, so a cached command works.
+	err = registry.Execute(ctx, &touchCounter{ID: "x"})
+	if err != nil {
+		t.Fatalf("execute touchCounter: %v", err)
+	}
+}
+
 func TestDispatch_FreshPerCall(t *testing.T) {
 	ctx := context.Background()
 	store := memory.New()

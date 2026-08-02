@@ -143,6 +143,92 @@ func (cmd *signUpExample) Decide(context.Context) ([]eventstore.Event, error) {
 	return []eventstore.Event{event}, nil
 }
 
+// quoteShipping prices an order through an external API. That call must not sit
+// in Decide: Execute re-runs Decide on every optimistic retry, so the API would
+// be hit once per attempt and each attempt could decide from a different price.
+// In Prepare it runs once, before the retry loop, and every attempt decides from
+// the same quote.
+type quoteShipping struct {
+	Order string `json:"order"`
+
+	store    eventstore.Store
+	pricing  func(context.Context) (int, error)
+	attempts *attemptCounter
+
+	price int // filled by Prepare, read by Decide
+}
+
+type attemptCounter struct {
+	n        int
+	injected bool
+}
+
+func (cmd *quoteShipping) Prepare(ctx context.Context) error {
+	price, err := cmd.pricing(ctx)
+	if err != nil {
+		return fmt.Errorf("could not quote shipping: %w", err)
+	}
+	cmd.price = price
+	return nil
+}
+
+func (cmd *quoteShipping) Projections(context.Context) ([]eventstore.Projection, error) {
+	cmd.attempts.n++
+	return []eventstore.Projection{
+		&eventstore.DefaultProjection[int]{
+			Handlers: map[string]eventstore.HandleFunc[int]{
+				"ShippingQuoted": func(n int, _ eventstore.SequencedEvent) (int, error) { return n + 1, nil },
+			},
+		},
+	}, nil
+}
+
+func (cmd *quoteShipping) Decide(ctx context.Context) ([]eventstore.Event, error) {
+	// Slip a competing event in on the first attempt, so the guarded append
+	// conflicts once and the retry path actually runs.
+	if !cmd.attempts.injected {
+		cmd.attempts.injected = true
+		competing, err := eventstore.NewEvent("ShippingQuoted", 0, eventstore.NewTags("order", "other"))
+		if err != nil {
+			return nil, fmt.Errorf("could not create competing event: %w", err)
+		}
+		if err := cmd.store.Append(ctx, []eventstore.Event{competing}, nil); err != nil {
+			return nil, fmt.Errorf("could not append competing event: %w", err)
+		}
+	}
+	event, err := eventstore.NewEvent("ShippingQuoted", cmd.price, eventstore.NewTags("order", cmd.Order))
+	if err != nil {
+		return nil, fmt.Errorf("could not create ShippingQuoted event: %w", err)
+	}
+	return []eventstore.Event{event}, nil
+}
+
+// ExampleExecute_prepare shows the phase split that makes a command with
+// external dependencies safe to retry: the command runs twice, the external
+// call happens once.
+func ExampleExecute_prepare() {
+	ctx := context.Background()
+	store := memory.New()
+
+	calls := 0
+	pricing := func(context.Context) (int, error) {
+		calls++
+		return 1250, nil
+	}
+
+	cmd := &quoteShipping{Order: "o1", store: store, pricing: pricing, attempts: &attemptCounter{}}
+	err := command.Execute(ctx, store, cmd, command.WithMaxAttempts(3))
+
+	fmt.Println("error:", err)
+	fmt.Println("attempts:", cmd.attempts.n)
+	fmt.Println("pricing calls:", calls)
+
+	// Output:
+	// error: <nil>
+	// attempts: 2
+	// pricing calls: 1
+}
+
 // ExampleRegistry_errorTaxonomy shows how a transport adapter (HTTP, queue,
 // CLI) classifies Dispatch errors with errors.Is — no string matching. The
 // mapping stays the adapter's choice; the parenthesized statuses are what a
@@ -166,6 +252,8 @@ func ExampleRegistry_errorTaxonomy() {
 			return "validation failed (422)"
 		case errors.Is(err, command.ErrCommandRejected):
 			return "rejected (409): " + err.Error() // the domain message, unchanged
+		case errors.Is(err, command.ErrPrepareFailed):
+			return "dependency failed (502)" // nothing appended, safe to retry
 		case errors.Is(err, eventstore.ErrAppendConditionViolated):
 			return "conflict (409, retry later)" // optimistic retries exhausted
 		default:

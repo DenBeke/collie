@@ -13,6 +13,18 @@ import (
 // its decision model and, once those are loaded, decides which events to append.
 // A concrete command is named after the operation it performs and carries its
 // parameters as fields; Execute runs it.
+//
+// A command runs in up to three phases, and the difference between them is how
+// often they run:
+//
+//	Prepare      optional, see [Preparer]. Once per Execute, before the loop.
+//	             The only phase where I/O belongs.
+//	Projections  once per attempt. Declares the consistency boundaries.
+//	Decide       once per attempt. Pure: reads the projections, returns events.
+//
+// Projections and Decide run again on every optimistic retry, so an effect in
+// either fires more than once and a value read there (a clock, a random id)
+// differs between attempts. Anything like that belongs in Prepare.
 type Command interface {
 	// Projections declares the decision model for this command, built from the
 	// command's own fields. It is called once per attempt; Execute runs every
@@ -30,6 +42,35 @@ type Command interface {
 	// no events for a no-op.
 	Decide(ctx context.Context) ([]eventstore.Event, error)
 }
+
+// Preparer is implemented by commands that must do work before the decision: an
+// external lookup, an LLM call, a clock read, a generated id. Execute calls
+// Prepare exactly once, before the first attempt, and every attempt then runs on
+// a copy of the prepared command — so whatever Prepare stores in fields is
+// frozen for the whole execution, retries included.
+//
+// This is the only place in a command where I/O belongs. Projections and Decide
+// run once per attempt: an effect there fires again on every optimistic retry,
+// and a value read there differs between attempts. Prepare must not read event
+// state — that is what projections are for, and only they are covered by the
+// append condition.
+//
+// Prepare needs a pointer to a struct to have anywhere to store its results;
+// Execute leaves other kinds of command untouched, so Prepare on a value
+// receiver has no way to communicate with Decide.
+//
+// When dispatched through a [Registry], Prepare runs after the payload is
+// decoded and validated — so it sees the request, and never runs for a payload
+// that was going to be rejected anyway.
+type Preparer interface {
+	Prepare(ctx context.Context) error
+}
+
+// ErrPrepareFailed classifies a failure in [Preparer.Prepare]: the command never
+// reached its decision and nothing was appended, so the call is safe to retry. A
+// Prepare that means to reject the request outright can return a
+// [DecisionError], which still classifies as ErrCommandRejected through the wrap.
+var ErrPrepareFailed = errors.New("command preparation failed")
 
 // ErrCommandRejected classifies domain rejections returned by Command.Decide,
 // letting transport adapters distinguish a business-rule refusal from an
@@ -87,11 +128,16 @@ func WithBackoff(backoff func(ctx context.Context, attempt int)) ExecuteOption {
 // events guarded by an append condition built from exactly those projections —
 // so the optimistic-concurrency boundary always covers what the decision read.
 //
+// If the command implements [Preparer], Prepare runs first, exactly once, and
+// whatever it stores in the command's fields is visible to every attempt. A
+// Prepare error aborts before anything is read or appended, wrapped in
+// ErrPrepareFailed.
+//
 // On an append-condition conflict it rebuilds the decision model and retries, up
 // to the configured number of attempts (one by default — opt in via
-// WithMaxAttempts). Execute never mutates the caller's command: every attempt
-// runs on a fresh shallow copy of it, so state a command stashes in its fields
-// (a cached projection, say) lives and dies with that attempt.
+// WithMaxAttempts). Execute never mutates the caller's command: Prepare and
+// every attempt run on fresh shallow copies of it, so state a command stashes in
+// its fields (a cached projection, say) lives and dies with that attempt.
 // If Decide returns an error, Execute aborts without appending
 // and does not retry; the error comes back wrapped in a DecisionError (matching
 // errors.Is(err, ErrCommandRejected)) with the domain message unchanged. If
@@ -101,6 +147,18 @@ func Execute(ctx context.Context, store eventstore.Store, command Command, optio
 	config := executeConfig{maxAttempts: 1}
 	for _, option := range options {
 		option(&config)
+	}
+
+	// Prepare runs once, on a copy that then becomes the base every attempt
+	// clones from — so the caller's command stays untouched and every attempt
+	// starts from the same prepared state. The copy has the same concrete type,
+	// so it satisfies Preparer whenever the original does.
+	if _, ok := command.(Preparer); ok {
+		prepared := commandForAttempt(command)
+		if err := prepared.(Preparer).Prepare(ctx); err != nil {
+			return fmt.Errorf("%w: %w", ErrPrepareFailed, err)
+		}
+		command = prepared
 	}
 
 	for attempt := 1; ; attempt++ {

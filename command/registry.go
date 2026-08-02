@@ -32,9 +32,9 @@ var (
 // Validator is implemented by commands that check their decoded payload.
 // Dispatch calls Validate after decoding, dependency injection, and the
 // registry-wide validator (see [WithValidator]); a non-nil error aborts the
-// dispatch wrapped in ErrValidationFailed. Validation is a wire-boundary
-// concern: commands constructed in code and run through [Execute] directly are
-// not validated. It must stay stateless — a rule that needs the
+// dispatch wrapped in ErrValidationFailed. Validation is a registry concern:
+// [Registry.Dispatch] and [Registry.Execute] both run it, the bare [Execute]
+// function does not. It must stay stateless — a rule that needs the
 // event store is a decision and belongs in Decide, guarded by the append
 // condition.
 type Validator interface {
@@ -88,6 +88,7 @@ type Registry struct {
 	factories      map[string]func() Command
 	executeOptions []ExecuteOption
 	validator      func(command any) error
+	injector       func(command any) error
 }
 
 // Option configures a Registry.
@@ -167,12 +168,42 @@ func WithValidator(validate func(command any) error) Option {
 	}
 }
 
+// WithInjector sets a function run on every freshly constructed command, before
+// its payload is decoded. It is the general form of [WithSnapshotStore]: the
+// registry knows nothing about your dependencies, so you match on an interface
+// you own.
+//
+//	type DepsUser interface{ UseDeps(app.Deps) }
+//
+//	command.NewRegistry(store,
+//	    command.WithInjector(func(cmd any) error {
+//	        if user, ok := cmd.(DepsUser); ok {
+//	            user.UseDeps(deps)
+//	        }
+//	        return nil
+//	    }),
+//	    ...)
+//
+// A non-nil error aborts the dispatch. Use it for wiring only — it runs before
+// the payload exists, so it cannot see the request. Per-request work belongs in
+// [Preparer.Prepare].
+func WithInjector(inject func(command any) error) Option {
+	return func(registry *Registry) {
+		registry.injector = inject
+	}
+}
+
 // Dispatch constructs a fresh copy of the command registered under name, injects
-// the snapshot store if applicable, decodes payload into it (when non-empty),
-// validates it — first with the registry-wide validator (see [WithValidator]),
-// then with the command's own [Validator] check — and runs it via
-// [Execute]. Errors are classifiable with errors.Is: an unknown name
-// matches [ErrUnknownCommand], a payload that fails to decode matches
+// the snapshot store if applicable, runs the registry-wide injector (see
+// [WithInjector]), decodes payload into it (when non-empty), validates it —
+// first with the registry-wide validator (see [WithValidator]), then with the
+// command's own [Validator] check — and runs it via [Execute].
+//
+// So a command that implements [Preparer] has its dependencies, its payload and
+// its validation all settled by the time Prepare runs.
+//
+// Errors are classifiable with errors.Is: an unknown name matches
+// [ErrUnknownCommand], a payload that fails to decode matches
 // [ErrInvalidPayload], a failed validation matches [ErrValidationFailed], and
 // Execute's errors pass through as documented there.
 func (registry *Registry) Dispatch(ctx context.Context, name string, payload []byte) error {
@@ -181,21 +212,69 @@ func (registry *Registry) Dispatch(ctx context.Context, name string, payload []b
 		return fmt.Errorf("command %q: %w", name, ErrUnknownCommand)
 	}
 	command := newCommand()
-	if storeUser, ok := command.(SnapshotStoreUser); ok && registry.snapshotStore != nil {
-		storeUser.UseSnapshotStore(registry.snapshotStore)
+	err := registry.inject(name, command)
+	if err != nil {
+		return err
 	}
 	if len(payload) > 0 {
-		if err := json.Unmarshal(payload, command); err != nil {
+		err = json.Unmarshal(payload, command)
+		if err != nil {
 			return fmt.Errorf("command %q: %w: %w", name, ErrInvalidPayload, err)
 		}
 	}
+	return registry.validateAndExecute(ctx, name, command)
+}
+
+// Execute runs an already-constructed command through the registry: everything
+// [Registry.Dispatch] does except the two wire-boundary steps, name lookup and
+// JSON decoding. It exists for callers whose commands come from Go rather than
+// from a request — a reactor reacting to an event, a scheduled job, a test —
+// so they still get the registry's dependency injection, validation and execute
+// options instead of reaching past them to the bare [Execute].
+//
+// The command need not be registered: the registry is a name table for the wire,
+// and this call has no name to look up. Errors classify as they do for Dispatch,
+// with the command's Go type name standing in for the dispatched name.
+func (registry *Registry) Execute(ctx context.Context, cmd Command) error {
+	name := commandName(cmd)
+	err := registry.inject(name, cmd)
+	if err != nil {
+		return err
+	}
+	return registry.validateAndExecute(ctx, name, cmd)
+}
+
+// inject hands a command its dependencies: the shared snapshot store first, then
+// the registry-wide injector. It runs before any payload is decoded, so nothing
+// here can see the request — per-request work belongs in [Preparer.Prepare].
+func (registry *Registry) inject(name string, command Command) error {
+	if storeUser, ok := command.(SnapshotStoreUser); ok && registry.snapshotStore != nil {
+		storeUser.UseSnapshotStore(registry.snapshotStore)
+	}
+	if registry.injector == nil {
+		return nil
+	}
+	err := registry.injector(command)
+	if err != nil {
+		return fmt.Errorf("command %q: could not inject dependencies: %w", name, err)
+	}
+	return nil
+}
+
+// validateAndExecute runs both validation layers — the registry-wide shape check
+// first, the command's own semantics second — and hands the survivor to
+// [Execute]. Both refusals wrap ErrValidationFailed, so a transport maps them to
+// one status without caring which layer spoke.
+func (registry *Registry) validateAndExecute(ctx context.Context, name string, command Command) error {
 	if registry.validator != nil {
-		if err := registry.validator(command); err != nil {
+		err := registry.validator(command)
+		if err != nil {
 			return fmt.Errorf("command %q: %w: %w", name, ErrValidationFailed, err)
 		}
 	}
 	if validator, ok := command.(Validator); ok {
-		if err := validator.Validate(); err != nil {
+		err := validator.Validate()
+		if err != nil {
 			return fmt.Errorf("command %q: %w: %w", name, ErrValidationFailed, err)
 		}
 	}
