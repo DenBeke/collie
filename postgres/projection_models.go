@@ -1,6 +1,9 @@
 package postgres
 
-import "gorm.io/gorm"
+import (
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
+)
 
 // projectionCheckpoint tracks the stream position for any projection type.
 type projectionCheckpoint struct {
@@ -42,9 +45,12 @@ func MigrateProjections(db *gorm.DB) error {
 		 FOREIGN KEY (projection_name) REFERENCES projection_checkpoints(projection_name)
 		 ON DELETE CASCADE`,
 	}
+	// Ignore "already exists" errors for idempotency — on a silent session,
+	// because the caller's logger would otherwise report two errors on every
+	// startup after the first, each of which means the schema is exactly right.
+	quiet := db.Session(&gorm.Session{Logger: logger.Discard})
 	for _, sql := range fks {
-		// Ignore "already exists" errors for idempotency.
-		db.Exec(sql)
+		quiet.Exec(sql)
 	}
 	return nil
 }
