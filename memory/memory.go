@@ -45,11 +45,13 @@ func (s *Store) Append(ctx context.Context, events []eventstore.Event, condition
 			}
 		}
 	}
+	// Acceptance is now: this store has nothing between the append and the log.
+	accepted := time.Now()
 	for _, e := range events {
 		s.events = append(s.events, eventstore.SequencedEvent{
 			Event:          e,
 			SequenceNumber: uint64(len(s.events) + 1),
-			CreatedAt:      time.Now(),
+			RecordedAt:     accepted,
 		})
 	}
 	return nil

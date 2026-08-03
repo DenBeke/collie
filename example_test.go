@@ -10,7 +10,7 @@ import (
 	"github.com/DenBeke/collie/memory"
 	"github.com/DenBeke/collie/snapshot"
 
-	"github.com/labstack/echo/v4"
+	"github.com/labstack/echo/v5"
 )
 
 // usernameExistsProjection returns true if the given username is already taken.
@@ -117,7 +117,7 @@ func ExampleServe() {
 
 	e := echo.New()
 
-	e.POST("/signup", func(c echo.Context) error {
+	e.POST("/signup", func(c *echo.Context) error {
 		var body struct {
 			Username string `json:"username"`
 		}
@@ -130,7 +130,7 @@ func ExampleServe() {
 		return c.NoContent(http.StatusNoContent)
 	})
 
-	e.GET("/total-users", func(c echo.Context) error {
+	e.GET("/total-users", func(c *echo.Context) error {
 		// Catch up with new events since the last query. This on-demand strategy
 		// keeps the read model decoupled from the write side — no need to notify
 		// read models after each command. The incremental update only processes

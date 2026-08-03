@@ -12,6 +12,7 @@ import (
 
 	"github.com/DenBeke/collie"
 	"github.com/DenBeke/collie/command"
+	"github.com/DenBeke/collie/envelope"
 	"github.com/DenBeke/collie/memory"
 	"github.com/DenBeke/collie/reactor"
 )
@@ -339,6 +340,46 @@ func TestRunnerAppendsWhileReading(t *testing.T) {
 	tick(t, runner)
 	if commands.calls != 2 {
 		t.Fatalf("executed %d commands after the reactions were delivered, want 2", commands.calls)
+	}
+}
+
+// TestRunnerStampsTheEnvelopeOnItsCommands: what a reaction appends carries the
+// reactor's name and the event it answered, and neither the reactor nor the
+// command it returned mentions either.
+func TestRunnerStampsTheEnvelopeOnItsCommands(t *testing.T) {
+	// AllowAnonymous, because the event that triggers the reaction is seeded by
+	// the test and has no actor of its own.
+	store := eventstore.NewMiddlewareStore(memory.New(),
+		eventstore.WithAppendMiddleware(envelope.New(envelope.AllowAnonymous()).OnAppend))
+	appendEvents(t, store, "Interesting")
+
+	runner := reactor.NewRunner(store, memory.NewCheckpointStore(), &appender{store: store}, quiet())
+	watcher := reactor.ReactorFunc(func(_ context.Context, event eventstore.SequencedEvent) ([]command.Command, error) {
+		if event.Type != "Interesting" {
+			return nil, nil
+		}
+		return []command.Command{&noop{Tag: event.Type}}, nil
+	})
+	register(t, runner, "watcher/v1", watcher, reactor.FromBeginning())
+	tick(t, runner)
+
+	var reacted []eventstore.SequencedEvent
+	query := eventstore.Query{eventstore.QueryItem{Types: []string{"Reacted"}}}
+	for event, err := range store.Read(context.Background(), query, 0) {
+		if err != nil {
+			t.Fatalf("read the log: %v", err)
+		}
+		reacted = append(reacted, event)
+	}
+
+	if len(reacted) != 1 {
+		t.Fatalf("the reaction appended %d events, want 1", len(reacted))
+	}
+	if reacted[0].Actor != "reactor:watcher/v1" {
+		t.Errorf("actor = %q, want %q", reacted[0].Actor, "reactor:watcher/v1")
+	}
+	if reacted[0].Cause != "event:1" {
+		t.Errorf("cause = %q, want %q, the event it answered", reacted[0].Cause, "event:1")
 	}
 }
 

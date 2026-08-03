@@ -426,6 +426,41 @@ Multiple middleware run in registration order. Append middleware can validate, t
 
 Events carry a `Metadata map[string]string` field for middleware-specific data. Metadata is persisted alongside events but is not used for querying. Middleware reads and writes metadata to coordinate — for example, the encryption middleware stores encryption key names in `metadata["encryptionKeys"]`.
 
+### Envelope
+
+Beside that free map, an event carries three typed fields — who caused it, what it followed from, and when the store took it:
+
+| Field | On | Stamped by |
+|---|---|---|
+| `Actor` | `Event` | the envelope middleware, from the context |
+| `Cause` | `Event` | the envelope middleware, from the context |
+| `RecordedAt` | `SequencedEvent` | the store, at acceptance |
+
+Domain code sets none of them. It puts them on the context, and the middleware does the rest:
+
+```go
+store := eventstore.NewMiddlewareStore(inner,
+    // Before encryption: stamp first, then encrypt.
+    eventstore.WithAppendMiddleware(envelope.New().OnAppend, encryptor.OnAppend),
+    eventstore.WithReadMiddleware(encryptor.OnRead),
+)
+
+ctx = eventstore.ContextWithActor(ctx, "student:s1")
+ctx = eventstore.ContextWithCause(ctx, "request:8f3a")
+```
+
+Both are opaque `"kind:id"` strings whose grammar the application owns. The framework reserves the two prefixes it produces itself: `reactor:<registered-name>` is the actor of a command a reactor dispatched, and `event:<sequence>` is the cause it hands that command.
+
+Strict by default — an append with no actor on the context fails with `envelope.ErrNoActor`, so a forgotten actor breaks the first request in development instead of flowing silently into an immutable log. Opting out is explicit, and greppable:
+
+```go
+envelope.New(envelope.AllowAnonymous())
+```
+
+A cause is always optional. `RecordedAt` is zero, and the Postgres columns are `NULL`, for events written before the envelope existed — `Migrate` adds `recorded_at` without a default and only then gives it one, so upgrading a log does not stamp its history with the moment of the migration.
+
+`RecordedAt` is the store's only timestamp. It replaced an older application-clock `created_at` column, which `Migrate` **drops** — without backfilling, because a timestamp the application picked on its way to the database is not the moment the store accepted the event. A log migrated off that schema keeps `NULL` on its historical rows and loses the old column's data.
+
 ## GDPR / Crypto-shredding
 
 Event sourcing stores facts forever, but GDPR requires the ability to forget personal data. This library solves this with **crypto-shredding**: event payloads containing personal data are encrypted with a per-subject key. "Forgetting" a subject means deleting their key — the events remain in the store but the data becomes permanently unreadable.

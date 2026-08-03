@@ -37,13 +37,19 @@ var _ eventstore.Store = (*Store)(nil)
 
 const defaultBatchSize = 1000
 
+// event is the committed log row. The envelope columns are nullable and hold
+// pointers for it: a NULL actor, cause or recorded_at means the row predates the
+// envelope, which is a different thing from an anonymous or uncaused append and
+// is worth being able to tell apart.
 type event struct {
-	SequenceNumber uint64    `gorm:"primaryKey;autoIncrement"`
-	Type           string    `gorm:"not null"`
-	Data           []byte    `gorm:"type:bytea"`
-	Tags           []byte    `gorm:"type:jsonb;default:'[]'"`
-	Metadata       []byte    `gorm:"type:jsonb"`
-	CreatedAt      time.Time `gorm:"autoCreateTime;index"`
+	SequenceNumber uint64     `gorm:"primaryKey;autoIncrement"`
+	Type           string     `gorm:"not null"`
+	Data           []byte     `gorm:"type:bytea"`
+	Tags           []byte     `gorm:"type:jsonb;default:'[]'"`
+	Metadata       []byte     `gorm:"type:jsonb"`
+	Actor          *string    `gorm:"type:text"`
+	Cause          *string    `gorm:"type:text"`
+	RecordedAt     *time.Time `gorm:"type:timestamptz;default:now()"`
 }
 
 // staging is the write-buffer table for AppendStaging. Appends land here
@@ -52,13 +58,19 @@ type event struct {
 // assigns events.sequence_number gap-free and monotonic. StagingID (insert order)
 // is the order key the flusher sorts by; same-boundary appends are serialized by
 // the per-boundary lock, so their StagingID order is their append order.
+//
+// recorded_at is written here, when the append lands in the buffer, and carried
+// over by the flusher: acceptance is when the store took the event, not when it
+// got around to sequencing it, so the flush interval must not shift it.
 type staging struct {
-	StagingID uint64    `gorm:"primaryKey;autoIncrement"`
-	Type      string    `gorm:"not null"`
-	Data      []byte    `gorm:"type:bytea"`
-	Tags      []byte    `gorm:"type:jsonb;default:'[]'"`
-	Metadata  []byte    `gorm:"type:jsonb"`
-	CreatedAt time.Time `gorm:"autoCreateTime"`
+	StagingID  uint64     `gorm:"primaryKey;autoIncrement"`
+	Type       string     `gorm:"not null"`
+	Data       []byte     `gorm:"type:bytea"`
+	Tags       []byte     `gorm:"type:jsonb;default:'[]'"`
+	Metadata   []byte     `gorm:"type:jsonb"`
+	Actor      *string    `gorm:"type:text"`
+	Cause      *string    `gorm:"type:text"`
+	RecordedAt *time.Time `gorm:"type:timestamptz"`
 }
 
 // TableName pins the table name to "staging" (not GORM's default "stagings"), so
@@ -102,13 +114,55 @@ func New(db *gorm.DB, opts ...Option) *Store {
 	return s
 }
 
+// addRecordedAt adds events.recorded_at ahead of AutoMigrate, deliberately
+// without a default, and setRecordedAtDefault gives it one afterwards. The order
+// is the whole point, and it is not a style preference.
+//
+// PostgreSQL evaluates a VOLATILE default such as now() for every existing row
+// when the column is added, so adding recorded_at with its default in one step
+// would rewrite an entire log with the moment of the migration — history forged
+// by a deployment. Added bare, every historical row stays NULL, which reads
+// correctly as "this event predates the envelope". SET DEFAULT afterwards is a
+// catalog change only: it touches no row, and every append from then on is
+// stamped. Both statements are no-ops the second time, so Migrate stays
+// idempotent; on a fresh database AutoMigrate creates the column with the
+// default already on it, where there is no history to forge.
+const (
+	addRecordedAt        = `ALTER TABLE IF EXISTS events ADD COLUMN IF NOT EXISTS recorded_at timestamptz`
+	setRecordedAtDefault = `ALTER TABLE events ALTER COLUMN recorded_at SET DEFAULT now()`
+)
+
+// created_at was the application-clock timestamp recorded_at replaces. It is
+// dropped, not backfilled: an application clock is not what recorded_at means,
+// so historical rows keep a NULL recorded_at and the old data goes with the
+// column. Dropping it takes its index along.
+//
+// Both statements are no-ops the second time, so Migrate stays idempotent. They
+// must run AFTER the dcb_* functions have been replaced with bodies that no
+// longer name the column. PostgreSQL will not stop the wrong order: a PL/pgSQL
+// body is stored as text and is not dependency-checked, so the drop succeeds
+// either way and only the live functions notice, failing every append that lands
+// between the drop and their replacement.
+const (
+	dropEventsCreatedAt  = `ALTER TABLE IF EXISTS events DROP COLUMN IF EXISTS created_at`
+	dropStagingCreatedAt = `ALTER TABLE IF EXISTS staging DROP COLUMN IF EXISTS created_at`
+)
+
 // Migrate creates or updates the events, staging and event_tags tables, the
 // dcb_append / dcb_append_staging / dcb_flush functions, and the supporting
 // indexes. Tag filtering goes through the event_tags (key,value,sequence_number)
 // primary key; staging keeps a GIN index for its jsonb condition check.
 func (s *Store) Migrate() error {
+	err := s.db.Exec(addRecordedAt).Error
+	if err != nil {
+		return fmt.Errorf("could not add the recorded_at column: %w", err)
+	}
 	if err := s.db.AutoMigrate(&event{}, &staging{}, &eventTag{}); err != nil {
 		return err
+	}
+	err = s.db.Exec(setRecordedAtDefault).Error
+	if err != nil {
+		return fmt.Errorf("could not default the recorded_at column: %w", err)
 	}
 	if err := s.db.Exec(fmt.Sprintf(dcbAppendFnTemplate, appendLock)).Error; err != nil {
 		return fmt.Errorf("could not create dcb_append function: %w", err)
@@ -118,6 +172,14 @@ func (s *Store) Migrate() error {
 	}
 	if err := s.db.Exec(dcbFlushFn).Error; err != nil {
 		return fmt.Errorf("could not create dcb_flush function: %w", err)
+	}
+	err = s.db.Exec(dropEventsCreatedAt).Error
+	if err != nil {
+		return fmt.Errorf("could not drop the events created_at column: %w", err)
+	}
+	err = s.db.Exec(dropStagingCreatedAt).Error
+	if err != nil {
+		return fmt.Errorf("could not drop the staging created_at column: %w", err)
 	}
 	// Composite index for type-only query items (no tag to anchor on): an ordered
 	// scan by sequence_number within a type.
@@ -235,16 +297,19 @@ const dcbCheckBody = `
 `
 
 // dcbInsertBody is the tail of dcb_append: the batched insert of p_events into
-// events, then RETURN true. It is appended after dcbCheckBody.
+// events, then RETURN true. It is appended after dcbCheckBody. recorded_at is
+// left out of the column list so the table default (now()) stamps acceptance;
+// an absent or empty actor/cause lands as NULL rather than an empty string.
 const dcbInsertBody = `
     WITH ins AS (
-        INSERT INTO events (type, data, tags, metadata, created_at)
+        INSERT INTO events (type, data, tags, metadata, actor, cause)
         SELECT elem->>'type',
                decode(elem->>'data', 'base64'),
                COALESCE(elem->'tags', '[]'::jsonb),
                CASE WHEN elem->'metadata' IS NULL OR jsonb_typeof(elem->'metadata') = 'null'
                     THEN NULL ELSE elem->'metadata' END,
-               now()
+               NULLIF(elem->>'actor', ''),
+               NULLIF(elem->>'cause', '')
         FROM jsonb_array_elements(p_events) AS elem
         RETURNING sequence_number, tags
     )
@@ -322,12 +387,14 @@ BEGIN
         END IF;
     END IF;
 
-    INSERT INTO staging (type, data, tags, metadata, created_at)
+    INSERT INTO staging (type, data, tags, metadata, actor, cause, recorded_at)
     SELECT elem->>'type',
            decode(elem->>'data', 'base64'),
            COALESCE(elem->'tags', '[]'::jsonb),
            CASE WHEN elem->'metadata' IS NULL OR jsonb_typeof(elem->'metadata') = 'null'
                 THEN NULL ELSE elem->'metadata' END,
+           NULLIF(elem->>'actor', ''),
+           NULLIF(elem->>'cause', ''),
            now()
     FROM jsonb_array_elements(p_events) AS elem;
 
@@ -342,6 +409,8 @@ type appendEvent struct {
 	Type     string            `json:"type"`
 	Data     string            `json:"data"`
 	Tags     []eventstore.Tag  `json:"tags"`
+	Actor    string            `json:"actor,omitempty"`
+	Cause    string            `json:"cause,omitempty"`
 	Metadata map[string]string `json:"metadata,omitempty"`
 }
 
@@ -369,6 +438,8 @@ func appendArgs(events []eventstore.Event, condition *eventstore.AppendCondition
 			Type:     e.Type,
 			Data:     base64.StdEncoding.EncodeToString(e.Data),
 			Tags:     tags,
+			Actor:    e.Actor,
+			Cause:    e.Cause,
 			Metadata: e.Metadata,
 		}
 	}
@@ -558,7 +629,7 @@ type FlushOptions struct {
 // order AND populates event_tags, in one atomic statement, returning the number
 // of events moved. One writer (the flusher) ⇒ events.sequence_number is assigned
 // gap-free and monotonic; the ORDER BY preserves same-boundary append order.
-// created_at is carried over from staging (append time, not flush time). The
+// recorded_at is carried over from staging (append time, not flush time). The
 // returned count comes from `ins` (events moved), not the event_tags insert, so
 // it stays correct even for batches whose events have no tags.
 const dcbFlushFn = `CREATE OR REPLACE FUNCTION dcb_flush(p_batch int)
@@ -572,8 +643,9 @@ BEGIN
         RETURNING *
     ),
     ins AS (
-        INSERT INTO events (type, data, tags, metadata, created_at)
-        SELECT type, data, tags, metadata, created_at FROM moved ORDER BY staging_id
+        INSERT INTO events (type, data, tags, metadata, actor, cause, recorded_at)
+        SELECT type, data, tags, metadata, actor, cause, recorded_at
+        FROM moved ORDER BY staging_id
         RETURNING sequence_number, tags
     ),
     tags_ins AS (
@@ -667,7 +739,8 @@ func (s *Store) Flush(ctx context.Context, batchSize int) (int64, error) {
 // primary key. Placeholders are GORM "?" (rewritten to $N by the postgres
 // driver); args are appended in placeholder order.
 func buildReadSQL(query eventstore.Query, cursor uint64, limit int) (string, []any) {
-	const cols = "e.sequence_number, e.type, e.data, e.tags, e.metadata, e.created_at"
+	const cols = "e.sequence_number, e.type, e.data, e.tags, e.metadata, " +
+		"e.actor, e.cause, e.recorded_at"
 
 	var args []any
 	ph := func(v any) string {
@@ -748,9 +821,21 @@ func toSequencedEvent(e event) (eventstore.SequencedEvent, error) {
 			Type:     e.Type,
 			Data:     e.Data,
 			Tags:     tags,
+			Actor:    deref(e.Actor),
+			Cause:    deref(e.Cause),
 			Metadata: metadata,
 		},
 		SequenceNumber: e.SequenceNumber,
-		CreatedAt:      e.CreatedAt,
+		RecordedAt:     deref(e.RecordedAt),
 	}, nil
+}
+
+// deref reads a nullable column into its Go zero value, which is what a caller
+// sees for an event that predates the envelope.
+func deref[T any](p *T) T {
+	if p == nil {
+		var zero T
+		return zero
+	}
+	return *p
 }

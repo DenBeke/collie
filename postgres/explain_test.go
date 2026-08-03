@@ -41,7 +41,7 @@ func TestReadPlanUsesEventTagsIndex(t *testing.T) {
   WHERE t.key = 'entity' AND t.value = 'e-7' AND t.sequence_number > 0
   ORDER BY t.sequence_number LIMIT 1000
 )
-SELECT e.sequence_number, e.type, e.data, e.tags, e.metadata, e.created_at
+SELECT e.sequence_number, e.type, e.data, e.tags, e.metadata, e.actor, e.cause, e.recorded_at
 FROM events e JOIN (SELECT sequence_number FROM cand ORDER BY sequence_number LIMIT 1000) c
   ON c.sequence_number = e.sequence_number
 ORDER BY e.sequence_number`

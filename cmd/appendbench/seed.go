@@ -95,8 +95,8 @@ func fastSeed(ctx context.Context, db *gorm.DB, cfg *Config, need int64) error {
 		// Cast every bound parameter: Postgres cannot infer the type of a
 		// parameter used directly as a jsonb_build_object key or in a ||
 		// concatenation (SQLSTATE 42P18).
-		const sql = `INSERT INTO events (type, data, tags, created_at)
-SELECT ?::text, NULL, jsonb_build_object(?::text, ?::text || ((g - 1) % ?::bigint)::text), now()
+		const sql = `INSERT INTO events (type, data, tags)
+SELECT ?::text, NULL, jsonb_build_object(?::text, ?::text || ((g - 1) % ?::bigint)::text)
 FROM generate_series(1, ?::bigint) AS g`
 		if err := db.WithContext(ctx).Exec(sql, eventType, entityTagKey, entityIDPrefix, cfg.Partitions, n).Error; err != nil {
 			return fmt.Errorf("fast-seed insert: %w", err)

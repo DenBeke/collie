@@ -94,6 +94,38 @@ func TestEncryptedRoundTrip(t *testing.T) {
 	}
 }
 
+// TestEnvelopeSurvivesEncryption: this middleware rewrites Data and Metadata,
+// and must leave the envelope alone — a crypto-shredded event still has to say
+// who wrote it.
+func TestEnvelopeSurvivesEncryption(t *testing.T) {
+	store, _ := newStore()
+	ctx := context.Background()
+
+	e, err := eventstore.NewEvent("UserSignedUp", "alice", eventstore.NewTags(
+		"userId", "user-123",
+	), encryption.WithEncryptionKeys("userId"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	e.Actor = "user:user-123"
+	e.Cause = "request:8f3a"
+	err = store.Append(ctx, []eventstore.Event{e}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	events := collectEvents(t, store, nil)
+	if len(events) != 1 {
+		t.Fatalf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Actor != "user:user-123" {
+		t.Errorf("actor = %q, want %q", events[0].Actor, "user:user-123")
+	}
+	if events[0].Cause != "request:8f3a" {
+		t.Errorf("cause = %q, want %q", events[0].Cause, "request:8f3a")
+	}
+}
+
 func TestEncryptedAtRest(t *testing.T) {
 	// Create a store with encryption, and a raw store without it to verify
 	// the data is actually encrypted at rest.

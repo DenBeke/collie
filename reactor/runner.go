@@ -269,6 +269,13 @@ func (r *Runner) read(ctx context.Context, after uint64) ([]eventstore.Sequenced
 // may advance past it: only when React succeeded and every command reached a
 // verdict, appended or refused for a reason repeating cannot change.
 func (r *Runner) deliver(ctx context.Context, reg *registration, event eventstore.SequencedEvent) bool {
+	// The envelope on everything appended under this delivery: this reactor is
+	// the actor, the event it is answering is the cause. It goes on before React
+	// and not just around Execute, because a reactor that needs the answer
+	// dispatches its own commands with the context it was handed.
+	ctx = eventstore.ContextWithActor(ctx, "reactor:"+reg.name)
+	ctx = eventstore.ContextWithCause(ctx, fmt.Sprintf("event:%d", event.SequenceNumber))
+
 	commands, err := r.react(ctx, reg, event)
 	if err != nil {
 		r.logger.ErrorContext(ctx, "reactor failed", "reactor", reg.name, "event", event.Type,

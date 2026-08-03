@@ -40,11 +40,16 @@ func NewTags(keyValuePairs ...string) []Tag {
 // Event represents a domain event to be appended to the store.
 // Tags are optional key/value labels used for filtering and for defining
 // consistency boundaries; the same key may appear more than once.
+// Actor and Cause are the envelope: who caused this event and what it followed
+// from. Domain code leaves them zero — they are stamped from the context just
+// before the event is persisted; see the envelope package for the whole design.
 // Metadata carries middleware-specific data (e.g. encryption keys, blob refs).
 type Event struct {
 	Type     string
 	Data     []byte
 	Tags     []Tag
+	Actor    string
+	Cause    string
 	Metadata map[string]string
 }
 
@@ -63,10 +68,14 @@ func (e Event) TagValues(key string) []string {
 
 // SequencedEvent is an Event that has been persisted and assigned a unique,
 // monotonically increasing sequence number by the store.
+//
+// RecordedAt is the read-side half of the envelope: the moment the store
+// accepted the event, assigned by the store and by nothing else. It is zero for
+// events written before the envelope existed.
 type SequencedEvent struct {
 	Event
 	SequenceNumber uint64
-	CreatedAt      time.Time
+	RecordedAt     time.Time
 }
 
 // EventData unmarshals the event's Data field into a value of type T.
