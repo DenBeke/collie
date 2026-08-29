@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 
 	"github.com/DenBeke/collie"
 	"github.com/DenBeke/collie/snapshot"
@@ -226,11 +227,15 @@ func (registry *Registry) Dispatch(ctx context.Context, name string, payload []b
 }
 
 // Execute runs an already-constructed command through the registry: everything
-// [Registry.Dispatch] does except the two wire-boundary steps, name lookup and
-// JSON decoding. It exists for callers whose commands come from Go rather than
-// from a request — a reactor reacting to an event, a scheduled job, a test —
-// so they still get the registry's dependency injection, validation and execute
-// options instead of reaching past them to the bare [Execute].
+// [Registry.Dispatch] does except the three wire-boundary steps — name lookup,
+// JSON decoding, and authorisation. It exists for callers whose commands come
+// from Go rather than from a request — a reactor reacting to an event, a
+// scheduled job, a test — so they still get the registry's dependency
+// injection, validation and execute options instead of reaching past them to
+// the bare [Execute].
+//
+// There is no caller here to judge: the command was constructed by this
+// process, which vouches for it — see [Authorizer].
 //
 // The command need not be registered: the registry is a name table for the wire,
 // and this call has no name to look up. Errors classify as they do for Dispatch,
@@ -241,7 +246,7 @@ func (registry *Registry) Execute(ctx context.Context, cmd Command) error {
 	if err != nil {
 		return err
 	}
-	return registry.validateAndExecute(ctx, name, cmd)
+	return registry.validateAndExecute(ctx, name, cmd, withoutAuthorization())
 }
 
 // inject hands a command its dependencies: the shared snapshot store first, then
@@ -265,7 +270,7 @@ func (registry *Registry) inject(name string, command Command) error {
 // first, the command's own semantics second — and hands the survivor to
 // [Execute]. Both refusals wrap ErrValidationFailed, so a transport maps them to
 // one status without caring which layer spoke.
-func (registry *Registry) validateAndExecute(ctx context.Context, name string, command Command) error {
+func (registry *Registry) validateAndExecute(ctx context.Context, name string, command Command, options ...ExecuteOption) error {
 	if registry.validator != nil {
 		err := registry.validator(command)
 		if err != nil {
@@ -278,7 +283,10 @@ func (registry *Registry) validateAndExecute(ctx context.Context, name string, c
 			return fmt.Errorf("command %q: %w: %w", name, ErrValidationFailed, err)
 		}
 	}
-	return Execute(ctx, registry.store, command, registry.executeOptions...)
+	// Concat rather than append: appending onto the registry's own slice could
+	// write into its spare capacity, and two dispatches doing that at once
+	// would race over one backing array.
+	return Execute(ctx, registry.store, command, slices.Concat(registry.executeOptions, options)...)
 }
 
 // commandName returns the type name of a (pointer to) command, e.g. *SignUp -> "SignUp".

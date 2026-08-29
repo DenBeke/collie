@@ -14,12 +14,15 @@ import (
 // A concrete command is named after the operation it performs and carries its
 // parameters as fields; Execute runs it.
 //
-// A command runs in up to three phases, and the difference between them is how
+// A command runs in up to four phases, and the difference between them is how
 // often they run:
 //
 //	Prepare      optional, see [Preparer]. Once per Execute, before the loop.
 //	             The only phase where I/O belongs.
 //	Projections  once per attempt. Declares the consistency boundaries.
+//	Authorize    optional, see [Authorizer]. Once per attempt, on the decision
+//	             model the projections just built: may this caller do this.
+//	             Once more before Prepare, when the command prepares too.
 //	Decide       once per attempt. Pure: reads the projections, returns events.
 //
 // Projections and Decide run again on every optimistic retry, so an effect in
@@ -55,6 +58,12 @@ type Command interface {
 // state — that is what projections are for, and only they are covered by the
 // append condition.
 //
+// A call whose input depends on state — mint an id if unclaimed, charge if
+// unpaid — belongs to the caller instead: read the projection, make the call,
+// hand the command the result and its premise, and let a rule refuse when the
+// premise has moved. For calls too costly to make twice, see "State-dependent
+// external work" in the README.
+//
 // Prepare needs a pointer to a struct to have anywhere to store its results;
 // Execute leaves other kinds of command untouched, so Prepare on a value
 // receiver has no way to communicate with Decide.
@@ -64,6 +73,26 @@ type Command interface {
 // that was going to be rejected anyway.
 type Preparer interface {
 	Prepare(ctx context.Context) error
+}
+
+// Authorizer is implemented by commands that judge their caller: may this actor
+// touch this data. Execute calls it inside the attempt loop, after the decision
+// model is built and before Decide — the check may read the projections the
+// command declared, the append condition covers what it read, and a grant that
+// moves mid-decision forces a retry. Re-evaluated every attempt, so it must
+// stay as re-runnable as Decide.
+//
+// Identity arrives on the context, like actor and cause; the framework never
+// learns its shape. [Registry.Execute] skips this phase: an in-process caller
+// vouches for itself.
+//
+// A command that also implements [Preparer] is judged once more before Prepare,
+// on a model built from the payload alone — so its Projections must not need
+// prepared state. The pre-pass keeps unauthorized callers away from Prepare's
+// I/O; the per-attempt pass keeps the decision off stale grants. Different
+// threats; neither substitutes for the other.
+type Authorizer interface {
+	Authorize(ctx context.Context) error
 }
 
 // ErrPrepareFailed classifies a failure in [Preparer.Prepare]: the command never
@@ -95,12 +124,45 @@ func (e *DecisionError) Unwrap() error { return e.Err }
 // without the sentinel polluting the message.
 func (e *DecisionError) Is(target error) bool { return target == ErrCommandRejected }
 
+// ErrAccessDenied classifies a refusal from [Authorizer.Authorize]: this caller
+// may not, as opposed to nobody may (ErrCommandRejected) — a transport answers
+// 403 rather than 409. AccessError claims it through its Is method.
+var ErrAccessDenied = errors.New("access denied")
+
+// AccessError wraps an error returned by [Authorizer.Authorize] — DecisionError's
+// mirror: message unchanged, Unwrap for errors.As, Is true for ErrAccessDenied.
+type AccessError struct {
+	Err error
+}
+
+func (e *AccessError) Error() string { return e.Err.Error() }
+
+func (e *AccessError) Unwrap() error { return e.Err }
+
+// Is claims ErrAccessDenied, so errors.Is classifies any denial without the
+// sentinel polluting the message.
+func (e *AccessError) Is(target error) bool { return target == ErrAccessDenied }
+
 // ExecuteOption configures Execute.
 type ExecuteOption func(*executeConfig)
 
 type executeConfig struct {
 	maxAttempts int
 	backoff     func(ctx context.Context, attempt int)
+	// skipAuthorization turns the [Authorizer] phase off. Off is never the
+	// default: a caller that reached Execute without asking for the skip is
+	// judged, so a new entry point fails closed rather than quietly unguarded.
+	skipAuthorization bool
+}
+
+// withoutAuthorization skips the [Authorizer] phase. Unexported, and its only
+// caller is [Registry.Execute]: the callers that get the skip are the ones this
+// process wrote itself, and letting an application ask for it would turn a
+// property of the entry point into a per-call argument.
+func withoutAuthorization() ExecuteOption {
+	return func(config *executeConfig) {
+		config.skipAuthorization = true
+	}
 }
 
 // WithMaxAttempts sets how many times Execute runs the command before giving up
@@ -133,6 +195,15 @@ func WithBackoff(backoff func(ctx context.Context, attempt int)) ExecuteOption {
 // Prepare error aborts before anything is read or appended, wrapped in
 // ErrPrepareFailed.
 //
+// If the command implements [Authorizer], Authorize runs on every attempt,
+// after the decision model is built and before Decide, so a check reads the
+// projections the append condition covers. A refusal aborts without appending
+// and is not retried — a denial is an answer, not a conflict — and comes back
+// wrapped in an AccessError (matching errors.Is(err, ErrAccessDenied)) with the
+// message unchanged. A command that implements [Preparer] as well is asked once
+// more before Prepare, on a decision model built for that question alone, so a
+// denied caller never reaches the I/O — see [Authorizer].
+//
 // On an append-condition conflict it rebuilds the decision model and retries, up
 // to the configured number of attempts (one by default — opt in via
 // WithMaxAttempts). Execute never mutates the caller's command: Prepare and
@@ -147,6 +218,20 @@ func Execute(ctx context.Context, store eventstore.Store, command Command, optio
 	config := executeConfig{maxAttempts: 1}
 	for _, option := range options {
 		option(&config)
+	}
+
+	// A command that both prepares and authorises is judged before Prepare too,
+	// so an unauthorized caller never pays for the I/O. Only that pairing costs
+	// the extra read; the pre-pass may checkpoint snapshot projections en route.
+	if !config.skipAuthorization {
+		_, prepares := command.(Preparer)
+		_, authorizes := command.(Authorizer)
+		if prepares && authorizes {
+			err := authorizeBeforePrepare(ctx, store, command)
+			if err != nil {
+				return err
+			}
+		}
 	}
 
 	// Prepare runs once, on a copy that then becomes the base every attempt
@@ -178,6 +263,18 @@ func Execute(ctx context.Context, store eventstore.Store, command Command, optio
 			condition = built
 		}
 
+		// Between the model and the decision: the check reads what the append
+		// condition covers, and is asked again on every attempt.
+		if !config.skipAuthorization {
+			if authorizer, ok := cmd.(Authorizer); ok {
+				err := authorizer.Authorize(ctx)
+				if err != nil {
+					// No retry: re-reading the log cannot turn a denial into a yes.
+					return &AccessError{Err: err}
+				}
+			}
+		}
+
 		events, err := cmd.Decide(ctx)
 		if err != nil {
 			// A DecisionError keeps the domain message byte-identical while marking
@@ -199,6 +296,29 @@ func Execute(ctx context.Context, store eventstore.Store, command Command, optio
 			config.backoff(ctx, attempt)
 		}
 	}
+}
+
+// authorizeBeforePrepare builds a throwaway decision model purely so Authorize
+// has one to read; nothing folded here reaches Prepare — the loop asks again.
+func authorizeBeforePrepare(ctx context.Context, store eventstore.Store, command Command) error {
+	cmd := commandForAttempt(command)
+
+	projections, err := cmd.Projections(ctx)
+	if err != nil {
+		return fmt.Errorf("could not build projections: %w", err)
+	}
+	if len(projections) > 0 {
+		_, err = eventstore.BuildDecisionModel(ctx, store, projections...)
+		if err != nil {
+			return fmt.Errorf("could not build decision model: %w", err)
+		}
+	}
+
+	err = cmd.(Authorizer).Authorize(ctx)
+	if err != nil {
+		return &AccessError{Err: err}
+	}
+	return nil
 }
 
 // commandForAttempt returns the command instance one attempt runs on: a
