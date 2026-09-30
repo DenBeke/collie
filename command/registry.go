@@ -227,15 +227,16 @@ func (registry *Registry) Dispatch(ctx context.Context, name string, payload []b
 }
 
 // Execute runs an already-constructed command through the registry: everything
-// [Registry.Dispatch] does except the three wire-boundary steps — name lookup,
-// JSON decoding, and authorisation. It exists for callers whose commands come
-// from Go rather than from a request — a reactor reacting to an event, a
-// scheduled job, a test — so they still get the registry's dependency
-// injection, validation and execute options instead of reaching past them to
-// the bare [Execute].
+// [Registry.Dispatch] does except the two wire-boundary steps — name lookup and
+// JSON decoding. It exists for callers whose commands come from Go rather than
+// from a payload — a protocol session that built the command out of what it
+// parsed, a reactor reacting to an event, a scheduled job, a test — so they
+// still get the registry's dependency injection, validation, execute options
+// and authorisation instead of reaching past them to the bare [Execute].
 //
-// There is no caller here to judge: the command was constructed by this
-// process, which vouches for it — see [Authorizer].
+// Authorisation is not a wire-boundary step, and nobody is exempt from it:
+// an [Authorizer] is asked whoever constructed the command, and answers from
+// what the context says about the actor — see [Authorizer].
 //
 // The command need not be registered: the registry is a name table for the wire,
 // and this call has no name to look up. Errors classify as they do for Dispatch,
@@ -246,7 +247,7 @@ func (registry *Registry) Execute(ctx context.Context, cmd Command) error {
 	if err != nil {
 		return err
 	}
-	return registry.validateAndExecute(ctx, name, cmd, withoutAuthorization())
+	return registry.validateAndExecute(ctx, name, cmd)
 }
 
 // inject hands a command its dependencies: the shared snapshot store first, then

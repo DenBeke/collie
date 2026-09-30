@@ -83,8 +83,11 @@ type Preparer interface {
 // stay as re-runnable as Decide.
 //
 // Identity arrives on the context, like actor and cause; the framework never
-// learns its shape. [Registry.Execute] skips this phase: an in-process caller
-// vouches for itself.
+// learns its shape, and it exempts nobody: a command dispatched by name, a
+// command constructed by a transport, and a command a reactor returned all
+// pass through here. A caller with no session — a reactor, a boot job — is an
+// actor too, and it is the rule's business to admit it, by whatever the
+// application puts on the context to say who it is.
 //
 // A command that also implements [Preparer] is judged once more before Prepare,
 // on a model built from the payload alone — so its Projections must not need
@@ -149,20 +152,6 @@ type ExecuteOption func(*executeConfig)
 type executeConfig struct {
 	maxAttempts int
 	backoff     func(ctx context.Context, attempt int)
-	// skipAuthorization turns the [Authorizer] phase off. Off is never the
-	// default: a caller that reached Execute without asking for the skip is
-	// judged, so a new entry point fails closed rather than quietly unguarded.
-	skipAuthorization bool
-}
-
-// withoutAuthorization skips the [Authorizer] phase. Unexported, and its only
-// caller is [Registry.Execute]: the callers that get the skip are the ones this
-// process wrote itself, and letting an application ask for it would turn a
-// property of the entry point into a per-call argument.
-func withoutAuthorization() ExecuteOption {
-	return func(config *executeConfig) {
-		config.skipAuthorization = true
-	}
 }
 
 // WithMaxAttempts sets how many times Execute runs the command before giving up
@@ -223,14 +212,12 @@ func Execute(ctx context.Context, store eventstore.Store, command Command, optio
 	// A command that both prepares and authorises is judged before Prepare too,
 	// so an unauthorized caller never pays for the I/O. Only that pairing costs
 	// the extra read; the pre-pass may checkpoint snapshot projections en route.
-	if !config.skipAuthorization {
-		_, prepares := command.(Preparer)
-		_, authorizes := command.(Authorizer)
-		if prepares && authorizes {
-			err := authorizeBeforePrepare(ctx, store, command)
-			if err != nil {
-				return err
-			}
+	_, prepares := command.(Preparer)
+	_, authorizes := command.(Authorizer)
+	if prepares && authorizes {
+		err := authorizeBeforePrepare(ctx, store, command)
+		if err != nil {
+			return err
 		}
 	}
 
@@ -265,13 +252,11 @@ func Execute(ctx context.Context, store eventstore.Store, command Command, optio
 
 		// Between the model and the decision: the check reads what the append
 		// condition covers, and is asked again on every attempt.
-		if !config.skipAuthorization {
-			if authorizer, ok := cmd.(Authorizer); ok {
-				err := authorizer.Authorize(ctx)
-				if err != nil {
-					// No retry: re-reading the log cannot turn a denial into a yes.
-					return &AccessError{Err: err}
-				}
+		if authorizer, ok := cmd.(Authorizer); ok {
+			err := authorizer.Authorize(ctx)
+			if err != nil {
+				// No retry: re-reading the log cannot turn a denial into a yes.
+				return &AccessError{Err: err}
 			}
 		}
 

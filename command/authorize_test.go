@@ -133,24 +133,26 @@ func TestDispatch_AuthorizedProceedsToDecide(t *testing.T) {
 	}
 }
 
-// TestRegistryExecute_SkipsAuthorization is the in-process entry point: the
-// command implements Authorizer and would refuse everybody, and it is never
-// asked — there is no caller to judge, so the phase does not run at all.
-func TestRegistryExecute_SkipsAuthorization(t *testing.T) {
+// TestRegistryExecute_Authorizes pins that a constructed command is judged
+// exactly as a dispatched one: the registry exempts nobody, so a transport that
+// builds its commands in Go — an IMAP session, an SMTP submission — is guarded
+// by the same phase as a request off the wire. A caller with no session is an
+// actor the rule has to admit, not one the framework waves through.
+func TestRegistryExecute_Authorizes(t *testing.T) {
 	ctx := context.Background()
 	store := memory.New()
 	state := &authorizeState{}
 	registry := newAuthorizingRegistry(store, state, errNotYours)
 
 	err := registry.Execute(ctx, &authorizingCommand{store: store, state: state, deny: errNotYours})
-	if err != nil {
-		t.Fatalf("execute: %v", err)
+	if !errors.Is(err, command.ErrAccessDenied) {
+		t.Fatalf("expected ErrAccessDenied, got %v", err)
 	}
-	if state.authorized != 0 {
-		t.Fatalf("expected Authorize never to run, got %d authorizations", state.authorized)
+	if state.authorized != 1 || state.decided != 0 {
+		t.Fatalf("expected one authorization and no decision, got %d and %d", state.authorized, state.decided)
 	}
-	if count := countAll(t, store); count != 1 {
-		t.Fatalf("expected 1 event, got %d", count)
+	if count := countAll(t, store); count != 0 {
+		t.Fatalf("expected no events appended, got %d", count)
 	}
 }
 
@@ -297,27 +299,23 @@ func TestExecute_GateRunsBeforePrepareAndAgainInTheLoop(t *testing.T) {
 	}
 }
 
-// TestRegistryExecute_SkipsTheGateToo: the in-process entry point has no caller
-// to judge, and the skip covers both passes — the command would refuse everybody
-// and is never asked, before Prepare or inside the loop.
-func TestRegistryExecute_SkipsTheGateToo(t *testing.T) {
+// TestRegistryExecute_KeepsTheGate: a constructed command that prepares is
+// gated before Prepare exactly as a dispatched one — a denied caller never
+// reaches the I/O, whichever door they came through.
+func TestRegistryExecute_KeepsTheGate(t *testing.T) {
 	ctx := context.Background()
 	store := memory.New()
 	state := &gateState{}
 
 	registry := command.NewRegistry(store)
 	err := registry.Execute(ctx, &gatedCommand{state: state, deny: errNotYours})
-	if err != nil {
-		t.Fatalf("execute: %v", err)
+	if !errors.Is(err, command.ErrAccessDenied) {
+		t.Fatalf("expected ErrAccessDenied, got %v", err)
 	}
-	if state.authorized != 0 {
-		t.Fatalf("expected Authorize never to run, got %d authorizations", state.authorized)
+	if state.prepared != 0 {
+		t.Fatalf("expected Prepare never to run, got %d", state.prepared)
 	}
-	want := []string{"prepare", "decide"}
-	if !slices.Equal(state.calls, want) {
-		t.Fatalf("calls = %v, want %v", state.calls, want)
-	}
-	if count := countAll(t, store); count != 1 {
-		t.Fatalf("expected 1 event, got %d", count)
+	if count := countAll(t, store); count != 0 {
+		t.Fatalf("expected no events appended, got %d", count)
 	}
 }
