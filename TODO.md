@@ -21,37 +21,38 @@ is terminal for encrypted fields (`projections.Profile.Forgotten` +
 `UpdateUserProfile` recording nothing for a forgotten person). Once this fix
 lands, that workaround becomes a choice rather than a necessity.
 
-## 2. Tag ergonomics: `RequiredTag` helper, then tag-hydrated struct fields
+## 2. Tag ergonomics: struct field tags (partly done, Oct 2026)
 
-Reading "who is this event about" from tags costs a 4-line `TagValues` +
-missing-tag error branch in every fold (see dcb-application
-`reactors.studentID`, `projections/identity.go`). Two-step plan:
+Done:
 
-**Step 1 (cheap):** `func (e SequencedEvent) RequiredTag(key string) (string, error)`
-— one-line access with the loud missing-tag error built in.
+- `NewEventFrom(type, payload, opts...)`: tags derived from `dcb:"tag:<key>"`
+  fields of the payload struct (see README, "Tags from struct fields"). The tag
+  field is a *copy*: it stays in `Data` and is read back from there, so
+  `EventData` needed no change and folds read the id from the struct.
+- Step 1 (`RequiredTag`) was dropped as redundant: with the id in the payload,
+  every fold that knows its event type decodes the struct instead. Note that
+  events appended *before* the struct tags carry the id only in their tags, so
+  a fold over such a log must still read `TagValues`.
 
-**Step 2 (the real feature):** a struct field tag that hydrates from the event's
-tags at decode, and — the bigger win — derives tags from the struct at append,
-making the "type and tags can never disagree" guarantee structural instead of
-constructor-conventional:
+Still open, each a deliberate non-decision rather than an oversight:
 
-```go
-type IdentityClaimed struct {
-    UserID  string `dcb:"tag:user"`   // filled from the tag; never serialized into Data
-    Issuer  string `json:"issuer"`
-    Subject string `json:"subject"`
-}
-```
-
-Design constraints to solve:
-- Repeated tag keys: tags are a list and one key may appear twice (the
-  two-account transfer). Scalar field + repeated key must be an ERROR; a
-  `[]string` field is the multi-value form. Silently taking the first value
-  would recreate the Keyed.TagKeys first-value-wins trap.
-- The field must never round-trip into `Data`. `NewEvent` owns `json.Marshal`,
-  so the framework can enforce the exclusion rather than trusting `json:"-"`.
-- Per-type reflection metadata cache — `EventData` sits on hot fold paths.
-- Missing tag at decode = loud error (same contract as today's hand-written helpers).
-- Nice emergent property, keep it: tag-hydrated fields survive a crypto-shred
-  (tags are the durable half), so identity fields stay readable while encrypted
-  PII redacts — the split falls out of the type system.
+- **Tag-only fields hydrated from tags.** A field marked `json:"-"` could be
+  left out of `Data` and filled from the event's tags in `EventData`. That is
+  what makes "identity survives a full-blob crypto-shred" fall out of the type
+  system (tags are the durable half). Constraints if we do it: a hydrated key
+  must have exactly one emitting field in the type (a scalar plus a repeated
+  key is an ERROR, `[]string` is the multi-value form); `EventData` must skip
+  `json.Unmarshal` on nil Data so a redacted event still hydrates. Today
+  `json:"-"` on a tag field is rejected so this cannot be half-enabled.
+- **Derived tags.** The identity domain tags a sha256 over two fields. With
+  "every tag is a field" the hash is a real field the caller must compute; an
+  empty one fails the append, so forgetting it is loud but not impossible.
+  Alternatives: an `ExtraTags() []Tag` hook on the struct, or a `dcb` option
+  that names a derivation. Decide once a second derived tag shows up.
+- **Options on the type.** `encryption.WithEncryptionKeys` and
+  `WithEncryptedFields` are still passed per constructor call. An
+  `EventOptions() []EventOption` method on the struct (or `dcb:"encrypted"`
+  on the field, which the `tag:` namespace leaves room for) would put the
+  policy where the data is.
+- **Type name.** Stays an explicit argument on purpose: deriving it from the Go
+  type name makes a rename a silent migration of the log.

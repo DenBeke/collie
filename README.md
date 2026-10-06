@@ -29,12 +29,36 @@ Implement this interface to back the event store with any storage engine. In-mem
 An event is a fact that happened. It has a type, a JSON-serializable data payload, and optional tags for filtering:
 
 ```go
-event, _ := eventstore.NewEvent("UserSignedUp", userData, map[string]string{
-    "username": "alice",
-})
+event, _ := eventstore.NewEvent("UserSignedUp", userData, eventstore.NewTags("username", "alice"))
 ```
 
 Once appended to the store, events become `SequencedEvent`s with a monotonically increasing sequence number and a timestamp.
+
+### Tags from struct fields
+
+Instead of passing the tags next to the payload, a payload struct can declare them on its fields with a `dcb` tag, the way `json` tags name JSON keys. `NewEventFrom` then derives `Event.Tags` from the struct, so an event cannot be built without the boundaries it belongs to:
+
+```go
+// A chat message is a fact about two people at once. The same key may
+// repeat, because tags are an ordered list rather than a map.
+type MessageSent struct {
+    From string `json:"from" dcb:"tag:user"`
+    To   string `json:"to"   dcb:"tag:user"`
+    Body string `json:"body"`
+}
+
+event, _ := eventstore.NewEventFrom("MessageSent", MessageSent{From: "alice", To: "bob", Body: "hi"})
+// event.Tags == [user=alice user=bob]
+```
+
+Rules:
+
+- The grammar is `dcb:"tag:<key>[,tag:<key>...][,omitempty]"`. One field can emit under several keys (`dcb:"tag:owner,tag:user"`), in the order written.
+- A tag field is still an ordinary payload field: it is JSON-encoded into `Data` as usual and the tag is a copy of it. Readers take the id from either. `json:"-"` on a tag field is rejected.
+- The field must be of string kind (named string types work) or a slice of string kind. A slice emits one tag per element, in order. Fields promoted from embedded structs count.
+- An empty value is an error unless the field is marked `omitempty`. An empty string inside a slice is always an error.
+- The event type stays an explicit argument; nothing is derived from the Go type name.
+- A struct with no `dcb` fields, or anything that is not a struct, is `ErrInvalidTagStruct`. Use `NewEvent` for untagged payloads.
 
 ### Tags and queries
 
@@ -42,8 +66,8 @@ Tags are key-value metadata attached to events. A `QueryItem` filters events by 
 
 ```go
 query := eventstore.QueryItem{
-    Types: []string{"UserSignedUp"},               // match these event types (OR)
-    Tags:  map[string]string{"username": "alice"},  // require these tags (AND)
+    Types: []string{"UserSignedUp"},                   // match these event types (OR)
+    Tags:  eventstore.NewTags("username", "alice"),    // require these tags (AND)
 }
 ```
 

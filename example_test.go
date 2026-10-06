@@ -147,3 +147,27 @@ func ExampleServe() {
 // The same uniqueness check expressed as a self-handling command — with the
 // optimistic-concurrency retry the bare signUp helper lacks — lives in the
 // command package: see [eventstore/command.Execute] and its examples.
+
+// MessageSent is a fact about two people at once, so it belongs to two
+// boundaries. Declaring the tags on the fields means the struct cannot be
+// built without them, and the key may repeat because tags are a list.
+type MessageSent struct {
+	From string `json:"from" dcb:"tag:user"`
+	To   string `json:"to"   dcb:"tag:user"`
+	Body string `json:"body"`
+}
+
+func ExampleNewEventFrom() {
+	event, err := eventstore.NewEventFrom("MessageSent", MessageSent{From: "alice", To: "bob", Body: "hi"})
+	if err != nil {
+		panic(err)
+	}
+	for _, tag := range event.Tags {
+		fmt.Printf("%s=%s\n", tag.Key, tag.Value)
+	}
+	fmt.Println(string(event.Data))
+	// Output:
+	// user=alice
+	// user=bob
+	// {"from":"alice","to":"bob","body":"hi"}
+}

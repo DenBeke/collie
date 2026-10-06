@@ -12,6 +12,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -963,4 +964,46 @@ func BenchmarkAppendConcurrent(b *testing.B) {
 			}
 		}
 	})
+}
+
+// TestNewEventFromRoundTrip: tags derived from struct fields come back from
+// Postgres in declaration order, repeated key included, and the payload still
+// decodes.
+func TestNewEventFromRoundTrip(t *testing.T) {
+	store := setupStore(t)
+	ctx := context.Background()
+
+	type messageSent struct {
+		From string `json:"from" dcb:"tag:user"`
+		To   string `json:"to"   dcb:"tag:user"`
+		Body string `json:"body"`
+	}
+	sent, err := eventstore.NewEventFrom("MessageSent", messageSent{From: "alice", To: "bob", Body: "hi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Append(ctx, []eventstore.Event{sent}, nil); err != nil {
+		t.Fatalf("append failed: %v", err)
+	}
+
+	count := 0
+	for e, err := range store.Read(ctx, eventstore.Query{{Tags: eventstore.NewTags("user", "bob")}}, 0) {
+		if err != nil {
+			t.Fatalf("read error: %v", err)
+		}
+		count++
+		if want := eventstore.NewTags("user", "alice", "user", "bob"); !slices.Equal(e.Tags, want) {
+			t.Errorf("tags = %v, want %v", e.Tags, want)
+		}
+		msg, err := eventstore.EventData[messageSent](e)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if msg.From != "alice" || msg.To != "bob" || msg.Body != "hi" {
+			t.Errorf("payload = %+v", msg)
+		}
+	}
+	if count != 1 {
+		t.Errorf("user bob: got %d events, want 1", count)
+	}
 }
