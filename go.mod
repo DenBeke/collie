@@ -3,7 +3,7 @@ module github.com/DenBeke/collie
 go 1.25.0
 
 require (
-	github.com/labstack/echo/v5 v5.4.2
+	github.com/labstack/echo/v5 v5.4.4
 	github.com/testcontainers/testcontainers-go v0.44.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.44.0
 	gorm.io/driver/postgres v1.6.3
