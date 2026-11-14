@@ -29,6 +29,13 @@ Done:
   fields of the payload struct (see README, "Tags from struct fields"). The tag
   field is a *copy*: it stays in `Data` and is read back from there, so
   `EventData` needed no change and folds read the id from the struct.
+- Construction hooks (`eventstore.RegisterHook`) and the `dcb-<plugin>`
+  struct-tag convention: `dcb-encrypt:"tag:<key>"` and
+  `dcb-attachment:"blob"` are resolved into the existing Metadata by a hook
+  each plugin registers once at boot, so a policy declared on a field cannot
+  be forgotten per event. Known and deliberately ignored: a field that is both
+  encrypted and offloaded is only shredded if the encryptor middleware runs
+  before the attachment middleware; nothing checks that order at boot.
 - Step 1 (`RequiredTag`) was dropped as redundant: with the id in the payload,
   every fold that knows its event type decodes the struct instead. Note that
   events appended *before* the struct tags carry the id only in their tags, so
@@ -49,10 +56,5 @@ Still open, each a deliberate non-decision rather than an oversight:
   empty one fails the append, so forgetting it is loud but not impossible.
   Alternatives: an `ExtraTags() []Tag` hook on the struct, or a `dcb` option
   that names a derivation. Decide once a second derived tag shows up.
-- **Options on the type.** `encryption.WithEncryptionKeys` and
-  `WithEncryptedFields` are still passed per constructor call. An
-  `EventOptions() []EventOption` method on the struct (or `dcb:"encrypted"`
-  on the field, which the `tag:` namespace leaves room for) would put the
-  policy where the data is.
 - **Type name.** Stays an explicit argument on purpose: deriving it from the Go
   type name makes a rename a silent migration of the log.

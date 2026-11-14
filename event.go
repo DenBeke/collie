@@ -91,7 +91,8 @@ func EventData[T any](e SequencedEvent) (T, error) {
 // EventOption configures optional fields on an Event.
 type EventOption func(*Event)
 
-// NewEvent creates an Event by JSON-marshaling data into the Data field.
+// NewEvent creates an Event by JSON-marshaling data into the Data field, then
+// applies the options and finally the registered hooks (see RegisterHook).
 func NewEvent(eventType string, data any, tags []Tag, opts ...EventOption) (Event, error) {
 	bytes, err := json.Marshal(data)
 	if err != nil {
@@ -100,6 +101,11 @@ func NewEvent(eventType string, data any, tags []Tag, opts ...EventOption) (Even
 	e := Event{Type: eventType, Data: bytes, Tags: tags}
 	for _, opt := range opts {
 		opt(&e)
+	}
+	for _, hook := range hooks {
+		if err := hook(&e, data); err != nil {
+			return Event{}, err
+		}
 	}
 	return e, nil
 }

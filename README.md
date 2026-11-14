@@ -26,21 +26,31 @@ Implement this interface to back the event store with any storage engine. In-mem
 
 ### Events
 
-An event is a fact that happened. It has a type, a JSON-serializable data payload, and optional tags for filtering:
+An event is a fact that happened. It has a type, a JSON payload, and tags: the consistency boundaries it belongs to. An event is declared as a struct, and the struct says everything about it. Its `json` tags name the payload keys, its `dcb` tags name the boundaries:
 
 ```go
-event, _ := eventstore.NewEvent("UserSignedUp", userData, eventstore.NewTags("username", "alice"))
+type UserSignedUp struct {
+    Username string `json:"username" dcb:"tag:username"`
+}
+
+event, err := eventstore.NewEventFrom("UserSignedUp", UserSignedUp{Username: "alice"})
+// event.Tags == [username=alice]
 ```
 
-Once appended to the store, events become `SequencedEvent`s with a monotonically increasing sequence number and a timestamp.
+The type name stays an explicit argument on purpose: deriving it from the Go type name would make a rename a silent migration of the log. For a payload that is not a struct, `NewEvent` takes the tags next to it:
+
+```go
+event, err := eventstore.NewEvent("UserSignedUp", "alice", eventstore.NewTags("username", "alice"))
+```
+
+Once appended to the store, events become `SequencedEvent`s with a monotonically increasing sequence number and a timestamp. Read the payload back with `eventstore.EventData[UserSignedUp](e)`.
 
 ### Tags from struct fields
 
-Instead of passing the tags next to the payload, a payload struct can declare them on its fields with a `dcb` tag, the way `json` tags name JSON keys. `NewEventFrom` then derives `Event.Tags` from the struct, so an event cannot be built without the boundaries it belongs to:
+A `dcb:"tag:<key>"` field emits one tag per value, so an event cannot be built without the boundaries it belongs to. The same key may repeat, because tags are an ordered list rather than a map:
 
 ```go
-// A chat message is a fact about two people at once. The same key may
-// repeat, because tags are an ordered list rather than a map.
+// A chat message is a fact about two people at once.
 type MessageSent struct {
     From string `json:"from" dcb:"tag:user"`
     To   string `json:"to"   dcb:"tag:user"`
@@ -57,8 +67,19 @@ Rules:
 - A tag field is still an ordinary payload field: it is JSON-encoded into `Data` as usual and the tag is a copy of it. Readers take the id from either. `json:"-"` on a tag field is rejected.
 - The field must be of string kind (named string types work) or a slice of string kind. A slice emits one tag per element, in order. Fields promoted from embedded structs count.
 - An empty value is an error unless the field is marked `omitempty`. An empty string inside a slice is always an error.
-- The event type stays an explicit argument; nothing is derived from the Go type name.
 - A struct with no `dcb` fields, or anything that is not a struct, is `ErrInvalidTagStruct`. Use `NewEvent` for untagged payloads.
+
+#### Plugins and hooks
+
+The root package reads one struct-tag key, `dcb`. Every other concern owns its own key, prefixed `dcb-` (`dcb-encrypt`, `dcb-attachment`, your own), the way `json` and `gorm` each read theirs. A plugin turns its declarations into the event `Metadata` its middleware already understands through a **hook**:
+
+```go
+// Registered once at boot, before any event is built.
+encryption.RegisterStructTags()
+attachments.RegisterStructTags()
+```
+
+A `Hook` is `func(e *Event, payload any) error`, registered with `eventstore.RegisterHook`. It runs on every event built by `NewEvent` or `NewEventFrom`, after the tags and the options, and sees the typed payload. The rule a hook follows: fill what is absent, verify what is present, never overwrite. A struct tag and an option that agree are fine; ones that disagree fail construction. Registration is not synchronised with construction, so register at boot.
 
 ### Tags and queries
 
@@ -75,13 +96,13 @@ Multiple `QueryItem`s combine into a `Query` with OR logic.
 
 ### Projections
 
-A `Projection[S]` reduces matching events into a typed state. It declares which events to read (via a query) and how to handle each event type:
+A `DefaultProjection[S]` reduces matching events into a typed state. It declares which events to read (via a query) and how to handle each event type:
 
 ```go
-exists := eventstore.Projection[bool]{
+exists := eventstore.DefaultProjection[bool]{
     Query: eventstore.QueryItem{
         Types: []string{"UserSignedUp"},
-        Tags:  map[string]string{"username": "alice"},
+        Tags:  eventstore.NewTags("username", "alice"),
     },
     State: false,
     Handlers: map[string]eventstore.HandleFunc[bool]{
@@ -112,12 +133,13 @@ Decision model projections are short-lived — created per command, checked, the
 
 ### Stored decision models
 
-For large event streams, replaying every matching event on each command becomes slow. You can pre-load projection state at a known checkpoint and implement `CheckpointedProjector` so that `BuildDecisionModel` only replays events after the checkpoint:
+For large event streams, replaying every matching event on each command becomes slow. You can pre-load projection state at a known checkpoint and implement `CheckpointProjection` so that `BuildDecisionModel` only replays events after the checkpoint:
 
 ```go
-type CheckpointedProjector interface {
-    Projector
+type CheckpointProjection interface {
+    Projection
     After() uint64
+    Checkpoint(ctx context.Context) error
 }
 ```
 
@@ -125,7 +147,7 @@ For example, a stored projection that loads its state from a cache or database:
 
 ```go
 type storedProjection[S any] struct {
-    eventstore.Projection[S]
+    eventstore.DefaultProjection[S]
     after uint64
 }
 
@@ -134,34 +156,33 @@ func (s *storedProjection[S]) After() uint64 { return s.after }
 
 The caller only changes how the projection is constructed — `BuildDecisionModel`, the business rule check, and `Append` stay the same. When multiple projections are passed, the read starts from the lowest checkpoint and each projection skips events it has already processed.
 
-### CheckpointProjector
+### CheckpointProjection
 
-A `CheckpointProjector` is a long-lived projection that tracks its position in the event stream. It catches up incrementally on demand via `UpdateProjection`, making it suitable for serving read queries.
+A `CheckpointProjection` is a long-lived projection that tracks its position in the event stream. It catches up incrementally on demand via `UpdateProjection`, making it suitable for serving read queries.
 
-The interface has three methods:
+It is a `Projection` that also reports and records its position:
 
 ```go
-type CheckpointProjector interface {
-    EventQuery() QueryItem
-    After() int64
-    Apply(context.Context, SequencedEvent) error
+type CheckpointProjection interface {
+    Projection          // EventQuery() QueryItem; Apply(context.Context, SequencedEvent) error
+    After() uint64
+    Checkpoint(ctx context.Context) error
 }
 ```
 
-Three implementations are provided:
+Two implementations are provided:
 
 | Implementation | Storage | Use case |
 |----------------|---------|----------|
-| `memory.Projection[S]` | In-memory | Testing, ephemeral state |
-| `postgres.Projection[S]` | Snapshot to DB | Full state persisted, survives restarts |
+| `snapshot.Projection[S]` | A `snapshot.Store`: `memory.NewSnapshotStore()` or `postgres.NewSnapshotStore(db)` | One folded state that resumes from its last checkpoint instead of replaying the stream |
 | `postgres.KeyedProjection[V]` / `memory.KeyedProjection[V]` | One value per key | The read side: state you address by key and list, and state too large to fold per command |
 
-#### In-memory and postgres snapshot projections
+#### Snapshot projections
 
-Both wrap a `Projection[S]` with position tracking. Define the projection once:
+`snapshot.Projection[S]` wraps a `DefaultProjection[S]` with position tracking and persists state and position through a `snapshot.Store`. Define the projection once:
 
 ```go
-projection := eventstore.Projection[int]{
+projection := eventstore.DefaultProjection[int]{
     Query: eventstore.QueryItem{Types: []string{"UserSignedUp"}},
     State: 0,
     Handlers: map[string]eventstore.HandleFunc[int]{
@@ -172,14 +193,11 @@ projection := eventstore.Projection[int]{
 }
 ```
 
-Then choose in-memory (state lost on restart) or postgres (state persisted to DB):
+Then pick where the snapshot lives, in memory (lost on restart) or Postgres (call `postgres.MigrateProjections(db)` once). The constructor loads an existing snapshot if there is one:
 
 ```go
-// In-memory
-totalUsers := memory.NewProjection(projection)
-
-// Postgres — loads existing state on construction
-totalUsers, err := postgres.NewProjection(db, "total_users", projection)
+snapshots := memory.NewSnapshotStore()        // or postgres.NewSnapshotStore(db)
+totalUsers, err := snapshot.NewProjection(ctx, snapshots, "total_users/v1", projection)
 ```
 
 Update and read the state the same way:
@@ -188,6 +206,14 @@ Update and read the state the same way:
 eventstore.UpdateProjection(ctx, store, totalUsers)
 fmt.Println(totalUsers.State)
 ```
+
+Two things the name does. Version it (`/v1`) and bump it when the handlers change, so an old snapshot is rebuilt rather than read as wrong state. And pass partition tags to scope one projection definition to one boundary; each partition then keeps its own snapshot and checkpoint:
+
+```go
+seats, err := snapshot.NewProjection(ctx, snapshots, "course_seats/v1", seatsDelta, eventstore.NewTag("course", courseID))
+```
+
+A snapshot projection is also what `BuildDecisionModel` uses to skip already-folded events in a decision, so the same definition serves a command and a read endpoint.
 
 #### Keyed projections — the read side
 
@@ -283,12 +309,17 @@ profiles.MigrateTagIndexes("tenant")
 ## Example: enforcing uniqueness on signup
 
 ```go
+// UserSignedUp belongs to one boundary: the username being claimed.
+type UserSignedUp struct {
+    Username string `json:"username" dcb:"tag:username"`
+}
+
 func signUp(ctx context.Context, store eventstore.Store, username string) error {
     // 1. Build the decision model — checks if username is taken.
-    exists := eventstore.Projection[bool]{
+    exists := eventstore.DefaultProjection[bool]{
         Query: eventstore.QueryItem{
             Types: []string{"UserSignedUp"},
-            Tags:  map[string]string{"username": username},
+            Tags:  eventstore.NewTags("username", username),
         },
         State: false,
         Handlers: map[string]eventstore.HandleFunc[bool]{
@@ -309,9 +340,7 @@ func signUp(ctx context.Context, store eventstore.Store, username string) error 
 
     // 3. Append the event with the condition — fails if someone else
     //    signed up with the same username since we checked.
-    event, err := eventstore.NewEvent("UserSignedUp", username, map[string]string{
-        "username": username,
-    })
+    event, err := eventstore.NewEventFrom("UserSignedUp", UserSignedUp{Username: username})
     if err != nil {
         return err
     }
@@ -323,7 +352,7 @@ func signUp(ctx context.Context, store eventstore.Store, username string) error 
 
 ```go
 store := memory.New()
-totalUsers := memory.NewProjection(/* ... */)
+totalUsers, _ := snapshot.NewProjection(ctx, memory.NewSnapshotStore(), "total_users/v1", projection)
 
 e := echo.New()
 
@@ -386,9 +415,9 @@ A call too expensive or too once-only to make twice is reserved, then reacted to
 // In-memory
 var store eventstore.Store = memory.New()
 
-// PostgreSQL
+// PostgreSQL (pgstore is "github.com/DenBeke/collie/postgres")
 db, _ := gorm.Open(postgres.Open(connStr))
-pgStore := pgstore.New(db, pgstore.WithIndexedTags("tenant_id"))
+pgStore := pgstore.New(db, pgstore.WithBatchSize(500))
 pgStore.Migrate()
 ```
 
@@ -413,7 +442,7 @@ strategies that were evaluated and rejected) are written up in
 
 ### PostgreSQL projection tables
 
-Call `MigrateProjections` to create the tables used by `postgres.Projection[S]` and `postgres.KeyedProjection[V]`:
+Call `MigrateProjections` to create the tables used by `postgres.SnapshotStore` and `postgres.KeyedProjection[V]`:
 
 ```go
 postgres.MigrateProjections(db)
@@ -526,39 +555,38 @@ store := eventstore.NewMiddlewareStore(pgstore.New(db),
 
 ### Marking events as personal data
 
-Use the `WithEncryptionKeys` option to name which tag(s) identify the data subject:
+Declare it on the field. A `dcb-encrypt:"tag:<key>"` tag says "encrypt this field under the key of the data subject that tag names":
 
 ```go
-event, _ := eventstore.NewEvent("UserSignedUp", userData, map[string]string{
-    "userId": "user-123",
-}, encryption.WithEncryptionKeys("userId"))
+type UserRegistered struct {
+    UserID string `json:"userId" dcb:"tag:user"`
+    Name   string `json:"name"   dcb-encrypt:"tag:user"`
+}
+
+event, _ := eventstore.NewEventFrom("UserRegistered", UserRegistered{UserID: "user-123", Name: "Ada"})
 ```
 
-Every key name must exist in the event's tags — the encryption middleware returns an error on append otherwise. Events created **without** `WithEncryptionKeys` pass through unencrypted.
-
-For multi-subject events, list all subject tag names:
+This needs `encryption.RegisterStructTags()` once at boot (see "Plugins and hooks"). The hook checks at construction that `user` is a tag on the event, that the field is in `Data` and is not itself a tag, and that every encrypted field in the struct names the same subject. Group several personal fields in a nested struct and tag that one field: the block is stored as one ciphertext, so not even its key names are visible at rest, and it redacts to one `null`:
 
 ```go
-eventstore.NewEvent("FriendRequest", requestData, map[string]string{
-    "senderId":   "user-1",
-    "receiverId": "user-2",
-}, encryption.WithEncryptionKeys("senderId", "receiverId"))
+type SupplierRegistered struct {
+    SupplierID string  `json:"supplierId" dcb:"tag:supplier"`
+    Contact    Contact `json:"contact"    dcb-encrypt:"tag:supplier"`
+}
 ```
 
-All events with the same subject tags share the same encryption key, regardless of what other tags they carry.
-
-### Field-level encryption
-
-By default, `WithEncryptionKeys` encrypts the entire event payload. If only some fields contain personal data, use `WithEncryptedFields` to encrypt just those fields — non-sensitive fields remain readable even after the subject is forgotten:
+For events built without a struct, the options declare the same thing. `WithEncryptionKeys` names the tag(s) identifying the subject and, on its own, encrypts the whole payload; `WithEncryptedFields` limits it to the listed top-level JSON fields:
 
 ```go
-event, _ := eventstore.NewEvent("UserSignedUp", userData, map[string]string{
-    "userId": "user-123",
-},
+event, _ := eventstore.NewEvent("UserSignedUp", userData, eventstore.NewTags("userId", "user-123"),
     encryption.WithEncryptionKeys("userId"),
     encryption.WithEncryptedFields("name", "email"),
 )
 ```
+
+Every key name must exist in the event's tags — the encryption middleware returns an error on append otherwise. Events that declare nothing pass through unencrypted. For multi-subject events, list all subject tag names in `WithEncryptionKeys`; all events with the same subject tags share the same encryption key, regardless of what other tags they carry.
+
+### Field-level encryption
 
 On read, encrypted fields are transparently decrypted. After a `Forget`, encrypted fields become `null` while the rest of the payload stays intact — `IsRedacted(e)` returns true but `e.Data` is not nil. This works with nested objects too: the middleware encrypts the raw JSON value of each field, preserving its structure on round-trip.
 
@@ -567,10 +595,10 @@ On read, encrypted fields are transparently decrypted. After a `Forget`, encrypt
 Call `Forget` directly on the encryptor:
 
 ```go
-encryptor.Forget(ctx, map[string]string{"userId": "user-123"})
+encryptor.Forget(ctx, eventstore.NewTags("user", "user-123"))
 ```
 
-This deletes the encryption key. All events for that subject are now permanently unreadable. The forget uses **superset matching** — `Forget({"userId": "user-1"})` also deletes keys for compound subjects like `{"senderId": "user-1", "receiverId": "user-2"}`.
+This deletes the encryption key. All events for that subject are now permanently unreadable. The forget uses **superset matching**: forgetting `user=user-1` also deletes keys for compound subjects such as `user=user-1, tenant=acme`, and a message shared between two users is shredded when either of them is forgotten.
 
 ### Handling redacted events in projections
 
@@ -599,13 +627,15 @@ Projections that only check event existence work without changes since they don'
 `Forget` only deletes encryption keys — it does not emit events. Use domain events to coordinate:
 
 ```go
-func deleteUser(ctx context.Context, store eventstore.Store, encryptor *encryption.EventEncryptor, userId string) error {
-    event, _ := eventstore.NewEvent("UserDeleted", userId, map[string]string{
-        "userId": userId,
-    })
+type UserDeleted struct {
+    UserID string `json:"userId" dcb:"tag:user"`
+}
+
+func deleteUser(ctx context.Context, store eventstore.Store, encryptor *encryption.EventEncryptor, userID string) error {
+    event, _ := eventstore.NewEventFrom("UserDeleted", UserDeleted{UserID: userID})
     store.Append(ctx, []eventstore.Event{event}, nil)
 
-    return encryptor.Forget(ctx, map[string]string{"userId": userId})
+    return encryptor.Forget(ctx, eventstore.NewTags("user", userID))
 }
 ```
 
@@ -617,13 +647,13 @@ A PostgreSQL-backed key store is provided out of the box via `postgres.NewKeySto
 
 ```go
 type KeyStore interface {
-    GetOrCreate(ctx context.Context, tags map[string]string) ([]byte, error)
-    Get(ctx context.Context, tags map[string]string) ([]byte, bool, error)
-    Forget(ctx context.Context, tags map[string]string) error
+    GetOrCreate(ctx context.Context, subject []eventstore.Tag) ([]byte, error)
+    Get(ctx context.Context, subject []eventstore.Tag) ([]byte, bool, error)
+    Forget(ctx context.Context, tags []eventstore.Tag) error
 }
 ```
 
-`GetOrCreate` must be safe for concurrent calls with the same tags. `Get` returns `(nil, false, nil)` when the key has been forgotten. `Forget` deletes all keys whose tags are a superset of the provided tags.
+`GetOrCreate` must be safe for concurrent calls with the same subject. `Get` returns `(nil, false, nil)` when the key has been forgotten. `Forget` deletes all keys whose subject is a superset of the provided tags.
 
 ## Attachments / Blob offloading
 
@@ -642,23 +672,24 @@ store := eventstore.NewMiddlewareStore(inner,
 
 ### Marking fields for offloading
 
-Use `WithAttachments` to name which JSON fields should be stored in the blob store:
+Declare it on the field with `dcb-attachment:"blob"`:
 
 ```go
 type DocumentUploaded struct {
-    FileName string `json:"fileName"`
-    Content  []byte `json:"content"` // large, offloaded
+    DocumentID string `json:"documentId" dcb:"tag:document"`
+    FileName   string `json:"fileName"`
+    Content    []byte `json:"content"    dcb-attachment:"blob"` // large, offloaded
 }
 
-event, _ := eventstore.NewEvent("DocumentUploaded", doc, tags,
-    attachments.WithAttachments("content"),
-)
+event, _ := eventstore.NewEventFrom("DocumentUploaded", doc)
 ```
 
-Multiple fields can be offloaded at once:
+This needs `attachments.RegisterStructTags()` once at boot (see "Plugins and hooks"). Several fields can carry the tag; a nested struct is offloaded as one blob.
+
+For events built without a struct, `WithAttachments` names the top-level JSON fields instead:
 
 ```go
-eventstore.NewEvent("PhotoUploaded", photo, tags,
+event, _ := eventstore.NewEvent("PhotoUploaded", photo, tags,
     attachments.WithAttachments("content", "thumbnail"),
 )
 ```
