@@ -14,7 +14,7 @@ import (
 // loads the snapshot written by an earlier one, no replay.
 func TestSnapshotStore_ResumesFromSnapshot(t *testing.T) {
 	db := setupDB(t)
-	store := pgstore.New(db)
+	store := pgstore.New(db, pgstore.WithGlobalLock())
 	if err := store.Migrate(); err != nil {
 		t.Fatalf("migrate store: %v", err)
 	}

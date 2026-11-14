@@ -62,7 +62,8 @@ These were discussed and are now the framework's explicit stance:
    compose) becomes unrepresentable instead of a doc warning. In staging mode,
    `ErrUnkeyableCondition` is promoted from "use the other method" to a real constraint of the
    mode: every condition item needs at least one type and one tag — which real DCB queries
-   always have.
+   always have. (Nov 2026: built the other way round — staging is the default and
+   `WithGlobalLock()` the option; see item 21.)
 10. **Read-model views are a generic row store.** Key → JSON value with `Get`/`List`/`Count`,
     evolving today's `RowProjection`. Clients wanting custom SQL schemas hand-roll their own
     consumers; the framework does not provide an app-owned-tables mode.
@@ -289,6 +290,26 @@ items 1, 5, 7, 8 and 14 are now consolidated into the **view subsystem** design 
     checkpoint only once `upTo` is 10,000 past it, against write amplification on a busy log.
     The guarantee rests on sequence order being commit order (one writer to `events`), which
     makes the constructor mode of item 15 more urgent.
+
+21. **Staging is the default append mode, recorded in the database (Nov 2026).** ✅ Implemented.
+    `postgres.New(db)` appends through staging and starts its own flusher (leader-elected
+    across processes, standbys wait; `Close` stops it, and a stopping leader drains staging
+    first); `WithoutFlusher()` leaves it out, `WithGlobalLock()` is the direct mode.
+    `AppendStaging` and `Flush` are no longer public. Why staging by default: one writer to
+    `events` by construction, concurrency across boundaries, and the last blocker — conditions
+    without a tag or type — turned out to be fixable where it arose (a type next to a tag-only
+    query; a constant tag on every event of a kind that is one boundary as a whole). Kept from
+    the alternatives: `Append` returns once staged rather than waiting for the flush, since the
+    flush runs every 5 ms when idle. The mode is recorded in the database (`dcb_append_mode()`);
+    `Migrate` records it the first time and refuses the other mode afterwards, installing a
+    refusing body for the other mode's functions, so a misconfigured process fails at boot and
+    one still running in the old mode during a switch fails on its next append instead of
+    becoming a second writer. `Migrate` never changes the recorded mode; `SwitchAppendMode` does,
+    and going to the global lock needs an empty `staging`. Not covered: a binary from before the
+    mode existed, which installs its own functions at `Migrate`. Found on the way: `RunFlusher`
+    released its leadership by `conn.Close()`, which returns a pooled connection with its session
+    — and the session lock — still alive, so after a flusher stopped nobody could lead again
+    until that connection happened to close; the connection is now discarded.
 
 ## The view subsystem (consolidates items 1, 5, 7, 8, 14)
 

@@ -3,15 +3,19 @@ package postgres
 
 import (
 	"context"
+	"database/sql"
+	"database/sql/driver"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/fnv"
 	"iter"
+	"log/slog"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/DenBeke/collie"
@@ -23,13 +27,14 @@ import (
 // 0x4443425F617070 is ASCII for "DCB_app".
 const appendLock int64 = 0x4443425F617070
 
-// ErrUnkeyableCondition is returned by AppendStaging when the condition cannot
-// be reduced to a finite set of (type,tag,value) boundaries — a match-all (empty
-// Query) or any item missing a type or a tag. Such a condition would need the
-// global lock, which does NOT compose with the per-boundary locks (the two share
-// no advisory key, so a conflict between a global-lock append and a per-boundary
-// append would go unnoticed). Give every query item at least one type AND one
-// tag, or run the whole workload on the global-lock Append.
+// ErrUnkeyableCondition is returned by Append in staging mode (the default)
+// when the condition cannot be reduced to a finite set of (type,tag,value)
+// boundaries — a match-all (empty Query) or any item missing a type or a tag.
+// Such a condition would need the global lock, which does NOT compose with the
+// per-boundary locks (the two share no advisory key, so a conflict between a
+// global-lock append and a per-boundary append would go unnoticed). Give every
+// query item at least one type AND one tag (a constant tag on every event of a
+// kind names a boundary over all of them), or use WithGlobalLock.
 var ErrUnkeyableCondition = errors.New("append condition is not keyable: the query must be non-empty and every item needs at least one type and one tag")
 
 // Compile-time check that Store implements eventstore.Store.
@@ -52,7 +57,7 @@ type event struct {
 	RecordedAt     *time.Time `gorm:"type:timestamptz;default:now()"`
 }
 
-// staging is the write-buffer table for AppendStaging. Appends land here
+// staging is the write-buffer table for the staging append. Appends land here
 // concurrently (per-boundary locked); the singleton flusher (RunFlusher) moves
 // rows into events in StagingID order via one atomic CTE, so a single writer
 // assigns events.sequence_number gap-free and monotonic. StagingID (insert order)
@@ -94,6 +99,14 @@ func (eventTag) TableName() string { return "event_tags" }
 type Store struct {
 	db        *gorm.DB
 	batchSize int
+	mode      appendMode
+	flusher   bool
+	flushOpts FlushOptions
+	logger    *slog.Logger
+
+	closeOnce sync.Once
+	stop      context.CancelFunc
+	stopped   chan struct{}
 }
 
 // Option configures a Store.
@@ -105,11 +118,19 @@ func WithBatchSize(n int) Option {
 	return func(s *Store) { s.batchSize = n }
 }
 
-// New creates a PostgreSQL event store.
+// New creates a PostgreSQL event store. By default Append goes through
+// staging, and New starts a flusher that moves staged appends into events:
+// across processes one flusher leads and the others wait, so every process can
+// start one. Close stops it. WithGlobalLock and WithoutFlusher change that.
 func New(db *gorm.DB, opts ...Option) *Store {
-	s := &Store{db: db, batchSize: defaultBatchSize}
+	s := &Store{db: db, batchSize: defaultBatchSize, mode: modeStaging, flusher: true, logger: slog.Default()}
 	for _, opt := range opts {
 		opt(s)
+	}
+	if s.mode == modeStaging && s.flusher {
+		ctx, cancel := context.WithCancel(context.Background())
+		s.stop, s.stopped = cancel, make(chan struct{})
+		go s.keepFlushing(ctx)
 	}
 	return s
 }
@@ -152,6 +173,12 @@ const (
 // dcb_append / dcb_append_staging / dcb_flush functions, and the supporting
 // indexes. Tag filtering goes through the event_tags (key,value,sequence_number)
 // primary key; staging keeps a GIN index for its jsonb condition check.
+//
+// Migrate also records the store's append mode in the database, the first time,
+// and installs only that mode's functions. When the database records the other
+// mode, Migrate fails with ErrAppendModeMismatch: two modes writing to one
+// database would each break the other's guarantees. SwitchAppendMode changes
+// the recorded mode on purpose.
 func (s *Store) Migrate() error {
 	err := s.db.Exec(addRecordedAt).Error
 	if err != nil {
@@ -164,14 +191,21 @@ func (s *Store) Migrate() error {
 	if err != nil {
 		return fmt.Errorf("could not default the recorded_at column: %w", err)
 	}
-	if err := s.db.Exec(fmt.Sprintf(dcbAppendFnTemplate, appendLock)).Error; err != nil {
-		return fmt.Errorf("could not create dcb_append function: %w", err)
-	}
-	if err := s.db.Exec(fmt.Sprintf(dcbAppendStagingFnTemplate, appendLock)).Error; err != nil {
-		return fmt.Errorf("could not create dcb_append_staging function: %w", err)
-	}
-	if err := s.db.Exec(dcbFlushFn).Error; err != nil {
-		return fmt.Errorf("could not create dcb_flush function: %w", err)
+	err = s.db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec(`SELECT pg_advisory_xact_lock(?)`, migrateLock).Error; err != nil {
+			return fmt.Errorf("could not lock the append mode: %w", err)
+		}
+		recorded, err := recordedMode(tx)
+		if err != nil {
+			return err
+		}
+		if recorded != "" && recorded != s.mode {
+			return fmt.Errorf("%w: it records %q and this store is configured for %q; SwitchAppendMode changes it", ErrAppendModeMismatch, recorded, s.mode)
+		}
+		return installMode(tx, s.mode)
+	})
+	if err != nil {
+		return err
 	}
 	err = s.db.Exec(dropEventsCreatedAt).Error
 	if err != nil {
@@ -342,7 +376,7 @@ BEGIN
 // dcbAppendStagingFnTemplate is the DDL for dcb_append_staging — the sequencer/
 // outbox append. It per-boundary-locks (or takes the global %d lock when no keys
 // are supplied — i.e. an unconditional append of tag-less events; unkeyable
-// conditions are rejected by AppendStaging before they reach here), runs the
+// conditions are rejected by appendStaging before they reach here), runs the
 // conflict check across BOTH tables in ONE statement (one snapshot, so the atomic
 // flush can't hide a row from both),
 // and inserts into STAGING (never events). The singleton flusher (RunFlusher)
@@ -469,17 +503,26 @@ func appendArgs(events []eventstore.Event, condition *eventstore.AppendCondition
 	return string(eventsBytes), queryArg, after, nil
 }
 
-// Append atomically persists events in a single database round-trip via the
-// dcb_append function. If condition is non-nil, the append fails with
-// ErrAppendConditionViolated when the store contains matching events after the
-// condition's sequence number. The function acquires the global advisory lock
-// and performs the check + insert atomically; it is called in autocommit (no
-// surrounding transaction) so the whole append is one round-trip.
+// Append atomically persists events. If condition is non-nil, the append fails
+// with ErrAppendConditionViolated when the store contains matching events after
+// the condition's sequence number.
 //
-// Append is the simple, fully-consistent default (immediate read-visibility, plain
-// uint64 cursor); every append serializes on the one global lock, so it is
-// throughput-capped. When you need per-boundary write concurrency while keeping
-// that consistency and cursor, use AppendStaging + RunFlusher.
+// In staging mode (the default) the events land in the staging table and become
+// readable once a flusher has moved them into events, within milliseconds; the
+// condition already sees them while staged. The condition must be keyable (see
+// ErrUnkeyableCondition). With WithGlobalLock they are readable as soon as
+// Append returns, and every append serializes on one lock.
+func (s *Store) Append(ctx context.Context, events []eventstore.Event, condition *eventstore.AppendCondition) error {
+	if s.mode == modeGlobal {
+		return s.appendGlobal(ctx, events, condition)
+	}
+	return s.appendStaging(ctx, events, condition)
+}
+
+// appendGlobal persists events in a single database round-trip via the
+// dcb_append function, which acquires the global advisory lock and performs the
+// check + insert atomically; it is called in autocommit (no surrounding
+// transaction) so the whole append is one round-trip.
 //
 // Two other strategies were prototyped and benchmarked but deliberately NOT kept:
 // per-boundary locks (fast but positions commit out of order, so multi-boundary
@@ -487,7 +530,7 @@ func appendArgs(events []eventstore.Event, condition *eventstore.AppendCondition
 // "hybrid" (consistent but lands at ~global throughput). See appendbench-conclusion.md
 // for the full comparison and why staging won; the implementations live in this
 // repo's git history (the commit before the staging consolidation).
-func (s *Store) Append(ctx context.Context, events []eventstore.Event, condition *eventstore.AppendCondition) error {
+func (s *Store) appendGlobal(ctx context.Context, events []eventstore.Event, condition *eventstore.AppendCondition) error {
 	if len(events) == 0 && condition == nil {
 		return nil
 	}
@@ -501,7 +544,7 @@ func (s *Store) Append(ctx context.Context, events []eventstore.Event, condition
 		Raw("SELECT dcb_append(?::jsonb, ?::jsonb, ?::bigint)", eventsJSON, queryArg, after).
 		Scan(&appended).Error
 	if err != nil {
-		return fmt.Errorf("could not append events: %w", err)
+		return fmt.Errorf("could not append events: %w", modeError(err))
 	}
 	if !appended {
 		return eventstore.ErrAppendConditionViolated
@@ -529,7 +572,7 @@ func lockKey(eventType, tagKey, tagValue string) int64 {
 // (type,tag) triples AND the events' (type,tag) triples, because a conflict can
 // arise from my-events vs your-condition or your-events vs my-condition.
 //
-// A condition is NOT keyable — and AppendStaging rejects it with
+// A condition is NOT keyable — and the staging append rejects it with
 // ErrUnkeyableCondition — when it would lock nothing meaningful: a match-all
 // (empty Query) or any item lacking a type or a tag. Those can't be expressed as a
 // finite (type,tag,value) boundary set, so they'd need the global lock, which does
@@ -579,19 +622,18 @@ func bigintArrayLiteral(keys []int64) string {
 	return b.String()
 }
 
-// AppendStaging is the sequencer/outbox append: it per-boundary-locks (rejecting
+// appendStaging is the sequencer/outbox append: it per-boundary-locks (rejecting
 // unkeyable conditions with ErrUnkeyableCondition), checks the condition across
 // staging and events in one snapshot, and inserts into the staging buffer. Appends
 // to disjoint boundaries run concurrently (per-boundary locks + group commit),
-// while a singleton flusher (RunFlusher) assigns events.sequence_number, so it is
-// the high-throughput path that still keeps full consistency.
+// while a singleton flusher assigns events.sequence_number, so it is the
+// high-throughput path that still keeps full consistency.
 //
 // A successful append is durable (committed to staging) but not visible to Read
 // until the flusher moves it into events — eventual read-visibility bounded by the
 // flush interval. It is fully consistent for multi-boundary conditions AND keeps the
-// plain uint64 cursor, because events is written only by the single flusher. A
-// RunFlusher must be running for appends to become visible.
-func (s *Store) AppendStaging(ctx context.Context, events []eventstore.Event, condition *eventstore.AppendCondition) error {
+// plain uint64 cursor, because events is written only by the single flusher.
+func (s *Store) appendStaging(ctx context.Context, events []eventstore.Event, condition *eventstore.AppendCondition) error {
 	if len(events) == 0 && condition == nil {
 		return nil
 	}
@@ -611,7 +653,7 @@ func (s *Store) AppendStaging(ctx context.Context, events []eventstore.Event, co
 		eventsJSON, queryArg, after, bigintArrayLiteral(keys),
 	).Scan(&appended).Error
 	if err != nil {
-		return fmt.Errorf("could not append events (staging): %w", err)
+		return fmt.Errorf("could not append events (staging): %w", modeError(err))
 	}
 	if !appended {
 		return eventstore.ErrAppendConditionViolated
@@ -665,16 +707,21 @@ BEGIN
 END;
 $func$;`
 
-// RunFlusher runs the singleton staging→events flusher until ctx is cancelled. It
-// holds a session-level advisory lock on a dedicated connection so that across N
-// processes exactly one flusher is live (the lock auto-releases — and another
-// caller takes over — when the holder's connection dies). It then loops: move a
-// batch; if rows moved, drain again immediately; otherwise sleep opts.Interval.
+// RunFlusher runs the singleton staging→events flusher until ctx is cancelled.
+// The store New returns already runs one unless WithoutFlusher was given; call
+// RunFlusher only to run it yourself. It holds a session-level advisory lock on
+// a dedicated connection so that across N processes exactly one flusher is live
+// (the lock auto-releases — and another caller takes over — when the holder's
+// connection dies). It then loops: move a batch; if rows moved, drain again
+// immediately; otherwise sleep opts.Interval. When ctx is cancelled, the leader
+// first moves what is still staged (best effort, bounded by drainTimeout).
 //
-// Only the flusher writes events for the staging strategy; running it alongside
-// the direct-write Append would add a second writer to events and break the
-// gap-free ordering.
+// Only the flusher writes events in staging mode. On a store in global-lock mode
+// RunFlusher returns ErrAppendModeMismatch, and the database refuses a flush.
 func (s *Store) RunFlusher(ctx context.Context, opts FlushOptions) error {
+	if s.mode == modeGlobal {
+		return fmt.Errorf("%w: a store in global-lock mode has no flusher", ErrAppendModeMismatch)
+	}
 	if opts.Interval <= 0 {
 		opts.Interval = 5 * time.Millisecond
 	}
@@ -692,12 +739,26 @@ func (s *Store) RunFlusher(ctx context.Context, opts FlushOptions) error {
 	}
 	defer conn.Close()
 
-	// Acquire leadership (blocks until held or ctx cancelled). The session-level
-	// lock releases automatically when conn closes.
+	// Acquire leadership (blocks until held or ctx cancelled). The lock belongs
+	// to the session, and conn.Close only hands the connection back to the pool
+	// with the session — and the lock — still alive, so the connection is
+	// discarded instead: that ends the session and lets another flusher lead.
 	if _, err := conn.ExecContext(ctx, "SELECT pg_advisory_lock($1)", flushLeaderKey); err != nil {
 		return fmt.Errorf("flusher: could not acquire leadership: %w", err)
 	}
+	defer func() { _ = conn.Raw(func(any) error { return driver.ErrBadConn }) }()
 
+	err = flushUntilDone(ctx, conn, opts)
+	if ctx.Err() != nil {
+		drain(conn, opts.BatchSize)
+		return ctx.Err()
+	}
+	return err
+}
+
+// flushUntilDone is the leader's loop: move a batch, again at once when rows
+// moved, otherwise after opts.Interval, until ctx is cancelled or a flush fails.
+func flushUntilDone(ctx context.Context, conn *sql.Conn, opts FlushOptions) error {
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -707,7 +768,7 @@ func (s *Store) RunFlusher(ctx context.Context, opts FlushOptions) error {
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			return fmt.Errorf("flusher: flush failed: %w", err)
+			return fmt.Errorf("flusher: flush failed: %w", modeError(err))
 		}
 		if moved == 0 {
 			select {
@@ -719,11 +780,29 @@ func (s *Store) RunFlusher(ctx context.Context, opts FlushOptions) error {
 	}
 }
 
-// Flush moves up to batchSize staging rows into events (one atomic CTE) and
-// returns the number moved. It is the single-batch primitive RunFlusher loops on;
-// call it directly only when no RunFlusher is active (e.g. tests, manual drain) —
-// two concurrent writers to events would break the gap-free ordering.
-func (s *Store) Flush(ctx context.Context, batchSize int) (int64, error) {
+// drainTimeout bounds how long a stopping leader keeps moving staged appends.
+const drainTimeout = 5 * time.Second
+
+// drain moves what is still staged before a leader lets go, so a process that
+// stops leaves nothing unreadable until the next leader takes over. It uses the
+// leader's own connection, the only one allowed to flush; if that connection
+// went down with the cancelled query, the lock is gone with it and another
+// leader takes over instead.
+func drain(conn *sql.Conn, batch int) {
+	ctx, cancel := context.WithTimeout(context.Background(), drainTimeout)
+	defer cancel()
+	for {
+		var moved int64
+		if err := conn.QueryRowContext(ctx, "SELECT dcb_flush($1)", batch).Scan(&moved); err != nil || moved == 0 {
+			return
+		}
+	}
+}
+
+// flush moves up to batchSize staging rows into events (one atomic CTE) and
+// returns the number moved. Tests drain staging with it; anywhere else, a
+// second writer next to the flusher would break the gap-free ordering.
+func (s *Store) flush(ctx context.Context, batchSize int) (int64, error) {
 	if batchSize <= 0 {
 		batchSize = 5000
 	}
@@ -733,7 +812,7 @@ func (s *Store) Flush(ctx context.Context, batchSize int) (int64, error) {
 	}
 	var moved int64
 	if err := sqlDB.QueryRowContext(ctx, "SELECT dcb_flush($1)", batchSize).Scan(&moved); err != nil {
-		return 0, fmt.Errorf("flush: %w", err)
+		return 0, fmt.Errorf("flush: %w", modeError(err))
 	}
 	return moved, nil
 }

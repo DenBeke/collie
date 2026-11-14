@@ -11,6 +11,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -76,11 +77,40 @@ func run() error {
 	}()
 
 	opts := []pgstore.Option{pgstore.WithBatchSize(cfg.BatchSize)}
+	if cfg.Lock == lockStaging {
+		// The benchmark runs its own flusher below, with the configured options.
+		opts = append(opts, pgstore.WithoutFlusher())
+	} else {
+		opts = append(opts, pgstore.WithGlobalLock())
+	}
 	store := pgstore.New(db, opts...)
 	if cfg.Migrate {
-		if err := store.Migrate(); err != nil {
+		err := store.Migrate()
+		if errors.Is(err, pgstore.ErrAppendModeMismatch) {
+			// A benchmark database switches strategy between runs on purpose.
+			if err = store.SwitchAppendMode(ctx); err == nil {
+				err = store.Migrate()
+			}
+		}
+		if err != nil {
 			return fmt.Errorf("migrate: %w", err)
 		}
+	}
+
+	// For the staging strategy, run the singleton flusher from before the seed,
+	// so appends sitting in the staging buffer get moved into events.
+	flushCtx, stopFlusher := context.WithCancel(ctx)
+	defer stopFlusher()
+	var flusherDone chan struct{}
+	if cfg.Lock == lockStaging {
+		flusherDone = make(chan struct{})
+		go func() {
+			defer close(flusherDone)
+			err := store.RunFlusher(flushCtx, pgstore.FlushOptions{Interval: cfg.FlushInterval, BatchSize: cfg.FlushBatch})
+			if err != nil && flushCtx.Err() == nil {
+				log.Printf("appendbench: flusher error: %v", err)
+			}
+		}()
 	}
 
 	if cfg.Seed > 0 {
@@ -97,20 +127,21 @@ func run() error {
 		return ctx.Err()
 	}
 
-	// For the staging strategy, run the singleton flusher concurrently with the
-	// load so appends sitting in the staging buffer get moved into events.
-	flushCtx, stopFlusher := context.WithCancel(ctx)
-	defer stopFlusher()
-	var flusherDone chan struct{}
-	if cfg.Lock == lockStaging {
-		flusherDone = make(chan struct{})
-		go func() {
-			defer close(flusherDone)
-			err := store.RunFlusher(flushCtx, pgstore.FlushOptions{Interval: cfg.FlushInterval, BatchSize: cfg.FlushBatch})
-			if err != nil && flushCtx.Err() == nil {
-				log.Printf("appendbench: flusher error: %v", err)
-			}
-		}()
+	// A seed through the staging Append must be in events before the measured
+	// window starts, or the flusher would be moving it during the measurement.
+	for cfg.Lock == lockStaging {
+		depth, err := stagingDepth(db)
+		if err != nil {
+			return fmt.Errorf("staging depth: %w", err)
+		}
+		if depth == 0 {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
 	}
 
 	meta, agg := runLoad(ctx, store, db, cfg, target)

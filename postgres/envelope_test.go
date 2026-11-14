@@ -83,7 +83,7 @@ func TestPGAnonymousAppendStoresNull(t *testing.T) {
 // the staging buffer rather than by the flusher: acceptance is when the store
 // took the event, and the flush interval must not move it.
 func TestPGStagedRecordedAtIsAppendTime(t *testing.T) {
-	inner := setupStore(t)
+	inner := setupStagingStore(t)
 	store := stamped(inner)
 	ctx := eventstore.ContextWithActor(context.Background(), "student:s1")
 
@@ -97,14 +97,14 @@ func TestPGStagedRecordedAtIsAppendTime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("append: %v", err)
 	}
+	flushAll(t, inner)
 
-	// The middleware store has no AppendStaging, so the staged append goes
-	// straight at the inner store with an already-stamped event.
+	// Straight at the inner store, with an already-stamped event.
 	staged := e
 	staged.Actor = "student:s2"
 	staged.Tags = eventstore.NewTags("student", "s2")
 	appendedAt := time.Now()
-	err = inner.AppendStaging(ctx, []eventstore.Event{staged}, &eventstore.AppendCondition{
+	err = inner.Append(ctx, []eventstore.Event{staged}, &eventstore.AppendCondition{
 		Query: eventstore.Query{{
 			Types: []string{"StudentRegistered"},
 			Tags:  eventstore.NewTags("student", "s2"),
@@ -115,7 +115,7 @@ func TestPGStagedRecordedAtIsAppendTime(t *testing.T) {
 	}
 
 	time.Sleep(300 * time.Millisecond)
-	moved, err := inner.Flush(ctx, 100)
+	moved, err := inner.FlushForTest(ctx, 100)
 	if err != nil {
 		t.Fatalf("flush: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestPGStagedRecordedAtIsAppendTime(t *testing.T) {
 // side — while the next append is stamped.
 func TestPGMigrateLeavesOldRowsUnstamped(t *testing.T) {
 	db := setupDB(t)
-	inner := pgstore.New(db)
+	inner := pgstore.New(db, pgstore.WithGlobalLock())
 	err := inner.Migrate()
 	if err != nil {
 		t.Fatalf("migrate: %v", err)
@@ -214,7 +214,7 @@ var oldShape = []string{
 // the column before it went.
 func TestPGMigrateDropsCreatedAt(t *testing.T) {
 	db := setupDB(t)
-	inner := pgstore.New(db)
+	inner := pgstore.New(db, pgstore.WithGlobalLock())
 	err := inner.Migrate()
 	if err != nil {
 		t.Fatalf("migrate: %v", err)
@@ -251,12 +251,18 @@ func TestPGMigrateDropsCreatedAt(t *testing.T) {
 		t.Fatalf("append after the migration: %v", err)
 	}
 
+	// The same database switched to staging on purpose: its functions are
+	// installed anew, and they must not name the column either.
+	stagingStore := pgstore.New(db, pgstore.WithoutFlusher())
+	if err := stagingStore.SwitchAppendMode(ctx); err != nil {
+		t.Fatalf("switch to staging: %v", err)
+	}
 	staged, _ := eventstore.NewEvent("StudentRegistered", "Cleo", eventstore.NewTags("student", "s3"))
-	err = inner.AppendStaging(ctx, []eventstore.Event{staged}, nil)
+	err = stagingStore.Append(ctx, []eventstore.Event{staged}, nil)
 	if err != nil {
 		t.Fatalf("staged append after the migration: %v", err)
 	}
-	moved, err := inner.Flush(ctx, 100)
+	moved, err := stagingStore.FlushForTest(ctx, 100)
 	if err != nil {
 		t.Fatalf("flush after the migration: %v", err)
 	}

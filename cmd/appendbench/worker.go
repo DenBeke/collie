@@ -87,15 +87,10 @@ func makeEvents(cfg *Config, id int) []eventstore.Event {
 	return events
 }
 
-// appendWith dispatches to the store's global-lock Append or the staging-buffer
-// AppendStaging, per cfg.Lock — the A/B switch under test.
-func appendWith(ctx context.Context, store *pgstore.Store, cfg *Config, events []eventstore.Event, cond *eventstore.AppendCondition) error {
-	switch cfg.Lock {
-	case lockStaging:
-		return store.AppendStaging(ctx, events, cond)
-	default:
-		return store.Append(ctx, events, cond)
-	}
+// appendWith appends through the store, whose mode New set from cfg.Lock — the
+// A/B switch under test.
+func appendWith(ctx context.Context, store *pgstore.Store, _ *Config, events []eventstore.Event, cond *eventstore.AppendCondition) error {
+	return store.Append(ctx, events, cond)
 }
 
 // runWorker drives a single simulated user until the context is done (duration

@@ -34,8 +34,8 @@ const (
 
 // Locking strategy under test.
 const (
-	lockGlobal  = "global"  // store.Append: one global advisory lock
-	lockStaging = "staging" // store.AppendStaging: staging buffer + singleton flusher (consistent, concurrent)
+	lockGlobal  = "global"  // store.Append with WithGlobalLock: one global advisory lock
+	lockStaging = "staging" // the default store.Append: staging buffer + singleton flusher (consistent, concurrent)
 )
 
 // Config is the fully-resolved set of run parameters.

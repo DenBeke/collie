@@ -15,7 +15,7 @@ import (
 // index-ordered scan on event_tags (not a seq scan). Run with -v to see the plan.
 func TestReadPlanUsesEventTagsIndex(t *testing.T) {
 	db := setupDB(t)
-	store := pgstore.New(db)
+	store := pgstore.New(db, pgstore.WithGlobalLock())
 	if err := store.Migrate(); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}

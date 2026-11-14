@@ -73,10 +73,26 @@ func setupDB(tb testing.TB) *gorm.DB {
 	return db
 }
 
+// setupStore is a store in global-lock mode: most tests here are about what
+// Append and Read mean, which is the same in both modes, and need an event to
+// be readable as soon as Append returns. The staging tests use
+// setupStagingStore.
 func setupStore(tb testing.TB, opts ...pgstore.Option) *pgstore.Store {
 	tb.Helper()
 	db := setupDB(tb)
-	store := pgstore.New(db, opts...)
+	store := pgstore.New(db, append([]pgstore.Option{pgstore.WithGlobalLock()}, opts...)...)
+	if err := store.Migrate(); err != nil {
+		tb.Fatalf("could not migrate: %v", err)
+	}
+	return store
+}
+
+// setupStagingStore is a store in staging mode without its own flusher, so a
+// test decides when staged appends move into events (flushAll).
+func setupStagingStore(tb testing.TB, opts ...pgstore.Option) *pgstore.Store {
+	tb.Helper()
+	db := setupDB(tb)
+	store := pgstore.New(db, append([]pgstore.Option{pgstore.WithoutFlusher()}, opts...)...)
 	if err := store.Migrate(); err != nil {
 		tb.Fatalf("could not migrate: %v", err)
 	}
@@ -91,7 +107,7 @@ func setupEncryptedStore(tb testing.TB) (*eventstore.MiddlewareStore, *encryptio
 	}
 	keys := pgstore.NewKeyStore(db)
 	enc := encryption.NewEventEncryptor(keys)
-	store := pgstore.New(db)
+	store := pgstore.New(db, pgstore.WithGlobalLock())
 	if err := store.Migrate(); err != nil {
 		tb.Fatalf("could not migrate: %v", err)
 	}
@@ -520,7 +536,7 @@ func flushAll(t testing.TB, store *pgstore.Store) {
 	t.Helper()
 	ctx := context.Background()
 	for {
-		n, err := store.Flush(ctx, 10000)
+		n, err := store.FlushForTest(ctx, 10000)
 		if err != nil {
 			t.Fatalf("flush: %v", err)
 		}
@@ -534,7 +550,7 @@ func flushAll(t testing.TB, store *pgstore.Store) {
 // land in staging, but the per-boundary lock + the staging side of the check let
 // exactly 1 win (the others see the first one's pending staging row).
 func TestStagingSameBoundaryConcurrency(t *testing.T) {
-	store := setupStore(t)
+	store := setupStagingStore(t)
 	ctx := context.Background()
 
 	const n = 10
@@ -552,7 +568,7 @@ func TestStagingSameBoundaryConcurrency(t *testing.T) {
 				}},
 				After: 0,
 			}
-			errs <- store.AppendStaging(ctx, []eventstore.Event{e}, condition)
+			errs <- store.Append(ctx, []eventstore.Event{e}, condition)
 		}()
 	}
 	wg.Wait()
@@ -574,7 +590,7 @@ func TestStagingSameBoundaryConcurrency(t *testing.T) {
 // TestStagingDisjointConcurrency: N disjoint appends all succeed; after a flush,
 // events holds exactly N rows.
 func TestStagingDisjointConcurrency(t *testing.T) {
-	store := setupStore(t)
+	store := setupStagingStore(t)
 	ctx := context.Background()
 
 	const n = 20
@@ -593,7 +609,7 @@ func TestStagingDisjointConcurrency(t *testing.T) {
 				}},
 				After: 0,
 			}
-			errs <- store.AppendStaging(ctx, []eventstore.Event{e}, condition)
+			errs <- store.Append(ctx, []eventstore.Event{e}, condition)
 		}(i)
 	}
 	wg.Wait()
@@ -625,7 +641,7 @@ func TestStagingDisjointConcurrency(t *testing.T) {
 // must hold every appended event exactly once with strictly increasing sequence
 // numbers (single-writer flush in staging_id order ⇒ gap-free monotonic).
 func TestStagingFlushMonotonic(t *testing.T) {
-	store := setupStore(t)
+	store := setupStagingStore(t)
 	ctx := context.Background()
 
 	const n = 64
@@ -636,7 +652,7 @@ func TestStagingFlushMonotonic(t *testing.T) {
 			defer wg.Done()
 			ent := fmt.Sprintf("e-%d", i)
 			e, _ := eventstore.NewEvent("Thing", ent, eventstore.NewTags("entity", ent))
-			if err := store.AppendStaging(ctx, []eventstore.Event{e}, nil); err != nil {
+			if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
 				t.Errorf("append %s: %v", ent, err)
 			}
 		}(i)
@@ -679,12 +695,12 @@ func TestStagingFlushMonotonic(t *testing.T) {
 // (see appendbench-conclusion.md) cannot form here, because the staging check reads
 // staging ∪ events in one snapshot.
 func TestStagingMultiBoundaryConsistent(t *testing.T) {
-	store := setupStore(t)
+	store := setupStagingStore(t)
 	ctx := context.Background()
 
 	// X lands in staging (course c2), unconditional — not yet flushed to events.
 	x, _ := eventstore.NewEvent("Enrolled", nil, eventstore.NewTags("course", "c2"))
-	if err := store.AppendStaging(ctx, []eventstore.Event{x}, nil); err != nil {
+	if err := store.Append(ctx, []eventstore.Event{x}, nil); err != nil {
 		t.Fatalf("append X: %v", err)
 	}
 
@@ -699,7 +715,7 @@ func TestStagingMultiBoundaryConsistent(t *testing.T) {
 		},
 		After: 0,
 	}
-	if err := store.AppendStaging(ctx, []eventstore.Event{y}, cond); err != eventstore.ErrAppendConditionViolated {
+	if err := store.Append(ctx, []eventstore.Event{y}, cond); err != eventstore.ErrAppendConditionViolated {
 		t.Fatalf("expected conflict from the pending staging event (multi-boundary), got: %v", err)
 	}
 }
@@ -707,7 +723,7 @@ func TestStagingMultiBoundaryConsistent(t *testing.T) {
 // TestStagingNoDeadlock: overlapping multi-key appends acquire boundary keys in
 // sorted order, so nothing deadlocks (40P01).
 func TestStagingNoDeadlock(t *testing.T) {
-	store := setupStore(t)
+	store := setupStagingStore(t)
 	ctx := context.Background()
 
 	const n = 40
@@ -722,7 +738,7 @@ func TestStagingNoDeadlock(t *testing.T) {
 				fmt.Sprintf("slot%d", (i+1)%4), "x",
 			)
 			e, _ := eventstore.NewEvent("Slot", nil, tags)
-			errs <- store.AppendStaging(ctx, []eventstore.Event{e}, nil)
+			errs <- store.Append(ctx, []eventstore.Event{e}, nil)
 		}(i)
 	}
 	wg.Wait()
@@ -735,12 +751,12 @@ func TestStagingNoDeadlock(t *testing.T) {
 	}
 }
 
-// TestUnkeyableConditionRejected: AppendStaging rejects conditions that can't be
+// TestUnkeyableConditionRejected: the staging Append rejects conditions that can't be
 // keyed (match-all, type-less, tag-less) up front with ErrUnkeyableCondition,
 // instead of silently falling back to the global lock (which doesn't compose with
 // per-boundary locks). A keyable condition is still accepted.
 func TestUnkeyableConditionRejected(t *testing.T) {
-	store := setupStore(t)
+	store := setupStagingStore(t)
 	ctx := context.Background()
 	e, _ := eventstore.NewEvent("Thing", nil, eventstore.NewTags("k", "v"))
 
@@ -750,8 +766,8 @@ func TestUnkeyableConditionRejected(t *testing.T) {
 		{Query: eventstore.Query{{Types: []string{"Thing"}}}, After: 0},               // tag-less
 	}
 	for _, c := range unkeyable {
-		if err := store.AppendStaging(ctx, []eventstore.Event{e}, c); !errors.Is(err, pgstore.ErrUnkeyableCondition) {
-			t.Errorf("AppendStaging with unkeyable condition %+v: want ErrUnkeyableCondition, got %v", c.Query, err)
+		if err := store.Append(ctx, []eventstore.Event{e}, c); !errors.Is(err, pgstore.ErrUnkeyableCondition) {
+			t.Errorf("staging Append with unkeyable condition %+v: want ErrUnkeyableCondition, got %v", c.Query, err)
 		}
 	}
 
@@ -760,7 +776,7 @@ func TestUnkeyableConditionRejected(t *testing.T) {
 		Query: eventstore.Query{{Types: []string{"Thing"}, Tags: eventstore.NewTags("k", "v")}},
 		After: 0,
 	}
-	if err := store.AppendStaging(ctx, []eventstore.Event{e}, keyable); err != nil {
+	if err := store.Append(ctx, []eventstore.Event{e}, keyable); err != nil {
 		t.Errorf("keyable condition should be accepted, got %v", err)
 	}
 }
@@ -824,7 +840,7 @@ func TestPGEncryptedAtRest(t *testing.T) {
 	}
 	keys := pgstore.NewKeyStore(db)
 	enc := encryption.NewEventEncryptor(keys)
-	raw := pgstore.New(db)
+	raw := pgstore.New(db, pgstore.WithGlobalLock())
 	if err := raw.Migrate(); err != nil {
 		t.Fatalf("could not migrate: %v", err)
 	}
@@ -1082,7 +1098,7 @@ func pgAppend(t *testing.T, store *pgstore.Store, eventType string, n int) {
 func migratedStore(t *testing.T) (*pgstore.Store, *gorm.DB) {
 	t.Helper()
 	db := setupDB(t)
-	store := pgstore.New(db)
+	store := pgstore.New(db, pgstore.WithGlobalLock())
 	if err := store.Migrate(); err != nil {
 		t.Fatal(err)
 	}
@@ -1141,21 +1157,21 @@ func TestReadReturnsTheHeadError(t *testing.T) {
 // Staged events have no sequence number until the flusher moves them, so they
 // are not part of the head.
 func TestReadHeadIgnoresStaging(t *testing.T) {
-	store, _ := migratedStore(t)
+	store := setupStagingStore(t)
 	ctx := context.Background()
 
 	e, err := eventstore.NewEvent("Staged", nil, eventstore.NewTags("id", "s1"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.AppendStaging(ctx, []eventstore.Event{e, e}, nil); err != nil {
+	if err := store.Append(ctx, []eventstore.Event{e, e}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, head, err := store.Read(ctx, nil, 0); err != nil || head != 0 {
 		t.Fatalf("before flush: head=%d err=%v, want 0", head, err)
 	}
 
-	if _, err := store.Flush(ctx, 0); err != nil {
+	if _, err := store.FlushForTest(ctx, 0); err != nil {
 		t.Fatal(err)
 	}
 	if _, head, err := store.Read(ctx, nil, 0); err != nil || head != 2 {
