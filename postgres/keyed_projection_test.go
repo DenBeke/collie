@@ -257,3 +257,64 @@ func TestPgKeyedMigrateIndexes(t *testing.T) {
 		t.Fatalf("re-running MigrateFieldIndexes: %v", err)
 	}
 }
+
+func TestKeyedProjectionRecordsHeadPastTheGap(t *testing.T) {
+	_, db := migratedStore(t)
+	ctx := context.Background()
+	open := func() *postgres.KeyedProjection[kpJob] {
+		t.Helper()
+		p, err := postgres.NewKeyedProjection(db, "jobs", eventstore.QueryItem{Types: []string{"JobCreated"}}, kpHandler{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	a, stale := open(), open()
+	if err := a.Checkpoint(ctx, 9_999); err != nil {
+		t.Fatal(err)
+	}
+	if got := open().After(); got != 0 {
+		t.Fatalf("below the gap: stored=%d, want 0", got)
+	}
+
+	if err := a.Checkpoint(ctx, 20_000); err != nil {
+		t.Fatal(err)
+	}
+	if got := open().After(); got != 20_000 {
+		t.Fatalf("past the gap: stored=%d, want 20000", got)
+	}
+
+	// An instance that is behind must not move the stored position back.
+	if err := stale.Checkpoint(ctx, 15_000); err != nil {
+		t.Fatal(err)
+	}
+	if got := open().After(); got != 20_000 {
+		t.Fatalf("after a stale checkpoint: stored=%d, want 20000", got)
+	}
+}
+
+func TestKeyedProjectionAdvancesOverASparseLog(t *testing.T) {
+	store, db := migratedStore(t)
+	ctx := context.Background()
+	pgAppend(t, store, "Other", 10_001)
+
+	p, err := postgres.NewKeyedProjection(db, "jobs", eventstore.QueryItem{Types: []string{"JobCreated"}}, kpHandler{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := eventstore.UpdateProjection(ctx, store, p); err != nil {
+		t.Fatal(err)
+	}
+	if p.After() != 10_001 {
+		t.Fatalf("after=%d, want the head (10001)", p.After())
+	}
+
+	reopened, err := postgres.NewKeyedProjection(db, "jobs", eventstore.QueryItem{Types: []string{"JobCreated"}}, kpHandler{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reopened.After() != 10_001 {
+		t.Fatalf("reopened after=%d, want 10001", reopened.After())
+	}
+}

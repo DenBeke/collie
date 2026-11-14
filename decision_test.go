@@ -2,6 +2,7 @@ package eventstore_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/DenBeke/collie"
@@ -287,5 +288,114 @@ func TestBuildDecisionModel_RealStoredProjectionIsCheckpointed(t *testing.T) {
 	}
 	if condition.After != 5 {
 		t.Fatalf("expected After=5, got %d", condition.After)
+	}
+}
+
+func TestBuildDecisionModel_AfterIsHeadWithoutMatches(t *testing.T) {
+	store := seed(t, 5, "Other", nil)
+
+	condition, err := eventstore.BuildDecisionModel(context.Background(), store, wanted())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if condition.After != 5 {
+		t.Fatalf("After=%d, want the head (5)", condition.After)
+	}
+}
+
+func TestBuildDecisionModel_HeadConditionStillDetectsConflicts(t *testing.T) {
+	store := seed(t, 5, "Other", nil)
+	ctx := context.Background()
+
+	// Unrelated writes after the read do not conflict.
+	condition, err := eventstore.BuildDecisionModel(ctx, store, wanted())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := appendOne(t, store, "Other", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := appendOne(t, store, "Wanted", condition); err != nil {
+		t.Fatalf("unrelated write must not conflict: %v", err)
+	}
+
+	// A matching write after the read does.
+	condition, err = eventstore.BuildDecisionModel(ctx, store, wanted())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := appendOne(t, store, "Wanted", nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := appendOne(t, store, "Wanted", condition); !errors.Is(err, eventstore.ErrAppendConditionViolated) {
+		t.Fatalf("expected a conflict, got %v", err)
+	}
+}
+
+// counting is a stored projection counting events of one type from a checkpoint.
+func counting(eventType string, after uint64) *storedProjection[int] {
+	return &storedProjection[int]{
+		DefaultProjection: eventstore.DefaultProjection[int]{
+			Handlers: map[string]eventstore.HandleFunc[int]{
+				eventType: func(n int, _ eventstore.SequencedEvent) (int, error) { return n + 1, nil },
+			},
+		},
+		after: after,
+	}
+}
+
+// One read from the lowest checkpoint serves both projections: each applies
+// only what lies past its own checkpoint, and both end at the head, past a tail
+// neither of them matches.
+func TestBuildDecisionModel_StoredProjectionsAtDifferentCheckpoints(t *testing.T) {
+	store := memory.New()
+	for _, eventType := range []string{"A", "B", "A", "B", "A", "B", "A", "B", "Other", "Other", "Other"} {
+		if err := appendOne(t, store, eventType, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	a, b := counting("A", 2), counting("B", 6)
+
+	condition, err := eventstore.BuildDecisionModel(context.Background(), store, a, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a.State != 3 || b.State != 1 {
+		t.Fatalf("states a=%d b=%d, want 3 (A at 3, 5, 7) and 1 (B at 8)", a.State, b.State)
+	}
+	if a.After() != 11 || b.After() != 11 || condition.After != 11 {
+		t.Fatalf("a=%d b=%d After=%d, want all at the head (11)", a.After(), b.After(), condition.After)
+	}
+}
+
+func TestBuildDecisionModel_KeepsCheckpointsOnError(t *testing.T) {
+	t.Run("apply", func(t *testing.T) {
+		store := memory.New()
+		for _, eventType := range []string{"A", "B", "Other"} {
+			if err := appendOne(t, store, eventType, nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+		a, b := counting("A", 0), counting("B", 0)
+		b.Handlers["B"] = func(int, eventstore.SequencedEvent) (int, error) { return 0, errors.New("poison") }
+
+		if _, err := eventstore.BuildDecisionModel(context.Background(), store, a, b); err == nil {
+			t.Fatal("expected the apply error")
+		}
+		if a.After() != 0 || b.After() != 0 {
+			t.Fatalf("a=%d b=%d, want both still at 0", a.After(), b.After())
+		}
+	})
+
+	for name, store := range map[string]eventstore.Store{"head": headlessStore{}, "iteration": brokenStore{}} {
+		t.Run(name, func(t *testing.T) {
+			a, b := counting("A", 2), counting("B", 4)
+			if _, err := eventstore.BuildDecisionModel(context.Background(), store, a, b); err == nil {
+				t.Fatal("expected the read error")
+			}
+			if a.After() != 2 || b.After() != 4 {
+				t.Fatalf("a=%d b=%d, want 2 and 4", a.After(), b.After())
+			}
+		})
 	}
 }

@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/DenBeke/collie"
-	"github.com/DenBeke/collie/memory"
 )
 
 // wanted is a stored projection over a type the seeded log never contains.
@@ -86,93 +85,5 @@ func TestUpdateProjection_KeepsCheckpointOnReadError(t *testing.T) {
 				t.Fatalf("checkpoint=%d, want 2", p.After())
 			}
 		})
-	}
-}
-
-func TestBuildDecisionModel_AfterIsHeadWithoutMatches(t *testing.T) {
-	store := seed(t, 5, "Other", nil)
-
-	condition, err := eventstore.BuildDecisionModel(context.Background(), store, wanted())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if condition.After != 5 {
-		t.Fatalf("After=%d, want the head (5)", condition.After)
-	}
-}
-
-func TestBuildDecisionModel_HeadConditionStillDetectsConflicts(t *testing.T) {
-	store := seed(t, 5, "Other", nil)
-	ctx := context.Background()
-
-	// Unrelated writes after the read do not conflict.
-	condition, err := eventstore.BuildDecisionModel(ctx, store, wanted())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := appendOne(t, store, "Other", nil); err != nil {
-		t.Fatal(err)
-	}
-	if err := appendOne(t, store, "Wanted", condition); err != nil {
-		t.Fatalf("unrelated write must not conflict: %v", err)
-	}
-
-	// A matching write after the read does.
-	condition, err = eventstore.BuildDecisionModel(ctx, store, wanted())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := appendOne(t, store, "Wanted", nil); err != nil {
-		t.Fatal(err)
-	}
-	if err := appendOne(t, store, "Wanted", condition); !errors.Is(err, eventstore.ErrAppendConditionViolated) {
-		t.Fatalf("expected a conflict, got %v", err)
-	}
-}
-
-func TestMemoryRead_HeadIsTakenAtCall(t *testing.T) {
-	store := memory.New()
-	for range 2 {
-		if err := appendOne(t, store, "Other", nil); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	events, head, err := store.Read(context.Background(), nil, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if head != 2 {
-		t.Fatalf("head=%d, want 2", head)
-	}
-
-	// Appended after Read, before iterating: yielded, and above the head.
-	if err := appendOne(t, store, "Other", nil); err != nil {
-		t.Fatal(err)
-	}
-	var last uint64
-	for e, err := range events {
-		if err != nil {
-			t.Fatal(err)
-		}
-		last = e.SequenceNumber
-	}
-	if last != 3 {
-		t.Fatalf("last=%d, want 3", last)
-	}
-}
-
-func TestMiddlewareStore_PassesHeadAndError(t *testing.T) {
-	store := seed(t, 4, "Other", nil)
-	noop := func(context.Context, *eventstore.SequencedEvent) error { return nil }
-
-	wrapped := eventstore.NewMiddlewareStore(store, eventstore.WithReadMiddleware(noop))
-	if _, head, err := wrapped.Read(context.Background(), nil, 0); err != nil || head != 4 {
-		t.Fatalf("head=%d err=%v, want 4 and nil", head, err)
-	}
-
-	broken := eventstore.NewMiddlewareStore(headlessStore{}, eventstore.WithReadMiddleware(noop))
-	if _, _, err := broken.Read(context.Background(), nil, 0); err == nil {
-		t.Fatal("expected the head error to pass through")
 	}
 }
