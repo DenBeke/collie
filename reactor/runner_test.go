@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"iter"
 	"log/slog"
 	"strings"
 	"sync"
@@ -365,7 +366,11 @@ func TestRunnerStampsTheEnvelopeOnItsCommands(t *testing.T) {
 
 	var reacted []eventstore.SequencedEvent
 	query := eventstore.Query{eventstore.QueryItem{Types: []string{"Reacted"}}}
-	for event, err := range store.Read(context.Background(), query, 0) {
+	stream, _, err := store.Read(context.Background(), query, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for event, err := range stream {
 		if err != nil {
 			t.Fatalf("read the log: %v", err)
 		}
@@ -465,4 +470,40 @@ func TestRunnerRejectsRegistrationAfterRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run returned %v, want nil on cancellation", err)
 	}
+}
+
+// headDown fails every Read while down, as a lost database connection would.
+type headDown struct {
+	eventstore.Store
+	down bool
+}
+
+func (s *headDown) Read(ctx context.Context, query eventstore.Query, after uint64) (iter.Seq2[eventstore.SequencedEvent, error], uint64, error) {
+	if s.down {
+		return nil, 0, errors.New("connection refused")
+	}
+	return s.Store.Read(ctx, query, after)
+}
+
+// A head that cannot be read must not become position 0: that would replay
+// every effect, which is what starting from now exists to prevent.
+func TestRunnerDoesNotStartFromZeroWhenTheHeadFails(t *testing.T) {
+	inner := memory.New()
+	appendEvents(t, inner, "Old")
+	store := &headDown{Store: inner, down: true}
+	checkpoints := memory.NewCheckpointStore()
+	runner := reactor.NewRunner(store, checkpoints, &executor{}, quiet())
+	watcher := &collector{}
+	register(t, runner, "watcher/v1", watcher)
+
+	tick(t, runner)
+	if _, found := checkpoint(t, checkpoints, "watcher/v1"); found {
+		t.Fatal("a checkpoint was saved without a head")
+	}
+
+	store.down = false
+	tick(t, runner)
+	appendEvents(t, inner, "New")
+	tick(t, runner)
+	watcher.assertSeen(t, "New")
 }

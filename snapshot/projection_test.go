@@ -262,3 +262,64 @@ func TestProjection_SavesOncePerCatchUp(t *testing.T) {
 		t.Fatalf("expected 1 additional save after new event, got %d total", snapshots.saves)
 	}
 }
+
+// TestProjection_RecordsHeadOnlyPastTheGap proves an unchanged snapshot is saved
+// again only once the head is far enough past it, so a busy log does not turn
+// every catch-up into a write.
+func TestProjection_RecordsHeadOnlyPastTheGap(t *testing.T) {
+	ctx := context.Background()
+	snapshots := &countingSnapshotStore{Store: memory.NewSnapshotStore()}
+	projection, err := snapshot.NewProjection(ctx, snapshots, "users", countDef("UserSignedUp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := projection.Checkpoint(ctx, 9_999); err != nil {
+		t.Fatal(err)
+	}
+	if snapshots.saves != 0 || projection.After() != 0 {
+		t.Fatalf("saves=%d after=%d, want 0/0 below the gap", snapshots.saves, projection.After())
+	}
+
+	if err := projection.Checkpoint(ctx, 10_000); err != nil {
+		t.Fatal(err)
+	}
+	if snapshots.saves != 1 || projection.After() != 10_000 {
+		t.Fatalf("saves=%d after=%d, want 1/10000 at the gap", snapshots.saves, projection.After())
+	}
+
+	reloaded, err := snapshot.NewProjection(ctx, snapshots, "users", countDef("UserSignedUp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.After() != 10_000 {
+		t.Fatalf("reloaded after=%d, want 10000", reloaded.After())
+	}
+}
+
+// TestProjection_DirtyCheckpointRecordsHead proves a snapshot saved because
+// events were applied is saved at the head, not at the last applied event.
+func TestProjection_DirtyCheckpointRecordsHead(t *testing.T) {
+	ctx := context.Background()
+	store := seed(t, 2, "UserSignedUp", nil)
+	for range 3 {
+		e, err := eventstore.NewEvent("Other", nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	projection, err := snapshot.NewProjection(ctx, memory.NewSnapshotStore(), "users", countDef("UserSignedUp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := eventstore.UpdateProjection(ctx, store, projection); err != nil {
+		t.Fatal(err)
+	}
+	if projection.State != 2 || projection.After() != 5 {
+		t.Fatalf("state=%d after=%d, want 2/5", projection.State, projection.After())
+	}
+}

@@ -49,8 +49,14 @@ func (p *KeyedProjection[V]) After() uint64 {
 	return p.position
 }
 
-// Checkpoint is a no-op: state and position move together under the lock.
-func (p *KeyedProjection[V]) Checkpoint(context.Context) error { return nil }
+// Checkpoint moves the position to upTo: state and position move together
+// under the lock, so there is nothing to flush.
+func (p *KeyedProjection[V]) Checkpoint(_ context.Context, upTo uint64) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.position = max(p.position, upTo)
+	return nil
+}
 
 func (p *KeyedProjection[V]) Apply(_ context.Context, e eventstore.SequencedEvent) error {
 	p.mu.Lock()

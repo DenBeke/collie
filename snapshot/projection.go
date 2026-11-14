@@ -84,13 +84,18 @@ func (p *Projection[S]) Apply(ctx context.Context, e eventstore.SequencedEvent) 
 	return nil
 }
 
+// checkpointGap is how far the head may move past a saved snapshot before an
+// unchanged snapshot is saved again to record it.
+const checkpointGap = 10_000
+
 // Checkpoint records the catch-up's progress by persisting the in-memory state
-// and position through the store. It is a no-op when nothing was applied since
-// the last checkpoint.
-func (p *Projection[S]) Checkpoint(ctx context.Context) error {
-	if !p.dirty {
+// and position through the store. It is a no-op when nothing was applied and
+// upTo is less than checkpointGap past the position.
+func (p *Projection[S]) Checkpoint(ctx context.Context, upTo uint64) error {
+	if !p.dirty && upTo < p.position+checkpointGap {
 		return nil
 	}
+	p.position = max(p.position, upTo)
 	state, err := json.Marshal(p.State)
 	if err != nil {
 		return fmt.Errorf("could not marshal projection %q state: %w", p.name, err)

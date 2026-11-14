@@ -223,7 +223,11 @@ func TestNewEventFromRoundTrip(t *testing.T) {
 	}
 
 	count := 0
-	for e, err := range store.Read(ctx, eventstore.Query{{Tags: eventstore.NewTags("user", "b")}}, 0) {
+	stream, _, err := store.Read(ctx, eventstore.Query{{Tags: eventstore.NewTags("user", "b")}}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for e, err := range stream {
 		if err != nil {
 			t.Fatal(err)
 		}

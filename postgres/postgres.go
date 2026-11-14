@@ -193,9 +193,15 @@ func (s *Store) Migrate() error {
 }
 
 // Read returns an iterator over events matching the query with a sequence
-// number greater than after. Events are fetched in batches to keep memory
-// usage bounded even for large event streams.
-func (s *Store) Read(ctx context.Context, query eventstore.Query, after uint64) iter.Seq2[eventstore.SequencedEvent, error] {
+// number greater than after, and the head of the log. Events are fetched in
+// batches to keep memory usage bounded even for large event streams.
+func (s *Store) Read(ctx context.Context, query eventstore.Query, after uint64) (iter.Seq2[eventstore.SequencedEvent, error], uint64, error) {
+	// Sequence order is commit order (one writer), so everything up to max is committed.
+	var head uint64
+	err := s.db.WithContext(ctx).Raw("SELECT COALESCE(max(sequence_number), 0) FROM events").Scan(&head).Error
+	if err != nil {
+		return nil, 0, fmt.Errorf("could not read the head of the log: %w", err)
+	}
 	return func(yield func(eventstore.SequencedEvent, error) bool) {
 		cursor := after
 		for {
@@ -224,7 +230,7 @@ func (s *Store) Read(ctx context.Context, query eventstore.Query, after uint64) 
 				return
 			}
 		}
-	}
+	}, head, nil
 }
 
 // dcbItemConflictEvents is the per-query-item conflict predicate against the

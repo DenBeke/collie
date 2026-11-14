@@ -60,9 +60,29 @@ func (p *KeyedProjection[V]) After() uint64 {
 	return p.position
 }
 
-// Checkpoint is a no-op: Apply persists the position with the row it wrote, in
-// the same transaction, so there is never buffered progress to flush.
-func (p *KeyedProjection[V]) Checkpoint(context.Context) error { return nil }
+// checkpointGap is how far the head may move past the position before
+// Checkpoint records it without an applied event.
+const checkpointGap = 10_000
+
+// Checkpoint records upTo once it is checkpointGap past the position. Apply
+// already persists the position with each row it writes, so this only covers
+// stretches of the log without a matching event. GREATEST keeps the stored
+// position from moving back when another process got further.
+func (p *KeyedProjection[V]) Checkpoint(ctx context.Context, upTo uint64) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if upTo < p.position+checkpointGap {
+		return nil
+	}
+	err := p.db.WithContext(ctx).Exec(`INSERT INTO projection_checkpoints (projection_name, position) VALUES (?, ?)
+		ON CONFLICT (projection_name) DO UPDATE SET position = GREATEST(projection_checkpoints.position, EXCLUDED.position)`,
+		p.name, int64(upTo)).Error
+	if err != nil {
+		return fmt.Errorf("could not write checkpoint for %q: %w", p.name, err)
+	}
+	p.position = upTo
+	return nil
+}
 
 // Apply folds one event into its row.
 //
@@ -113,9 +133,14 @@ func (p *KeyedProjection[V]) Apply(ctx context.Context, e eventstore.SequencedEv
 		}
 
 		// The checkpoint carries a foreign key from the rows, so it goes first.
+		// GREATEST: with no checkpoint row there was nothing to lock above, so
+		// another process may have written a later position in the meantime.
 		if err := tx.Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "projection_name"}},
-			DoUpdates: clause.AssignmentColumns([]string{"position"}),
+			Columns: []clause.Column{{Name: "projection_name"}},
+			DoUpdates: clause.Set{{
+				Column: clause.Column{Name: "position"},
+				Value:  gorm.Expr("GREATEST(projection_checkpoints.position, EXCLUDED.position)"),
+			}},
 		}).Create(&projectionCheckpoint{
 			ProjectionName: p.name,
 			Position:       int64(e.SequenceNumber),
@@ -270,6 +295,9 @@ func (p *KeyedProjection[V]) migrateIndexes(column string, names []string) error
 }
 
 // Reset drops every row and the checkpoint, so the next catch-up rebuilds.
+// Stop every other catch-up of this projection first, in this process and in
+// others: one that is still running writes its position back and the rebuild
+// skips everything up to it.
 func (p *KeyedProjection[V]) Reset(ctx context.Context) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()

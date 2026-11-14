@@ -114,7 +114,11 @@ func TestAppendAndRead(t *testing.T) {
 	}
 
 	var events []eventstore.SequencedEvent
-	for e, err := range store.Read(ctx, nil, 0) {
+	stream, _, err := store.Read(ctx, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for e, err := range stream {
 		if err != nil {
 			t.Fatalf("read error: %v", err)
 		}
@@ -205,7 +209,11 @@ func TestAppendConditionEmptyQueryMatchesAll(t *testing.T) {
 	// The same empty-query condition passes once After is at the head (no events
 	// exist after it).
 	var head uint64
-	for ev, err := range store.Read(ctx, nil, 0) {
+	stream, _, err := store.Read(ctx, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for ev, err := range stream {
 		if err != nil {
 			t.Fatalf("read failed: %v", err)
 		}
@@ -233,7 +241,11 @@ func TestTagsFiltering(t *testing.T) {
 	}}
 
 	var events []eventstore.SequencedEvent
-	for e, err := range store.Read(ctx, query, 0) {
+	stream, _, err := store.Read(ctx, query, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for e, err := range stream {
 		if err != nil {
 			t.Fatalf("read error: %v", err)
 		}
@@ -257,7 +269,11 @@ func TestReadAfter(t *testing.T) {
 	}
 
 	var all []eventstore.SequencedEvent
-	for e, err := range store.Read(ctx, nil, 0) {
+	stream, _, err := store.Read(ctx, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for e, err := range stream {
 		if err != nil {
 			t.Fatalf("read error: %v", err)
 		}
@@ -265,7 +281,11 @@ func TestReadAfter(t *testing.T) {
 	}
 
 	var after []eventstore.SequencedEvent
-	for e, err := range store.Read(ctx, nil, all[1].SequenceNumber) {
+	stream, _, err = store.Read(ctx, nil, all[1].SequenceNumber)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for e, err := range stream {
 		if err != nil {
 			t.Fatalf("read error: %v", err)
 		}
@@ -292,7 +312,11 @@ func TestBatching(t *testing.T) {
 	}
 
 	var events []eventstore.SequencedEvent
-	for e, err := range store.Read(ctx, nil, 0) {
+	stream, _, err := store.Read(ctx, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for e, err := range stream {
 		if err != nil {
 			t.Fatalf("read error: %v", err)
 		}
@@ -320,7 +344,11 @@ func TestMultiTagEventFiltering(t *testing.T) {
 	}}
 
 	var events []eventstore.SequencedEvent
-	for e, err := range store.Read(ctx, query, 0) {
+	stream, _, err := store.Read(ctx, query, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for e, err := range stream {
 		if err != nil {
 			t.Fatalf("read error: %v", err)
 		}
@@ -336,7 +364,11 @@ func TestMultiTagEventFiltering(t *testing.T) {
 	}}
 
 	var events2 []eventstore.SequencedEvent
-	for e, err := range store.Read(ctx, query2, 0) {
+	stream, _, err = store.Read(ctx, query2, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for e, err := range stream {
 		if err != nil {
 			t.Fatalf("read error: %v", err)
 		}
@@ -363,7 +395,11 @@ func TestMultiValueTags(t *testing.T) {
 	read := func(q eventstore.Query) int {
 		t.Helper()
 		n := 0
-		for _, err := range store.Read(ctx, q, 0) {
+		stream, _, err := store.Read(ctx, q, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, err := range stream {
 			if err != nil {
 				t.Fatalf("read error: %v", err)
 			}
@@ -462,7 +498,11 @@ func TestAppendConditionConcurrency(t *testing.T) {
 	}
 
 	var events []eventstore.SequencedEvent
-	for e, err := range store.Read(ctx, nil, 0) {
+	stream, _, err := store.Read(ctx, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for e, err := range stream {
 		if err != nil {
 			t.Fatalf("read error: %v", err)
 		}
@@ -566,7 +606,11 @@ func TestStagingDisjointConcurrency(t *testing.T) {
 	}
 	flushAll(t, store)
 	var count int
-	for _, err := range store.Read(ctx, nil, 0) {
+	stream, _, err := store.Read(ctx, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, err := range stream {
 		if err != nil {
 			t.Fatalf("read error: %v", err)
 		}
@@ -603,7 +647,11 @@ func TestStagingFlushMonotonic(t *testing.T) {
 	var prev uint64
 	var count int
 	seen := make(map[string]bool)
-	for e, err := range store.Read(ctx, nil, 0) {
+	stream, _, err := store.Read(ctx, nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for e, err := range stream {
 		if err != nil {
 			t.Fatalf("read error: %v", err)
 		}
@@ -723,7 +771,11 @@ func collectPGEvents(t *testing.T, store eventstore.Store, query eventstore.Quer
 	t.Helper()
 	ctx := context.Background()
 	var events []eventstore.SequencedEvent
-	for e, err := range store.Read(ctx, query, 0) {
+	stream, _, err := store.Read(ctx, query, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for e, err := range stream {
 		if err != nil {
 			t.Fatalf("unexpected read error: %v", err)
 		}
@@ -987,7 +1039,11 @@ func TestNewEventFromRoundTrip(t *testing.T) {
 	}
 
 	count := 0
-	for e, err := range store.Read(ctx, eventstore.Query{{Tags: eventstore.NewTags("user", "bob")}}, 0) {
+	stream, _, err := store.Read(ctx, eventstore.Query{{Tags: eventstore.NewTags("user", "bob")}}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for e, err := range stream {
 		if err != nil {
 			t.Fatalf("read error: %v", err)
 		}

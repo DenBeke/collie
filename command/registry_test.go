@@ -47,7 +47,11 @@ func usersNamed(t *testing.T, store eventstore.Store, username string) int {
 	t.Helper()
 	query := eventstore.Query{{Types: []string{"UserSignedUp"}, Tags: eventstore.NewTags("username", username)}}
 	count := 0
-	for _, err := range store.Read(context.Background(), query, 0) {
+	stream, _, err := store.Read(context.Background(), query, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, err := range stream {
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -364,7 +368,11 @@ func TestDispatch_CachedCommandEndToEnd(t *testing.T) {
 	// Three dispatches → three Touched events for id=x.
 	query := eventstore.Query{{Types: []string{"Touched"}, Tags: eventstore.NewTags("id", "x")}}
 	count := 0
-	for _, err := range store.Read(ctx, query, 0) {
+	stream, _, err := store.Read(ctx, query, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, err := range stream {
 		if err != nil {
 			t.Fatal(err)
 		}

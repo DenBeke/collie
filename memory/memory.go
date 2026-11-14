@@ -21,7 +21,10 @@ func New() *Store {
 	return &Store{}
 }
 
-func (s *Store) Read(ctx context.Context, query eventstore.Query, after uint64) iter.Seq2[eventstore.SequencedEvent, error] {
+func (s *Store) Read(ctx context.Context, query eventstore.Query, after uint64) (iter.Seq2[eventstore.SequencedEvent, error], uint64, error) {
+	s.mu.RLock()
+	head := uint64(len(s.events))
+	s.mu.RUnlock()
 	return func(yield func(eventstore.SequencedEvent, error) bool) {
 		s.mu.RLock()
 		defer s.mu.RUnlock()
@@ -32,7 +35,7 @@ func (s *Store) Read(ctx context.Context, query eventstore.Query, after uint64) 
 				}
 			}
 		}
-	}
+	}, head, nil
 }
 
 func (s *Store) Append(ctx context.Context, events []eventstore.Event, condition *eventstore.AppendCondition) error {

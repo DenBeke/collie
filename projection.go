@@ -27,7 +27,9 @@ type Projection interface {
 type CheckpointProjection interface {
 	Projection
 	After() uint64
-	Checkpoint(ctx context.Context) error
+	// Checkpoint records progress after a complete catch-up: every matching event
+	// up to upTo has been applied.
+	Checkpoint(ctx context.Context, upTo uint64) error
 }
 
 // HandleFunc processes a single event and returns the updated state.
@@ -71,7 +73,11 @@ func (p *DefaultProjection[S]) Apply(_ context.Context, e SequencedEvent) error 
 // since its last checkpoint, then calling Checkpoint once to record the
 // progress. Only events matching the projection's query are read and applied.
 func UpdateProjection(ctx context.Context, store Store, p CheckpointProjection) error {
-	for e, err := range store.Read(ctx, Query{p.EventQuery()}, p.After()) {
+	events, upTo, err := store.Read(ctx, Query{p.EventQuery()}, p.After())
+	if err != nil {
+		return fmt.Errorf("could not read events: %w", err)
+	}
+	for e, err := range events {
 		if err != nil {
 			return fmt.Errorf("could not read events: %w", err)
 		}
@@ -79,8 +85,9 @@ func UpdateProjection(ctx context.Context, store Store, p CheckpointProjection) 
 		if err != nil {
 			return fmt.Errorf("could not apply %s event: %w", e.Type, err)
 		}
+		upTo = max(upTo, e.SequenceNumber)
 	}
-	if err := p.Checkpoint(ctx); err != nil {
+	if err := p.Checkpoint(ctx, upTo); err != nil {
 		return fmt.Errorf("could not checkpoint projection: %w", err)
 	}
 	return nil

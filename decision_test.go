@@ -15,6 +15,11 @@ import (
 // consolidation: *snapshot.Projection must implement it.
 var _ eventstore.CheckpointProjection = (*snapshot.Projection[int])(nil)
 
+// BuildDecisionModel takes plain Projections, so a test double that drifts from
+// CheckpointProjection would silently become a fresh projection instead of
+// failing to compile.
+var _ eventstore.CheckpointProjection = (*storedProjection[int])(nil)
+
 // storedProjection wraps a DefaultProjection with a checkpoint, implementing
 // CheckpointProjection so BuildDecisionModel skips already-processed events.
 type storedProjection[S any] struct {
@@ -24,8 +29,11 @@ type storedProjection[S any] struct {
 
 func (s *storedProjection[S]) After() uint64 { return s.after }
 
-// Checkpoint is a no-op: this test double keeps state in memory only.
-func (s *storedProjection[S]) Checkpoint(context.Context) error { return nil }
+// Checkpoint moves the in-memory checkpoint: this test double persists nothing.
+func (s *storedProjection[S]) Checkpoint(_ context.Context, upTo uint64) error {
+	s.after = max(s.after, upTo)
+	return nil
+}
 
 // seed appends n events of the given type and returns the store.
 func seed(t *testing.T, n int, eventType string, tags []eventstore.Tag) *memory.Store {
@@ -130,7 +138,7 @@ func TestBuildDecisionModel_NoNewEventsAfterCheckpoint(t *testing.T) {
 	if projection.State != 3 {
 		t.Fatalf("expected state 3, got %d", projection.State)
 	}
-	// After must be 3 (from maxAfter init), not 0.
+	// After must be the head (3), not 0.
 	if condition.After != 3 {
 		t.Fatalf("expected After=3, got %d", condition.After)
 	}

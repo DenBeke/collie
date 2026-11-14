@@ -27,9 +27,10 @@ var ErrAppendConditionViolated = errors.New("append condition violated")
 
 // Store reads and appends events.
 type Store interface {
-	// Read returns an iterator over events matching the query with a sequence
-	// number strictly greater than after. Pass 0 to read from the beginning.
-	Read(ctx context.Context, query Query, after uint64) iter.Seq2[SequencedEvent, error]
+	// Read returns the events matching query after the given sequence number, and
+	// head: the store's last sequence number when Read was called. After a complete,
+	// error-free iteration, every matching event up to head has been yielded.
+	Read(ctx context.Context, query Query, after uint64) (iter.Seq2[SequencedEvent, error], uint64, error)
 
 	// Append atomically persists events. If condition is non-nil, the append
 	// fails with ErrAppendConditionViolated when the store contains any event

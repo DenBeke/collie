@@ -26,7 +26,11 @@ func appendOne(ctx context.Context, store eventstore.Store, e eventstore.Event) 
 func only(t *testing.T, store eventstore.Store) eventstore.SequencedEvent {
 	t.Helper()
 	var events []eventstore.SequencedEvent
-	for e, err := range store.Read(context.Background(), nil, 0) {
+	stream, _, err := store.Read(context.Background(), nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for e, err := range stream {
 		if err != nil {
 			t.Fatalf("read: %v", err)
 		}
@@ -124,7 +128,11 @@ func TestStrictRefusalReachesTheCaller(t *testing.T) {
 	if !errors.Is(err, envelope.ErrNoActor) {
 		t.Fatalf("append without an actor: %v, want ErrNoActor", err)
 	}
-	for range store.Read(context.Background(), nil, 0) {
+	stream, _, err := store.Read(context.Background(), nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range stream {
 		t.Fatal("a refused append persisted an event")
 	}
 }

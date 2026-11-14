@@ -33,7 +33,11 @@ func seed(t *testing.T, n int, eventType string, tags []eventstore.Tag) *memory.
 func countAll(t *testing.T, store eventstore.Store) int {
 	t.Helper()
 	count := 0
-	for _, err := range store.Read(context.Background(), nil, 0) {
+	stream, _, err := store.Read(context.Background(), nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, err := range stream {
 		if err != nil {
 			t.Fatal(err)
 		}

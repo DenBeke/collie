@@ -86,8 +86,9 @@ These were discussed and are now the framework's explicit stance:
     yet. Recovery = fix the handler, rebuild under a versioned name.
 15. **Rebuild/versioning is a naming convention, for views exactly as for snapshots.**
     `"user-profiles/v2"` is an empty view at position 0; blue-green = build v2 alongside v1,
-    flip reads when v2's position catches v1's (the honest proxy — there is deliberately no
-    `head()` primitive), then `Reset` v1. Recipe in docs; no orchestration API.
+    flip reads when v2's position catches v1's, then `Reset` v1. Recipe in docs; no
+    orchestration API. (Nov 2026: there is still no `head()` primitive, but `Read` now returns
+    the head, and checkpoints move with it even when nothing matched — see item 20.)
 
 ## Change list
 
@@ -267,6 +268,27 @@ items 1, 5, 7, 8 and 14 are now consolidated into the **view subsystem** design 
     `EventQuery() Query`; `BuildDecisionModel` changes `append(query, p.EventQuery())` to
     `append(query, p.EventQuery()...)`; `DefaultProjection` returns a one-item `Query`. Do it
     inside the view sweep or explicitly accept single-item views.
+
+20. **`Read` returns the head (Nov 2026).** ✅ Implemented. A checkpoint used to be the last
+    *matching* event, so a projection on a rare type stayed at 42 while the log was at 10⁹, and
+    two things paid for the gap on every catch-up: a multi-type read whose planner walks the
+    primary key through every non-matching event since 42 (measured: 3M rows and ~930 MB per
+    poll on 5M events, against 0.02 ms from the head), and the append condition, which scans
+    every event carrying the boundary's tags since `After` — inside the global append lock.
+    Cold storage would make it structural: a checkpoint in the cold tier makes every catch-up
+    and every condition check touch it. Now `Read(ctx, query, after)` returns
+    `(events, head, err)`: head is the last sequence number when `Read` was called, valid once
+    the events are drained completely and without error. `UpdateProjection` and
+    `BuildDecisionModel` pass `max(head, last seen)` to `Checkpoint(ctx, upTo)` and use it as
+    the condition's `After`; `readOffset`'s `maxAfter` workaround is gone. Considered: a
+    separate `Head()` (rejected — callers must call it *before* the read and reason about
+    commit order themselves), a result object (rejected — a plain return value is enough when
+    the drivers own the rule), the head error deferred into the iterator (rejected — a caller
+    that does not iterate, like the reactor learning where to start, would read 0 and replay
+    every effect). Snapshot and Postgres keyed projections save an otherwise unchanged
+    checkpoint only once `upTo` is 10,000 past it, against write amplification on a busy log.
+    The guarantee rests on sequence order being commit order (one writer to `events`), which
+    makes the constructor mode of item 15 more urgent.
 
 ## The view subsystem (consolidates items 1, 5, 7, 8, 14)
 
@@ -506,8 +528,8 @@ Design points:
   check re-reads the union query from 0. The snapshot still avoids re-*applying*, not
   re-*reading*. In practice bounded by the narrow tag queries; rarely a problem. The proper fix,
   if it ever is: bounded per-projection reads — pin the store head H, read each projection's
-  delta from its own checkpoint up to H, set the condition's `After = H`. That requires `head()`
-  and an `until` read option the interface deliberately lacks today. Noted, not built.
+  delta from its own checkpoint up to H, set the condition's `After = H`. `Read` now returns H
+  (item 20); the `until` read option is still missing. Noted, not built.
 
 ## Decision record: partitioned snapshots — from a type to a parameter
 

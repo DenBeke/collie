@@ -17,12 +17,16 @@ The central interface has two methods — append events and read them back:
 
 ```go
 type Store interface {
-    Read(ctx context.Context, query Query, after uint64) iter.Seq2[SequencedEvent, error]
+    Read(ctx context.Context, query Query, after uint64) (iter.Seq2[SequencedEvent, error], uint64, error)
     Append(ctx context.Context, events []Event, condition *AppendCondition) error
 }
 ```
 
 Implement this interface to back the event store with any storage engine. In-memory and PostgreSQL implementations are provided.
+
+Besides the events, `Read` returns the **head**: the store's last sequence number when `Read` was called. Once the events have been iterated completely and without an error, every matching event up to the head has been seen, even when none matched. So `max(head, last event seen)` is how far a reader has checked the log, and it is what `BuildDecisionModel` and `UpdateProjection` record. A projection on a rare event type therefore keeps moving with the log instead of staying at its last matching event, and an append condition only has to check the writes that landed during the decision. After a `break` or an error, the head promises nothing. The events stay lazy, so `Read` without iterating is a cheap way to learn the head.
+
+This relies on sequence order being commit order: the PostgreSQL store guarantees it with one writer to `events` (the global append lock, or the single flusher in staging mode), so never mix `Append` and `AppendStaging` on one database. The head and the events must also come from the same server; spreading reads over replicas with different lag would let a head from one overclaim the events of another.
 
 ### Events
 
@@ -139,7 +143,7 @@ For large event streams, replaying every matching event on each command becomes 
 type CheckpointProjection interface {
     Projection
     After() uint64
-    Checkpoint(ctx context.Context) error
+    Checkpoint(ctx context.Context, upTo uint64) error
 }
 ```
 
@@ -152,6 +156,11 @@ type storedProjection[S any] struct {
 }
 
 func (s *storedProjection[S]) After() uint64 { return s.after }
+
+func (s *storedProjection[S]) Checkpoint(_ context.Context, upTo uint64) error {
+    s.after = max(s.after, upTo)
+    return nil
+}
 ```
 
 The caller only changes how the projection is constructed — `BuildDecisionModel`, the business rule check, and `Append` stay the same. When multiple projections are passed, the read starts from the lowest checkpoint and each projection skips events it has already processed.
@@ -166,9 +175,11 @@ It is a `Projection` that also reports and records its position:
 type CheckpointProjection interface {
     Projection          // EventQuery() QueryItem; Apply(context.Context, SequencedEvent) error
     After() uint64
-    Checkpoint(ctx context.Context) error
+    Checkpoint(ctx context.Context, upTo uint64) error
 }
 ```
+
+`Checkpoint` closes a catch-up: every matching event up to `upTo` has been applied, so the projection records `max(After(), upTo)`. It is only called after a complete, error-free catch-up. The provided implementations save an otherwise unchanged checkpoint only once `upTo` is 10,000 past it, so a busy log does not turn every catch-up into a write.
 
 Two implementations are provided:
 

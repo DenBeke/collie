@@ -59,10 +59,10 @@ func (s *MiddlewareStore) Append(ctx context.Context, events []Event, condition 
 	return s.inner.Append(ctx, processed, condition)
 }
 
-func (s *MiddlewareStore) Read(ctx context.Context, query Query, after uint64) iter.Seq2[SequencedEvent, error] {
-	inner := s.inner.Read(ctx, query, after)
-	if len(s.read) == 0 {
-		return inner
+func (s *MiddlewareStore) Read(ctx context.Context, query Query, after uint64) (iter.Seq2[SequencedEvent, error], uint64, error) {
+	inner, head, err := s.inner.Read(ctx, query, after)
+	if err != nil || len(s.read) == 0 {
+		return inner, head, err
 	}
 	return func(yield func(SequencedEvent, error) bool) {
 		for e, err := range inner {
@@ -81,5 +81,5 @@ func (s *MiddlewareStore) Read(ctx context.Context, query Query, after uint64) i
 				return
 			}
 		}
-	}
+	}, head, nil
 }

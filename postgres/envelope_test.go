@@ -21,7 +21,11 @@ func stamped(store *pgstore.Store, options ...envelope.Option) *eventstore.Middl
 func readAll(t *testing.T, store eventstore.Store) []eventstore.SequencedEvent {
 	t.Helper()
 	var events []eventstore.SequencedEvent
-	for e, err := range store.Read(context.Background(), nil, 0) {
+	stream, _, err := store.Read(context.Background(), nil, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for e, err := range stream {
 		if err != nil {
 			t.Fatalf("read: %v", err)
 		}

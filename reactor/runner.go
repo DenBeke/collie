@@ -252,8 +252,12 @@ func (r *Runner) tick(ctx context.Context, reg *registration) error {
 // command appends to the store being read, and a store that holds a read lock
 // across iteration, as the in-memory one does, would deadlock against it.
 func (r *Runner) read(ctx context.Context, after uint64) ([]eventstore.SequencedEvent, error) {
+	stream, _, err := r.store.Read(ctx, everyEvent, after)
+	if err != nil {
+		return nil, err
+	}
 	events := make([]eventstore.SequencedEvent, 0, 64)
-	for event, err := range r.store.Read(ctx, everyEvent, after) {
+	for event, err := range stream {
 		if err != nil {
 			return nil, err
 		}
@@ -321,8 +325,8 @@ func (r *Runner) react(ctx context.Context, reg *registration, event eventstore.
 
 // load resolves a reactor's starting position once per process: the persisted
 // checkpoint, else the head of the log — or 0 for a deliberate replay. The
-// chosen position is written straight back, so the head scan is paid once per
-// name ever and a restart in between resumes rather than skips.
+// chosen position is written straight back, so a restart in between resumes
+// rather than skips.
 func (r *Runner) load(ctx context.Context, reg *registration) error {
 	if reg.loaded {
 		return nil
@@ -351,16 +355,12 @@ func (r *Runner) load(ctx context.Context, reg *registration) error {
 	return nil
 }
 
-// head returns the sequence number of the last event by scanning the log once.
-// The Store interface exposes no "latest": this is the price of starting from
-// now, and [Runner.load] pays it a single time per reactor name.
+// head returns the sequence number of the last event. Read returns it without
+// the events being iterated, so nothing is read.
 func (r *Runner) head(ctx context.Context) (uint64, error) {
-	var head uint64
-	for event, err := range r.store.Read(ctx, everyEvent, 0) {
-		if err != nil {
-			return 0, fmt.Errorf("could not read the event log: %w", err)
-		}
-		head = event.SequenceNumber
+	_, head, err := r.store.Read(ctx, everyEvent, 0)
+	if err != nil {
+		return 0, fmt.Errorf("could not read the head of the event log: %w", err)
 	}
 	return head, nil
 }

@@ -86,7 +86,11 @@ func TestMemoryMultiValueTagsRoundTrip(t *testing.T) {
 	}
 
 	count := 0
-	for e, err := range store.Read(ctx, eventstore.Query{{Tags: eventstore.NewTags("account", "A")}}, 0) {
+	stream, _, err := store.Read(ctx, eventstore.Query{{Tags: eventstore.NewTags("account", "A")}}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for e, err := range stream {
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -99,7 +103,11 @@ func TestMemoryMultiValueTagsRoundTrip(t *testing.T) {
 		t.Errorf("account A: got %d events, want 1", count)
 	}
 
-	for _, err := range store.Read(ctx, eventstore.Query{{Tags: eventstore.NewTags("account", "C")}}, 0) {
+	stream, _, err = store.Read(ctx, eventstore.Query{{Tags: eventstore.NewTags("account", "C")}}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, err := range stream {
 		if err != nil {
 			t.Fatal(err)
 		}

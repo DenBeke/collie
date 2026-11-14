@@ -27,7 +27,11 @@ func collectEvents(t *testing.T, store eventstore.Store, query eventstore.Query)
 	t.Helper()
 	ctx := context.Background()
 	var events []eventstore.SequencedEvent
-	for e, err := range store.Read(ctx, query, 0) {
+	stream, _, err := store.Read(ctx, query, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for e, err := range stream {
 		if err != nil {
 			t.Fatalf("unexpected read error: %v", err)
 		}
