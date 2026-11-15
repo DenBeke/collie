@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -208,20 +209,46 @@ func sortEntries[V any](out []keyedprojection.Entry[V], order []keyedprojection.
 	return nil
 }
 
+// compare orders two field values as keyedprojection.SortKey says: numbers
+// first, then text, then null.
 func compare(a, b any) int {
-	if fa, ok := a.(float64); ok {
-		if fb, ok := b.(float64); ok {
-			switch {
-			case fa < fb:
-				return -1
-			case fa > fb:
-				return 1
-			default:
-				return 0
-			}
-		}
+	ra, rb := sortRank(a), sortRank(b)
+	if ra != rb {
+		return cmp.Compare(ra, rb)
 	}
-	return strings.Compare(fmt.Sprint(a), fmt.Sprint(b))
+	switch ra {
+	case rankNumber:
+		return cmp.Compare(a.(float64), b.(float64))
+	case rankText:
+		return strings.Compare(sortText(a), sortText(b))
+	}
+	return 0
+}
+
+const (
+	rankNumber = iota
+	rankText
+	rankNull
+)
+
+func sortRank(v any) int {
+	switch v.(type) {
+	case nil:
+		return rankNull
+	case float64:
+		return rankNumber
+	}
+	return rankText
+}
+
+// sortText is the text a value that is not a number sorts by: a string as it
+// is, anything else as its JSON.
+func sortText(v any) string {
+	if s, ok := v.(string); ok {
+		return s
+	}
+	raw, _ := json.Marshal(v)
+	return string(raw)
 }
 
 // fieldsOf renders a folded value as the field map filters and ordering work

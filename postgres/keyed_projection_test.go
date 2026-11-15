@@ -2,6 +2,7 @@ package postgres_test
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	eventstore "github.com/DenBeke/collie"
@@ -316,5 +317,62 @@ func TestKeyedProjectionAdvancesOverASparseLog(t *testing.T) {
 	}
 	if reopened.After() != 10_001 {
 		t.Fatalf("reopened after=%d, want 10001", reopened.After())
+	}
+}
+
+// TestPgKeyedOrder holds Postgres to the lists the memory implementation gives
+// in TestKeyedProjectionOrder: numbers by value and text byte by byte, whatever
+// the collation of the database.
+func TestPgKeyedOrder(t *testing.T) {
+	db := setupDB(t)
+	if err := postgres.MigrateProjections(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	ctx := context.Background()
+	store := memory.New()
+	for id, d := range map[string]kpJob{
+		"j1": {Title: "Banana", Rank: 10},
+		"j2": {Title: "cherry", Rank: 9},
+		"j3": {Title: "apple", Rank: 100},
+	} {
+		e, err := eventstore.NewEvent("JobCreated", d, eventstore.NewTags("jobId", id))
+		if err != nil {
+			t.Fatalf("new event: %v", err)
+		}
+		if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+	}
+	jobs, err := postgres.NewKeyedProjection[kpJob](db, "JobsSorted", eventstore.QueryItem{Types: []string{"JobCreated"}}, kpHandler{})
+	if err != nil {
+		t.Fatalf("new keyed projection: %v", err)
+	}
+	if err := eventstore.UpdateProjection(ctx, store, jobs); err != nil {
+		t.Fatalf("catch up: %v", err)
+	}
+	// The order must not depend on the index being there.
+	if err := jobs.MigrateFieldIndexes("rank", "title"); err != nil {
+		t.Fatalf("MigrateFieldIndexes: %v", err)
+	}
+
+	for _, test := range []struct {
+		order keyedprojection.SortKey
+		want  []string
+	}{
+		{keyedprojection.SortKey{Field: "rank"}, []string{"j2", "j1", "j3"}},
+		{keyedprojection.SortKey{Field: "rank", Desc: true}, []string{"j3", "j1", "j2"}},
+		{keyedprojection.SortKey{Field: "title"}, []string{"j1", "j3", "j2"}},
+	} {
+		got, err := jobs.List(ctx, keyedprojection.ListQuery{Order: []keyedprojection.SortKey{test.order}})
+		if err != nil {
+			t.Fatalf("List by %+v: %v", test.order, err)
+		}
+		keys := make([]string, len(got))
+		for i, entry := range got {
+			keys[i] = entry.Key
+		}
+		if !slices.Equal(keys, test.want) {
+			t.Errorf("order by %+v = %v, want %v", test.order, keys, test.want)
+		}
 	}
 }

@@ -43,7 +43,12 @@ type FieldEquals struct {
 	Value any
 }
 
-// SortKey orders results by one field of the folded state.
+// SortKey orders results by one field of the folded state, named as it is in
+// the value's JSON.
+//
+// The order is the same in every backend: numbers first, by value; then
+// everything else by its text, byte by byte, so "Zoe" sorts before "adam"; and
+// last the rows whose field is null. Desc reverses all of it.
 type SortKey struct {
 	Field string
 	Desc  bool

@@ -2,6 +2,7 @@ package keyedprojection_test
 
 import (
 	"context"
+	"slices"
 	"testing"
 
 	eventstore "github.com/DenBeke/collie"
@@ -265,4 +266,42 @@ func keysOf[V any](es []keyedprojection.Entry[V]) []string {
 		out = append(out, e.Key)
 	}
 	return out
+}
+
+// TestKeyedProjectionOrder pins the order SortKey describes: numbers by value,
+// so 9 before 10, and text byte by byte, so "Banana" before "apple". The
+// Postgres test of the same name holds that implementation to the same lists.
+func TestKeyedProjectionOrder(t *testing.T) {
+	store := memory.New()
+	for id, d := range map[string]job{
+		"j1": {Title: "Banana", Rank: 10},
+		"j2": {Title: "cherry", Rank: 9},
+		"j3": {Title: "apple", Rank: 100},
+	} {
+		e, err := eventstore.NewEvent("JobCreated", d, eventstore.NewTags("jobId", id))
+		if err != nil {
+			t.Fatalf("new event: %v", err)
+		}
+		if err := store.Append(context.Background(), []eventstore.Event{e}, nil); err != nil {
+			t.Fatalf("append: %v", err)
+		}
+	}
+	jobs := newMemoryJobs(t, store)
+
+	for _, test := range []struct {
+		order keyedprojection.SortKey
+		want  []string
+	}{
+		{keyedprojection.SortKey{Field: "rank"}, []string{"j2", "j1", "j3"}},
+		{keyedprojection.SortKey{Field: "rank", Desc: true}, []string{"j3", "j1", "j2"}},
+		{keyedprojection.SortKey{Field: "title"}, []string{"j1", "j3", "j2"}},
+	} {
+		got, err := jobs.List(context.Background(), keyedprojection.ListQuery{Order: []keyedprojection.SortKey{test.order}})
+		if err != nil {
+			t.Fatalf("List by %+v: %v", test.order, err)
+		}
+		if keys := keysOf(got); !slices.Equal(keys, test.want) {
+			t.Errorf("order by %+v = %v, want %v", test.order, keys, test.want)
+		}
+	}
 }

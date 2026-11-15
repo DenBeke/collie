@@ -236,7 +236,10 @@ func (p *KeyedProjection[V]) List(ctx context.Context, q keyedprojection.ListQue
 		if s.Desc {
 			dir = "DESC"
 		}
-		db = db.Order(fmt.Sprintf("value->>'%s' %s", s.Field, dir))
+		// NULLS LAST is the default ascending and NULLS FIRST descending, so
+		// the two directions are each other's reverse.
+		number, text := sortExpressions(s.Field)
+		db = db.Order(number + " " + dir).Order(text + " " + dir)
 	}
 	db = db.Order("key ASC") // stable tiebreaker, always last
 
@@ -261,11 +264,36 @@ func (p *KeyedProjection[V]) List(ctx context.Context, q keyedprojection.ListQue
 	return out, nil
 }
 
-// MigrateFieldIndexes creates an expression index per field a caller filters or
-// sorts on. Without them List scans the projection's rows and parses jsonb for
-// each one.
+// sortExpressions returns the two expressions a field is ordered by, which
+// together give the order keyedprojection.SortKey describes: the field as a
+// number when it is one, and otherwise its text, compared byte by byte. Each is
+// NULL where the other applies, and both are NULL for a field that is null or
+// absent. field must have passed checkField. The sort index holds the same two
+// expressions, so List and MigrateFieldIndexes must both take them from here.
+func sortExpressions(field string) (number, text string) {
+	number = fmt.Sprintf(`(CASE WHEN jsonb_typeof(value->'%[1]s') = 'number' THEN (value->>'%[1]s')::numeric END)`, field)
+	text = fmt.Sprintf(`(CASE WHEN jsonb_typeof(value->'%[1]s') <> 'number' THEN value->>'%[1]s' END COLLATE "C")`, field)
+	return number, text
+}
+
+// MigrateFieldIndexes creates two indexes per field a caller filters or sorts
+// on: one for Where, one for Order. Without them List scans the projection's
+// rows and parses jsonb for each one.
 func (p *KeyedProjection[V]) MigrateFieldIndexes(fields ...string) error {
-	return p.migrateIndexes("value", fields)
+	if err := p.migrateIndexes("value", fields); err != nil {
+		return err
+	}
+	for _, field := range fields {
+		number, text := sortExpressions(field)
+		sql := fmt.Sprintf(
+			`CREATE INDEX IF NOT EXISTS idx_%s_order_%s ON projection_rows (%s, %s, key) WHERE projection_name = '%s'`,
+			p.name, field, number, text, p.name,
+		)
+		if err := p.db.Exec(sql).Error; err != nil {
+			return fmt.Errorf("could not index the order on %s for projection %q: %w", field, p.name, err)
+		}
+	}
+	return nil
 }
 
 // MigrateTagIndexes does the same for tag filters.

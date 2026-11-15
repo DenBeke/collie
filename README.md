@@ -308,7 +308,8 @@ page, err := profiles.List(ctx, keyedprojection.ListQuery{
 `Where` filters on fields of the folded value; `Tags` filters on the tags of the
 events folded into it, accumulated across all of them. Field names are values,
 never fragments of SQL, and anything that is not a plain identifier is refused —
-so a `?sort=` parameter can be passed through safely.
+so a `?sort=` parameter can be passed through safely. `Order` sorts numbers by
+value and text byte by byte, the same in both implementations.
 
 For anything you filter or sort on regularly, add the indexes:
 
