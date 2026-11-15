@@ -2,6 +2,7 @@ package memory_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/DenBeke/collie"
@@ -47,4 +48,32 @@ func TestRead_HeadIsTakenAtCall(t *testing.T) {
 	if last != 3 {
 		t.Fatalf("last=%d, want 3", last)
 	}
+}
+
+// Without a tag the condition is not keyable. The default store refuses it, as
+// the PostgreSQL store does by default; WithGlobalLock takes it, as there.
+func TestAppend_UnkeyableCondition(t *testing.T) {
+	condition := &eventstore.AppendCondition{Query: eventstore.Query{{Types: []string{"Other"}}}}
+
+	err := appendOtherIf(t, memory.New(), condition)
+	if !errors.Is(err, eventstore.ErrUnkeyableCondition) {
+		t.Fatalf("default store: got %v, want ErrUnkeyableCondition", err)
+	}
+
+	global := memory.New(memory.WithGlobalLock())
+	if err := appendOtherIf(t, global, condition); err != nil {
+		t.Fatalf("WithGlobalLock: %v", err)
+	}
+	if err := appendOtherIf(t, global, condition); !errors.Is(err, eventstore.ErrAppendConditionViolated) {
+		t.Fatalf("WithGlobalLock, second append: got %v, want ErrAppendConditionViolated", err)
+	}
+}
+
+func appendOtherIf(t *testing.T, store *memory.Store, condition *eventstore.AppendCondition) error {
+	t.Helper()
+	event, err := eventstore.NewEvent("Other", nil, eventstore.NewTags("id", "1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store.Append(context.Background(), []eventstore.Event{event}, condition)
 }

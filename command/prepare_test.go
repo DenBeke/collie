@@ -47,6 +47,7 @@ func (cmd *preparingCommand) Prepare(context.Context) error {
 func (cmd *preparingCommand) Projections(context.Context) ([]eventstore.Projection, error) {
 	return []eventstore.Projection{
 		&eventstore.DefaultProjection[int]{
+			Query: eventstore.QueryItem{Tags: touched},
 			Handlers: map[string]eventstore.HandleFunc[int]{
 				"Touched": func(seen int, _ eventstore.SequencedEvent) (int, error) { return seen + 1, nil },
 			},
@@ -58,7 +59,7 @@ func (cmd *preparingCommand) Decide(ctx context.Context) ([]eventstore.Event, er
 	cmd.state.decided = append(cmd.state.decided, cmd.token)
 	if !cmd.state.injected {
 		cmd.state.injected = true
-		competing, err := eventstore.NewEvent("Touched", nil, nil)
+		competing, err := eventstore.NewEvent("Touched", nil, touched)
 		if err != nil {
 			return nil, fmt.Errorf("could not create competing event: %w", err)
 		}
@@ -66,7 +67,7 @@ func (cmd *preparingCommand) Decide(ctx context.Context) ([]eventstore.Event, er
 			return nil, fmt.Errorf("could not append competing event: %w", err)
 		}
 	}
-	event, err := eventstore.NewEvent("Touched", nil, nil)
+	event, err := eventstore.NewEvent("Touched", nil, touched)
 	if err != nil {
 		return nil, fmt.Errorf("could not create Touched event: %w", err)
 	}

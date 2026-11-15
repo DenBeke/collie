@@ -252,6 +252,11 @@ func (unconditionalCommand) Decide(context.Context) ([]eventstore.Event, error) 
 // Execute runs each attempt on a shallow copy of the command, so cross-attempt
 // bookkeeping lives behind a pointer field the copies share — the documented
 // way to carry state across attempts.
+// touched is the boundary every Touched event in these tests belongs to. The
+// commands below decide on all of them, and a condition needs a tag to be
+// keyable, so the events carry a constant one.
+var touched = eventstore.NewTags("touched", "all")
+
 type conflictState struct {
 	attempts int
 	injected bool
@@ -270,7 +275,7 @@ func (cmd *conflictOnce) Projections(context.Context) ([]eventstore.Projection, 
 	cmd.state.attempts++
 	return []eventstore.Projection{
 		&eventstore.DefaultProjection[int]{
-			Query: eventstore.QueryItem{Types: []string{"Touched"}},
+			Query: eventstore.QueryItem{Types: []string{"Touched"}, Tags: touched},
 			Handlers: map[string]eventstore.HandleFunc[int]{
 				"Touched": func(seen int, _ eventstore.SequencedEvent) (int, error) { return seen + 1, nil },
 			},
@@ -281,7 +286,7 @@ func (cmd *conflictOnce) Projections(context.Context) ([]eventstore.Projection, 
 func (cmd *conflictOnce) Decide(ctx context.Context) ([]eventstore.Event, error) {
 	if !cmd.state.injected {
 		cmd.state.injected = true
-		competing, err := eventstore.NewEvent("Touched", nil, nil)
+		competing, err := eventstore.NewEvent("Touched", nil, touched)
 		if err != nil {
 			return nil, fmt.Errorf("could not create competing event: %w", err)
 		}
@@ -289,7 +294,7 @@ func (cmd *conflictOnce) Decide(ctx context.Context) ([]eventstore.Event, error)
 			return nil, fmt.Errorf("could not append competing event: %w", err)
 		}
 	}
-	event, err := eventstore.NewEvent("Touched", nil, nil)
+	event, err := eventstore.NewEvent("Touched", nil, touched)
 	if err != nil {
 		return nil, fmt.Errorf("could not create Touched event: %w", err)
 	}
@@ -314,6 +319,7 @@ func (cmd *cachingCommand) Projections(context.Context) ([]eventstore.Projection
 	cmd.state.attempts++
 	if cmd.seen == nil {
 		cmd.seen = &eventstore.DefaultProjection[int]{
+			Query: eventstore.QueryItem{Tags: touched},
 			Handlers: map[string]eventstore.HandleFunc[int]{
 				"Touched": func(seen int, _ eventstore.SequencedEvent) (int, error) { return seen + 1, nil },
 			},
@@ -328,7 +334,7 @@ func (cmd *cachingCommand) Decide(ctx context.Context) ([]eventstore.Event, erro
 	}
 	if !cmd.state.injected {
 		cmd.state.injected = true
-		competing, err := eventstore.NewEvent("Touched", nil, nil)
+		competing, err := eventstore.NewEvent("Touched", nil, touched)
 		if err != nil {
 			return nil, fmt.Errorf("could not create competing event: %w", err)
 		}
@@ -336,7 +342,7 @@ func (cmd *cachingCommand) Decide(ctx context.Context) ([]eventstore.Event, erro
 			return nil, fmt.Errorf("could not append competing event: %w", err)
 		}
 	}
-	event, err := eventstore.NewEvent("Touched", nil, nil)
+	event, err := eventstore.NewEvent("Touched", nil, touched)
 	if err != nil {
 		return nil, fmt.Errorf("could not create Touched event: %w", err)
 	}

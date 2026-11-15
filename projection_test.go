@@ -10,9 +10,14 @@ import (
 )
 
 // wanted is a stored projection over a type the seeded log never contains.
+// tested is the boundary appendOne puts every event on, and wanted decides on:
+// a condition needs a tag to be keyable.
+var tested = eventstore.NewTags("tested", "all")
+
 func wanted() *storedProjection[int] {
 	return &storedProjection[int]{
 		DefaultProjection: eventstore.DefaultProjection[int]{
+			Query: eventstore.QueryItem{Tags: tested},
 			Handlers: map[string]eventstore.HandleFunc[int]{
 				"Wanted": func(n int, _ eventstore.SequencedEvent) (int, error) { return n + 1, nil },
 			},
@@ -22,7 +27,7 @@ func wanted() *storedProjection[int] {
 
 func appendOne(t *testing.T, store eventstore.Store, eventType string, condition *eventstore.AppendCondition) error {
 	t.Helper()
-	event, err := eventstore.NewEvent(eventType, nil, nil)
+	event, err := eventstore.NewEvent(eventType, nil, tested)
 	if err != nil {
 		t.Fatal(err)
 	}

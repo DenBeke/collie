@@ -176,6 +176,7 @@ func (cmd *quoteShipping) Projections(context.Context) ([]eventstore.Projection,
 	cmd.attempts.n++
 	return []eventstore.Projection{
 		&eventstore.DefaultProjection[int]{
+			Query: eventstore.QueryItem{Tags: eventstore.NewTags("order", cmd.Order)},
 			Handlers: map[string]eventstore.HandleFunc[int]{
 				"ShippingQuoted": func(n int, _ eventstore.SequencedEvent) (int, error) { return n + 1, nil },
 			},
@@ -188,7 +189,7 @@ func (cmd *quoteShipping) Decide(ctx context.Context) ([]eventstore.Event, error
 	// conflicts once and the retry path actually runs.
 	if !cmd.attempts.injected {
 		cmd.attempts.injected = true
-		competing, err := eventstore.NewEvent("ShippingQuoted", 0, eventstore.NewTags("order", "other"))
+		competing, err := eventstore.NewEvent("ShippingQuoted", 0, eventstore.NewTags("order", cmd.Order))
 		if err != nil {
 			return nil, fmt.Errorf("could not create competing event: %w", err)
 		}

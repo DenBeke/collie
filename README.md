@@ -451,7 +451,8 @@ disjoint boundaries run concurrently while sequence numbers stay gap-free and in
   shows it; retry with a backoff longer than the flush interval.
 - **Every condition item needs a type and a tag**, or `Append` returns `ErrUnkeyableCondition`.
   To make a whole kind of event one boundary, give each of those events a constant tag
-  (`directory: peppol`) and put it in the condition.
+  (`directory: peppol`) and put it in the condition. The in-memory store applies the same
+  rule, so a test catches it; `memory.New(memory.WithGlobalLock())` lifts it there too.
 
 `WithGlobalLock()` is the other mode: every append serializes on one global advisory lock and is
 readable as soon as `Append` returns, conditions need no tags, and there is no flusher.

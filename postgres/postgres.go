@@ -7,7 +7,6 @@ import (
 	"database/sql/driver"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"hash/fnv"
 	"iter"
@@ -27,15 +26,16 @@ import (
 // 0x4443425F617070 is ASCII for "DCB_app".
 const appendLock int64 = 0x4443425F617070
 
-// ErrUnkeyableCondition is returned by Append in staging mode (the default)
-// when the condition cannot be reduced to a finite set of (type,tag,value)
-// boundaries — a match-all (empty Query) or any item missing a type or a tag.
-// Such a condition would need the global lock, which does NOT compose with the
-// per-boundary locks (the two share no advisory key, so a conflict between a
-// global-lock append and a per-boundary append would go unnoticed). Give every
-// query item at least one type AND one tag (a constant tag on every event of a
-// kind names a boundary over all of them), or use WithGlobalLock.
-var ErrUnkeyableCondition = errors.New("append condition is not keyable: the query must be non-empty and every item needs at least one type and one tag")
+// ErrUnkeyableCondition is eventstore.ErrUnkeyableCondition, so errors.Is
+// matches either. Append returns it in staging mode (the default) when the condition
+// cannot be reduced to a finite set of (type,tag,value) boundaries: a match-all
+// (empty Query) or any item missing a type or a tag. Such a condition would
+// need the global lock, which does NOT compose with the per-boundary locks (the
+// two share no advisory key, so a conflict between a global-lock append and a
+// per-boundary append would go unnoticed). Give every query item at least one
+// type AND one tag (a constant tag on every event of a kind names a boundary
+// over all of them), or use WithGlobalLock.
+var ErrUnkeyableCondition = eventstore.ErrUnkeyableCondition
 
 // Compile-time check that Store implements eventstore.Store.
 var _ eventstore.Store = (*Store)(nil)
@@ -580,13 +580,10 @@ func lockKey(eventType, tagKey, tagValue string) int64 {
 func boundaryLockKeys(events []eventstore.Event, cond *eventstore.AppendCondition) (keys []int64, keyable bool) {
 	set := make(map[int64]struct{})
 	if cond != nil {
-		if len(cond.Query) == 0 {
-			return nil, false // match-all => global lock
+		if !cond.Keyable() {
+			return nil, false // match-all, type-less or tag-less => global lock
 		}
 		for _, item := range cond.Query {
-			if len(item.Types) == 0 || len(item.Tags) == 0 {
-				return nil, false // type-less or tag-less => global lock
-			}
 			for _, t := range item.Types {
 				for _, tag := range item.Tags {
 					set[lockKey(t, tag.Key, tag.Value)] = struct{}{}

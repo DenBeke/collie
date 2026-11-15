@@ -38,6 +38,7 @@ type authorizingCommand struct {
 func (cmd *authorizingCommand) Projections(context.Context) ([]eventstore.Projection, error) {
 	return []eventstore.Projection{
 		&eventstore.DefaultProjection[int]{
+			Query: eventstore.QueryItem{Tags: touched},
 			Handlers: map[string]eventstore.HandleFunc[int]{
 				"Touched": func(seen int, _ eventstore.SequencedEvent) (int, error) { return seen + 1, nil },
 			},
@@ -54,7 +55,7 @@ func (cmd *authorizingCommand) Decide(ctx context.Context) ([]eventstore.Event, 
 	cmd.state.decided++
 	if cmd.conflict && !cmd.state.injected {
 		cmd.state.injected = true
-		competing, err := eventstore.NewEvent("Touched", nil, nil)
+		competing, err := eventstore.NewEvent("Touched", nil, touched)
 		if err != nil {
 			return nil, fmt.Errorf("could not create competing event: %w", err)
 		}
@@ -62,7 +63,7 @@ func (cmd *authorizingCommand) Decide(ctx context.Context) ([]eventstore.Event, 
 			return nil, fmt.Errorf("could not append competing event: %w", err)
 		}
 	}
-	event, err := eventstore.NewEvent("Touched", nil, nil)
+	event, err := eventstore.NewEvent("Touched", nil, touched)
 	if err != nil {
 		return nil, fmt.Errorf("could not create Touched event: %w", err)
 	}
@@ -232,6 +233,7 @@ func (cmd *gatedCommand) Authorize(context.Context) error {
 func (cmd *gatedCommand) Projections(context.Context) ([]eventstore.Projection, error) {
 	return []eventstore.Projection{
 		&eventstore.DefaultProjection[int]{
+			Query: eventstore.QueryItem{Tags: touched},
 			Handlers: map[string]eventstore.HandleFunc[int]{
 				"Touched": func(seen int, _ eventstore.SequencedEvent) (int, error) { return seen + 1, nil },
 			},
@@ -241,7 +243,7 @@ func (cmd *gatedCommand) Projections(context.Context) ([]eventstore.Projection, 
 
 func (cmd *gatedCommand) Decide(context.Context) ([]eventstore.Event, error) {
 	cmd.state.calls = append(cmd.state.calls, "decide")
-	event, err := eventstore.NewEvent("Touched", nil, nil)
+	event, err := eventstore.NewEvent("Touched", nil, touched)
 	if err != nil {
 		return nil, fmt.Errorf("could not create Touched event: %w", err)
 	}
