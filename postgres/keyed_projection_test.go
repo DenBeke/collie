@@ -376,3 +376,37 @@ func TestPgKeyedOrder(t *testing.T) {
 		}
 	}
 }
+
+// TestMigrateProjectionsKeepsTheRowsOfARenamedTable: a database from before
+// projection_rows became projection_entries keeps what its keyed projections
+// had folded.
+func TestMigrateProjectionsKeepsTheRowsOfARenamedTable(t *testing.T) {
+	db := setupDB(t)
+	if err := postgres.MigrateProjections(db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	jobs, err := postgres.NewKeyedProjection[kpJob](db, "JobsRenamed",
+		eventstore.QueryItem{Types: []string{"JobCreated", "JobDetailsChanged", "JobDeleted"}}, kpHandler{})
+	if err != nil {
+		t.Fatalf("new keyed projection: %v", err)
+	}
+	if err := eventstore.UpdateProjection(context.Background(), kpSeed(t), jobs); err != nil {
+		t.Fatalf("catch up: %v", err)
+	}
+	if err := db.Exec(`ALTER TABLE projection_entries RENAME TO projection_rows`).Error; err != nil {
+		t.Fatalf("could not put the old table name back: %v", err)
+	}
+
+	for range 2 { // the second run finds nothing left to rename
+		if err := postgres.MigrateProjections(db); err != nil {
+			t.Fatalf("migrate: %v", err)
+		}
+	}
+	got, err := jobs.List(context.Background(), keyedprojection.ListQuery{})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("after the rename there are %d rows, want 3", len(got))
+	}
+}

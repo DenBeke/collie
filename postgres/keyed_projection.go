@@ -13,7 +13,7 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-// KeyedProjection stores one value per key in projection_rows and serves them
+// KeyedProjection stores one value per key in projection_entries and serves them
 // back.
 //
 // It supersedes RowProjection, which it shares a table with, and differs in
@@ -150,7 +150,7 @@ func (p *KeyedProjection[V]) Apply(ctx context.Context, e eventstore.SequencedEv
 
 		if next == nil {
 			return tx.Where("projection_name = ? AND key = ?", p.name, key).
-				Delete(&projectionRow{}).Error
+				Delete(&projectionEntry{}).Error
 		}
 
 		value, err := json.Marshal(next)
@@ -164,7 +164,7 @@ func (p *KeyedProjection[V]) Apply(ctx context.Context, e eventstore.SequencedEv
 		return tx.Clauses(clause.OnConflict{
 			Columns:   []clause.Column{{Name: "projection_name"}, {Name: "key"}},
 			DoUpdates: clause.AssignmentColumns([]string{"value", "tags"}),
-		}).Create(&projectionRow{
+		}).Create(&projectionEntry{
 			ProjectionName: p.name, Key: key, Value: value, Tags: merged,
 		}).Error
 	})
@@ -185,7 +185,7 @@ func (p *KeyedProjection[V]) Apply(ctx context.Context, e eventstore.SequencedEv
 var errAlreadyApplied = fmt.Errorf("event already applied")
 
 func (p *KeyedProjection[V]) Get(ctx context.Context, key string) (keyedprojection.Entry[V], bool, error) {
-	var row projectionRow
+	var row projectionEntry
 	err := p.db.WithContext(ctx).
 		Where("projection_name = ? AND key = ?", p.name, key).First(&row).Error
 	if err == gorm.ErrRecordNotFound {
@@ -206,7 +206,7 @@ const DefaultPageSize = 100
 
 func (p *KeyedProjection[V]) List(ctx context.Context, q keyedprojection.ListQuery) ([]keyedprojection.Entry[V], error) {
 	db := p.db.WithContext(ctx).
-		Model(&projectionRow{}).
+		Model(&projectionEntry{}).
 		Where("projection_name = ?", p.name)
 
 	// Field names are bound, not interpolated: Postgres accepts a parameter as
@@ -249,7 +249,7 @@ func (p *KeyedProjection[V]) List(ctx context.Context, q keyedprojection.ListQue
 	}
 	db = db.Offset(q.Offset).Limit(limit)
 
-	var rows []projectionRow
+	var rows []projectionEntry
 	if err := db.Find(&rows).Error; err != nil {
 		return nil, fmt.Errorf("could not list projection %q: %w", p.name, err)
 	}
@@ -286,7 +286,7 @@ func (p *KeyedProjection[V]) MigrateFieldIndexes(fields ...string) error {
 	for _, field := range fields {
 		number, text := sortExpressions(field)
 		sql := fmt.Sprintf(
-			`CREATE INDEX IF NOT EXISTS idx_%s_order_%s ON projection_rows (%s, %s, key) WHERE projection_name = '%s'`,
+			`CREATE INDEX IF NOT EXISTS idx_%s_order_%s ON projection_entries (%s, %s, key) WHERE projection_name = '%s'`,
 			p.name, field, number, text, p.name,
 		)
 		if err := p.db.Exec(sql).Error; err != nil {
@@ -312,7 +312,7 @@ func (p *KeyedProjection[V]) migrateIndexes(column string, names []string) error
 			return fmt.Errorf("projection name %q cannot be used in an index name: %w", p.name, err)
 		}
 		sql := fmt.Sprintf(
-			`CREATE INDEX IF NOT EXISTS idx_%s_%s_%s ON projection_rows ((%s->>'%s')) WHERE projection_name = '%s'`,
+			`CREATE INDEX IF NOT EXISTS idx_%s_%s_%s ON projection_entries ((%s->>'%s')) WHERE projection_name = '%s'`,
 			p.name, column, name, column, name, p.name,
 		)
 		if err := p.db.Exec(sql).Error; err != nil {
@@ -330,7 +330,7 @@ func (p *KeyedProjection[V]) Reset(ctx context.Context) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	err := p.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := tx.Where("projection_name = ?", p.name).Delete(&projectionRow{}).Error; err != nil {
+		if err := tx.Where("projection_name = ?", p.name).Delete(&projectionEntry{}).Error; err != nil {
 			return err
 		}
 		return tx.Where("projection_name = ?", p.name).Delete(&projectionCheckpoint{}).Error
@@ -356,7 +356,7 @@ func (p *KeyedProjection[V]) loadCheckpoint() error {
 }
 
 func (p *KeyedProjection[V]) loadRow(tx *gorm.DB, key string) (*V, map[string]string, error) {
-	var row projectionRow
+	var row projectionEntry
 	err := tx.Where("projection_name = ? AND key = ?", p.name, key).First(&row).Error
 	if err == gorm.ErrRecordNotFound {
 		return nil, nil, nil

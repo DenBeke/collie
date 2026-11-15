@@ -479,7 +479,7 @@ Call `MigrateProjections` to create the tables used by `postgres.SnapshotStore` 
 postgres.MigrateProjections(db)
 ```
 
-This creates three tables: `projection_checkpoints` (shared position tracking), `projection_snapshots` (snapshot state), and `projection_rows` (per-entity rows), with foreign key constraints from snapshots/rows to checkpoints.
+This creates three tables: `projection_checkpoints` (shared position tracking), `projection_snapshots` (snapshot state), and `projection_entries` (the values of keyed projections), with foreign key constraints from snapshots/entries to checkpoints.
 
 If using encryption, also migrate the key store table:
 
