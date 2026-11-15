@@ -62,7 +62,7 @@ type Command interface {
 // unpaid — belongs to the caller instead: read the projection, make the call,
 // hand the command the result and its premise, and let a rule refuse when the
 // premise has moved. For calls too costly to make twice, see "State-dependent
-// external work" in the README.
+// external work" in docs/state-dependent-external-work.md.
 //
 // Prepare needs a pointer to a struct to have anywhere to store its results;
 // Execute leaves other kinds of command untouched, so Prepare on a value

@@ -1,0 +1,165 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 600" width="960" height="600" role="img" aria-labelledby="t d">
+  <title id="t">How a decision works</title>
+  <desc id="d">A decision reads the events matching its query from the log, folds them into a state, decides, and appends a new event on the condition that no matching event was added after the position it read. If the condition holds the event is appended; if another request appended a matching event first, the append is refused and the decision is retried.</desc>
+  <style>
+    .bg     { fill: #ffffff; stroke: #d0d7de; }
+    .box    { fill: #f6f8fa; stroke: #d0d7de; }
+    .card   { fill: #ffffff; stroke: #d0d7de; }
+    .slot   { fill: none; stroke: #8c959f; stroke-dasharray: 5 4; }
+    .pill   { fill: #eaeef2; }
+    .hot    { fill: #ddf4ff; stroke: #0969da; }
+    .hotpill{ fill: #b6e3ff; }
+    .okbox  { fill: #dafbe1; stroke: #1a7f37; }
+    .badbox { fill: #ffebe9; stroke: #cf222e; }
+    .badge  { fill: #0969da; }
+    .num    { fill: #ffffff; font: 700 13px -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; text-anchor: middle; }
+    .seq    { fill: #656d76; font: 600 12px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; text-anchor: middle; }
+    .t      { fill: #1f2328; font: 13px -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+    .h      { fill: #1f2328; font: 700 16px -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+    .lbl    { fill: #656d76; font: 600 11px -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; letter-spacing: .06em; }
+    .mut    { fill: #656d76; font: 13px -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+    .m      { fill: #1f2328; font: 12.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .mb     { fill: #1f2328; font: 700 12.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    .ok     { fill: #1a7f37; font: 700 14px -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+    .bad    { fill: #cf222e; font: 700 14px -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+    .line   { fill: none; stroke: #656d76; stroke-width: 1.5; }
+    .lineok { fill: none; stroke: #1a7f37; stroke-width: 1.5; }
+    .linebad{ fill: none; stroke: #cf222e; stroke-width: 1.5; }
+    .ah     { fill: #656d76; }
+    .ahok   { fill: #1a7f37; }
+    .ahbad  { fill: #cf222e; }
+    .mark   { stroke: #0969da; stroke-width: 2; }
+    .markt  { fill: #0969da; font: 600 12px -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; text-anchor: middle; }
+    @media (prefers-color-scheme: dark) {
+      .bg     { fill: #0d1117; stroke: #30363d; }
+      .box    { fill: #161b22; stroke: #30363d; }
+      .card   { fill: #0d1117; stroke: #30363d; }
+      .slot   { stroke: #6e7681; }
+      .pill   { fill: #21262d; }
+      .hot    { fill: #121d2f; stroke: #4493f8; }
+      .hotpill{ fill: #1b3a63; }
+      .okbox  { fill: #12261e; stroke: #3fb950; }
+      .badbox { fill: #25171c; stroke: #f85149; }
+      .badge  { fill: #1f6feb; }
+      .seq, .lbl, .mut { fill: #8d96a0; }
+      .t, .h, .m, .mb { fill: #e6edf3; }
+      .ok     { fill: #3fb950; }
+      .bad    { fill: #f85149; }
+      .line   { stroke: #8d96a0; }
+      .lineok { stroke: #3fb950; }
+      .linebad{ stroke: #f85149; }
+      .ah     { fill: #8d96a0; }
+      .ahok   { fill: #3fb950; }
+      .ahbad  { fill: #f85149; }
+      .mark   { stroke: #4493f8; }
+      .markt  { fill: #4493f8; }
+    }
+  </style>
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ah" d="M0 0 10 5 0 10z"/></marker>
+    <marker id="aok" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ahok" d="M0 0 10 5 0 10z"/></marker>
+    <marker id="abad" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="ahbad" d="M0 0 10 5 0 10z"/></marker>
+  </defs>
+
+  <rect class="bg" x=".5" y=".5" width="959" height="599" rx="10"/>
+
+  <!-- The log -->
+  <text class="lbl" x="24" y="34">THE LOG</text>
+
+  <rect class="card" x="24" y="46" width="150" height="64" rx="8"/>
+  <text class="seq" x="42" y="71">1</text>
+  <text class="mb" x="58" y="71">UserSignedUp</text>
+  <rect class="pill" x="36" y="81" width="126" height="20" rx="10"/>
+  <text class="m" x="46" y="95">username=bob</text>
+
+  <rect class="card" x="188" y="46" width="150" height="64" rx="8"/>
+  <text class="seq" x="206" y="71">2</text>
+  <text class="mb" x="222" y="71">EmailVerified</text>
+  <rect class="pill" x="200" y="81" width="126" height="20" rx="10"/>
+  <text class="m" x="210" y="95">username=bob</text>
+
+  <rect class="card" x="352" y="46" width="150" height="64" rx="8"/>
+  <text class="seq" x="370" y="71">3</text>
+  <text class="mb" x="386" y="71">EmailChanged</text>
+  <rect class="pill" x="364" y="81" width="126" height="20" rx="10"/>
+  <text class="m" x="374" y="95">username=bob</text>
+
+  <line class="mark" x1="509" y1="38" x2="509" y2="118"/>
+  <text class="markt" x="509" y="136">position 3</text>
+
+  <rect class="slot" x="516" y="46" width="150" height="64" rx="8"/>
+  <text class="seq" x="534" y="71">4</text>
+  <text class="mut" x="550" y="71">next append</text>
+
+  <text class="mut" x="690" y="66">One log for everything:</text>
+  <text class="mut" x="690" y="86">no streams, no aggregates.</text>
+  <text class="mut" x="690" y="106">Each event has a type and tags.</text>
+
+  <path class="line" d="M168 118V186" marker-end="url(#a)"/>
+  <text class="mut" x="180" y="160">read the events matching the query</text>
+
+  <!-- 1. Read -->
+  <rect class="box" x="24" y="190" width="288" height="176" rx="10"/>
+  <circle class="badge" cx="50" cy="218" r="12"/>
+  <text class="num" x="50" y="222.5">1</text>
+  <text class="h" x="72" y="223.5">Read</text>
+  <text class="lbl" x="40" y="254">QUERY</text>
+  <rect class="hotpill" x="40" y="262" width="112" height="22" rx="11"/>
+  <text class="m" x="50" y="277">UserSignedUp</text>
+  <rect class="hotpill" x="160" y="262" width="128" height="22" rx="11"/>
+  <text class="m" x="170" y="277">username=alice</text>
+  <text class="t" x="40" y="306">No event up to position 3 matches.</text>
+  <text class="lbl" x="40" y="330">STATE, FOLDED FROM THE MATCHES</text>
+  <text class="mb" x="40" y="350">taken = false</text>
+
+  <path class="line" d="M312 278H332" marker-end="url(#a)"/>
+
+  <!-- 2. Decide -->
+  <rect class="box" x="336" y="190" width="288" height="176" rx="10"/>
+  <circle class="badge" cx="362" cy="218" r="12"/>
+  <text class="num" x="362" y="222.5">2</text>
+  <text class="h" x="384" y="223.5">Decide</text>
+  <text class="lbl" x="352" y="254">RULE</text>
+  <text class="t" x="352" y="274">A username can be claimed once.</text>
+  <text class="t" x="352" y="294">taken is false, so the decision is:</text>
+  <rect class="hot" x="352" y="308" width="256" height="42" rx="8"/>
+  <text class="mb" x="364" y="333.5">UserSignedUp</text>
+  <rect class="hotpill" x="470" y="318" width="128" height="22" rx="11"/>
+  <text class="m" x="480" y="333">username=alice</text>
+
+  <path class="line" d="M624 278H644" marker-end="url(#a)"/>
+
+  <!-- 3. Append -->
+  <rect class="box" x="648" y="190" width="288" height="176" rx="10"/>
+  <circle class="badge" cx="674" cy="218" r="12"/>
+  <text class="num" x="674" y="222.5">3</text>
+  <text class="h" x="696" y="223.5">Append</text>
+  <text class="lbl" x="664" y="254">CONDITION</text>
+  <text class="t" x="664" y="274">Only if no event matching the query</text>
+  <text class="t" x="664" y="294">was added after position 3.</text>
+  <text class="lbl" x="664" y="322">CHECKED BY THE STORE</text>
+  <text class="t" x="664" y="342">Atomically, together with the write.</text>
+
+  <!-- Outcomes -->
+  <path class="lineok" d="M792 366V416" marker-end="url(#aok)"/>
+  <path class="linebad" d="M720 366V392H300V416" marker-end="url(#abad)"/>
+  <path class="line" d="M100 420V370" marker-end="url(#a)"/>
+  <text class="mut" x="112" y="398">retry from step 1</text>
+
+  <rect class="badbox" x="24" y="420" width="444" height="108" rx="10"/>
+  <text class="bad" x="40" y="446">Condition violated</text>
+  <text class="t" x="40" y="468">Another request appended a matching event first:</text>
+  <text class="seq" x="48" y="492">4</text>
+  <text class="mb" x="64" y="492">UserSignedUp</text>
+  <rect class="hotpill" x="170" y="477" width="128" height="22" rx="11"/>
+  <text class="m" x="180" y="492">username=alice</text>
+  <text class="t" x="40" y="516">Append returns <tspan class="mb">ErrAppendConditionViolated</tspan>.</text>
+
+  <rect class="okbox" x="492" y="420" width="444" height="108" rx="10"/>
+  <text class="ok" x="508" y="446">Condition holds</text>
+  <text class="t" x="508" y="468">The event is appended as number 4.</text>
+  <text class="t" x="508" y="490">Every later decision about alice reads it.</text>
+
+  <text class="mut" x="24" y="558">On the retry, step 1 reads event 4, taken becomes true, and the rule in step 2 refuses.</text>
+  <text class="mut" x="24" y="580">Events about bob match no query of this decision. They are outside its boundary and never make it fail.</text>
+</svg>
