@@ -71,8 +71,12 @@ type AttachmentMiddleware struct {
 	blobs BlobStore
 }
 
-// NewAttachmentMiddleware creates middleware backed by the given BlobStore.
+// NewAttachmentMiddleware creates middleware backed by the given BlobStore. It
+// also registers the struct-tag hook (see RegisterStructTags), so that a
+// dcb-attachment declaration is never ignored once the middleware exists.
+// Create it at boot, before any event is built.
 func NewAttachmentMiddleware(blobs BlobStore) *AttachmentMiddleware {
+	RegisterStructTags()
 	return &AttachmentMiddleware{blobs: blobs}
 }
 

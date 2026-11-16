@@ -73,8 +73,12 @@ type EventEncryptor struct {
 	keys KeyStore
 }
 
-// NewEventEncryptor creates an EventEncryptor backed by the given KeyStore.
+// NewEventEncryptor creates an EventEncryptor backed by the given KeyStore. It
+// also registers the struct-tag hook (see RegisterStructTags), so that a
+// dcb-encrypt declaration is never ignored once an encryptor exists. Create it
+// at boot, before any event is built.
 func NewEventEncryptor(keys KeyStore) *EventEncryptor {
+	RegisterStructTags()
 	return &EventEncryptor{keys: keys}
 }
 

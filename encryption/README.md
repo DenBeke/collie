@@ -42,7 +42,7 @@ type UserRegistered struct {
 event, _ := collie.NewEventFrom("UserRegistered", UserRegistered{UserID: "user-123", Name: "Ada"})
 ```
 
-This needs `encryption.RegisterStructTags()` once at boot (see "Struct tags and hooks" below). The hook checks at construction that `user` is a tag on the event, that the field is in `Data` and is not itself a tag, and that every encrypted field in the struct names the same subject. Group several personal fields in a nested struct and tag that one field: the block is stored as one ciphertext, so not even its key names are visible at rest, and it redacts to one `null`:
+`NewEventEncryptor` switches these declarations on, so create the encryptor at boot, before any event is built (see "Struct tags and hooks" below). The hook checks at construction that `user` is a tag on the event, that the field is in `Data` and is not itself a tag, and that every encrypted field in the struct names the same subject. Group several personal fields in a nested struct and tag that one field: the block is stored as one ciphertext, so not even its key names are visible at rest, and it redacts to one `null`:
 
 ```go
 type SupplierRegistered struct {
@@ -137,8 +137,8 @@ The root package reads one struct-tag key, `dcb`. Every other concern owns its o
 
 ```go
 // Registered once at boot, before any event is built.
-encryption.RegisterStructTags()
-attachments.RegisterStructTags()
+encryption.NewEventEncryptor(keys)         // registers the dcb-encrypt hook itself
+attachments.NewAttachmentMiddleware(blobs) // registers the dcb-attachment hook itself
 ```
 
 A `Hook` is `func(e *Event, payload any) error`, registered with `collie.RegisterHook`. It runs on every event built by `NewEvent` or `NewEventFrom`, after the tags and the options, and sees the typed payload. The rule a hook follows: fill what is absent, verify what is present, never overwrite. A struct tag and an option that agree are fine; ones that disagree fail construction. Registration is not synchronised with construction, so register at boot.

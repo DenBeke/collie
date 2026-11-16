@@ -27,7 +27,7 @@ type DocumentUploaded struct {
 event, _ := collie.NewEventFrom("DocumentUploaded", doc)
 ```
 
-This needs `attachments.RegisterStructTags()` once at boot (see [Struct tags and hooks](../encryption/README.md#struct-tags-and-hooks)). Several fields can carry the tag; a nested struct is offloaded as one blob.
+`NewAttachmentMiddleware` switches these declarations on, so create the middleware at boot, before any event is built (see [Struct tags and hooks](../encryption/README.md#struct-tags-and-hooks)). Several fields can carry the tag; a nested struct is offloaded as one blob.
 
 For events built without a struct, `WithAttachments` names the top-level JSON fields instead:
 

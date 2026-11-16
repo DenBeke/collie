@@ -11,7 +11,9 @@ import (
 	"github.com/DenBeke/collie/memory"
 )
 
-func init() { encryption.RegisterStructTags() }
+// Creating an encryptor is all it takes for the dcb-encrypt declarations in
+// this file to be honoured: no test here calls RegisterStructTags.
+func init() { newEncryptor() }
 
 type contact struct {
 	Name  string `json:"name"`

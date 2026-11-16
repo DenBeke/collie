@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/DenBeke/collie"
 	"github.com/DenBeke/collie/internal/structtag"
@@ -23,10 +24,16 @@ const TagKey = "dcb-attachment"
 // Data, or a declaration that contradicts an option on the event.
 var ErrInvalidStructTags = errors.New("invalid dcb-attachment struct tags")
 
+// registerOnce keeps the hook registered a single time, however often
+// RegisterStructTags and NewAttachmentMiddleware are called.
+var registerOnce sync.Once
+
 // RegisterStructTags makes every event built from now on honour the TagKey
-// declarations on its payload. Call once at boot, before any event is built.
+// declarations on its payload. NewAttachmentMiddleware calls it, so a program
+// that creates the middleware has no call to forget. Call it yourself only when
+// events are built before the middleware exists. Calling it again does nothing.
 func RegisterStructTags() {
-	collie.RegisterHook(resolveStructTags)
+	registerOnce.Do(func() { collie.RegisterHook(resolveStructTags) })
 }
 
 // resolveStructTags is the hook: it turns TagKey declarations into the

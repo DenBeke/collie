@@ -11,7 +11,9 @@ import (
 	"github.com/DenBeke/collie/memory"
 )
 
-func init() { attachments.RegisterStructTags() }
+// Creating the middleware is all it takes for the dcb-attachment declarations
+// in this file to be honoured: no test here calls RegisterStructTags.
+func init() { attachments.NewAttachmentMiddleware(attachments.NewMemoryBlobStore()) }
 
 type documentUploaded struct {
 	DocumentID string `json:"documentId" dcb:"tag:document"`
