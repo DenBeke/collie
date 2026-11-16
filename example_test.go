@@ -3,14 +3,13 @@ package collie_test
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 
 	"github.com/DenBeke/collie"
 	"github.com/DenBeke/collie/memory"
 	"github.com/DenBeke/collie/snapshot"
-
-	"github.com/labstack/echo/v5"
 )
 
 // usernameExistsProjection returns true if the given username is already taken.
@@ -108,40 +107,44 @@ func ExampleUpdateProjection() {
 	// total users: 3
 }
 
-// ExampleServe shows how to wire both sides into an Echo HTTP server.
+// ExampleServe shows how to wire both sides into an HTTP server.
 // POST /signup uses a decision model projection to enforce uniqueness.
 // GET /total-users uses a long-lived read model that catches up incrementally.
 func ExampleServe() {
 	store := &memory.Store{}
 	totalUsers := totalUsersProjection()
 
-	e := echo.New()
+	mux := http.NewServeMux()
 
-	e.POST("/signup", func(c *echo.Context) error {
+	mux.HandleFunc("POST /signup", func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
 			Username string `json:"username"`
 		}
-		if err := c.Bind(&body); err != nil {
-			return c.String(http.StatusBadRequest, err.Error())
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
 		}
-		if err := signUp(c.Request().Context(), store, body.Username); err != nil {
-			return c.String(http.StatusConflict, err.Error())
+		if err := signUp(r.Context(), store, body.Username); err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
 		}
-		return c.NoContent(http.StatusNoContent)
+		w.WriteHeader(http.StatusNoContent)
 	})
 
-	e.GET("/total-users", func(c *echo.Context) error {
+	mux.HandleFunc("GET /total-users", func(w http.ResponseWriter, r *http.Request) {
 		// Catch up with new events since the last query. This on-demand strategy
 		// keeps the read model decoupled from the write side — no need to notify
 		// read models after each command. The incremental update only processes
 		// events after the last known position, so catch-up stays fast.
-		if err := collie.UpdateProjection(c.Request().Context(), store, totalUsers); err != nil {
-			return err
+		if err := collie.UpdateProjection(r.Context(), store, totalUsers); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
 		}
-		return c.JSON(http.StatusOK, map[string]int{"total_users": totalUsers.State})
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]int{"total_users": totalUsers.State})
 	})
 
-	e.Start(":8080")
+	http.ListenAndServe(":8080", mux)
 }
 
 // The same uniqueness check expressed as a self-handling command — with the

@@ -4,7 +4,6 @@ go 1.26.0
 
 require (
 	github.com/jackc/pgx/v5 v5.13.0
-	github.com/labstack/echo/v5 v5.4.5
 	github.com/testcontainers/testcontainers-go v0.45.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.45.0
 	gorm.io/driver/postgres v1.6.3
