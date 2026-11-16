@@ -1,7 +1,7 @@
-# Collie
+# Collie: DCB event sourcing for Go
 
 <p align="center">
-  <img src="docs/collie.jpg" width="375" alt="A border collie with a Go bandana herds sheep through a gate while a gopher ticks them off on a clipboard">
+  <img src="docs/collie.webp" width="375" alt="A border collie with a Go bandana herds sheep through a gate while a gopher ticks them off on a clipboard">
 </p>
 
 A Go implementation of [Dynamic Consistency Boundaries](https://dcb.events/) (DCB) event sourcing, including a Postgres event store implementation.
