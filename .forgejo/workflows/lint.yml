@@ -15,6 +15,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+          cache: false # the runner's cache server is not reachable from the job container
 
       - name: Install golangci-lint
         run: |
