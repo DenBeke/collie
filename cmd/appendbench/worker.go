@@ -236,13 +236,12 @@ func doOp(ctx context.Context, store *pgstore.Store, db *gorm.DB, cfg *Config, i
 // doHead implements the realistic optimistic-concurrency path: read the entity's
 // current head, append with After=head, and (closed loop) retry on violation.
 func doHead(ctx context.Context, store *pgstore.Store, db *gorm.DB, cfg *Config, query collie.Query, id int, rec bool, st *workerStats) (attempts int, success bool) {
-	eid := entityID(id)
 	entityJSON := entityTagJSON(id)
 	retries := 0
 
 	for {
 		t0 := time.Now()
-		head, err := readHead(ctx, db, cfg.IndexedTags, eid, entityJSON)
+		head, err := readHead(ctx, db, entityJSON)
 		dt := time.Since(t0)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -320,10 +319,9 @@ func doHead(ctx context.Context, store *pgstore.Store, db *gorm.DB, cfg *Config,
 //
 // NOTE: this duplicates the single-key predicate shape from
 // postgres.applyQuery; keep in sync if the tag encoding there changes.
-func readHead(ctx context.Context, db *gorm.DB, indexed bool, eid, entityJSON string) (uint64, error) {
+func readHead(ctx context.Context, db *gorm.DB, entityJSON string) (uint64, error) {
 	// Tags are a jsonb array now, so the GIN @> path is the only one (the per-key
-	// tags->>'key' B-tree was removed). indexed/eid are unused but kept so the
-	// caller and report columns don't change.
+	// tags->>'key' B-tree was removed).
 	q := db.WithContext(ctx).Table("events").Where("tags @> ?::jsonb", entityJSON)
 	var head uint64
 	err := q.Select("COALESCE(MAX(sequence_number), 0)").Row().Scan(&head)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 
 	"github.com/DenBeke/collie"
@@ -51,7 +52,7 @@ func (s *KeyStore) GetOrCreate(ctx context.Context, tags []collie.Tag) ([]byte, 
 	if err == nil {
 		return existing.Key, nil
 	}
-	if err != gorm.ErrRecordNotFound {
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, fmt.Errorf("could not query encryption key: %w", err)
 	}
 
@@ -95,7 +96,7 @@ func (s *KeyStore) Get(ctx context.Context, tags []collie.Tag) ([]byte, bool, er
 
 	var existing encryptionKey
 	err := s.db.WithContext(ctx).Where("tag_id = ?", id).First(&existing).Error
-	if err == gorm.ErrRecordNotFound {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, false, nil
 	}
 	if err != nil {

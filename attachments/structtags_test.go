@@ -69,7 +69,7 @@ func TestStructTagsRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	events := collectEvents(t, store, nil)
+	events := collectEvents(t, store)
 	gotDoc, err := collie.EventData[documentUploaded](events[0])
 	if err != nil || !bytes.Equal(gotDoc.Content, []byte("pdf-bytes")) {
 		t.Errorf("document = %+v, %v", gotDoc, err)
@@ -87,7 +87,7 @@ func TestStructTagsRoundTrip(t *testing.T) {
 	}
 
 	// Inline, the offloaded field is gone from Data.
-	atRest := collectEvents(t, raw, nil)[0]
+	atRest := collectEvents(t, raw)[0]
 	if bytes.Contains(atRest.Data, []byte("content")) {
 		t.Errorf("stored data still holds the attachment: %s", atRest.Data)
 	}

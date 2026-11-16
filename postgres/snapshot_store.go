@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/DenBeke/collie/snapshot"
@@ -34,7 +35,7 @@ func (store *SnapshotStore) Load(ctx context.Context, name string) (state []byte
 	var checkpoint projectionCheckpoint
 	err = store.db.WithContext(ctx).Where("projection_name = ?", name).First(&checkpoint).Error
 	if err != nil {
-		if err == gorm.ErrRecordNotFound {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, 0, false, nil // fresh projection
 		}
 		return nil, 0, false, fmt.Errorf("could not load checkpoint: %w", err)
@@ -44,7 +45,7 @@ func (store *SnapshotStore) Load(ctx context.Context, name string) (state []byte
 	var snapshot projectionSnapshot
 	err = store.db.WithContext(ctx).Where("projection_name = ?", name).First(&snapshot).Error
 	if err != nil {
-		if err == gorm.ErrRecordNotFound {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			// Known position but no state snapshot yet.
 			return nil, position, true, nil
 		}

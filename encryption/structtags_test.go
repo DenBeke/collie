@@ -71,7 +71,7 @@ func TestStructTagsNestedBlockRoundTripAndForget(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got := collectEvents(t, store, nil)[0]
+	got := collectEvents(t, store)[0]
 	data, err := collie.EventData[supplierRegistered](got)
 	if err != nil {
 		t.Fatal(err)
@@ -81,7 +81,7 @@ func TestStructTagsNestedBlockRoundTripAndForget(t *testing.T) {
 	}
 
 	// At rest the whole block is one opaque string: not even the key names.
-	atRest := collectEvents(t, raw, nil)[0]
+	atRest := collectEvents(t, raw)[0]
 	if s := string(atRest.Data); strings.Contains(s, "phone") || strings.Contains(s, "Acme") {
 		t.Errorf("stored data leaks the block: %s", s)
 	}
@@ -89,7 +89,7 @@ func TestStructTagsNestedBlockRoundTripAndForget(t *testing.T) {
 	if err := enc.Forget(ctx, collie.NewTags("supplier", "s1")); err != nil {
 		t.Fatal(err)
 	}
-	redacted := collectEvents(t, store, nil)[0]
+	redacted := collectEvents(t, store)[0]
 	if !encryption.IsRedacted(redacted) {
 		t.Fatal("expected redaction after Forget")
 	}

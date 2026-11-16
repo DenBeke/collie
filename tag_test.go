@@ -27,7 +27,7 @@ func TestTagsConstructor(t *testing.T) {
 			t.Errorf("odd args: expected panic")
 		}
 	}()
-	collie.NewTags("a", "1", "dangling")
+	collie.NewTags("a", "1", "dangling") //nolint:staticcheck // the odd argument count is what this test is about
 }
 
 func TestTagValues(t *testing.T) {

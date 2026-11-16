@@ -19,11 +19,11 @@ func newStore() (*collie.MiddlewareStore, *attachments.MemoryBlobStore) {
 	return store, blobs
 }
 
-func collectEvents(t *testing.T, store collie.Store, query collie.Query) []collie.SequencedEvent {
+func collectEvents(t *testing.T, store collie.Store) []collie.SequencedEvent {
 	t.Helper()
 	ctx := context.Background()
 	var events []collie.SequencedEvent
-	stream, _, err := store.Read(ctx, query, 0)
+	stream, _, err := store.Read(ctx, nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,7 +48,7 @@ func TestPassthroughWithoutAttachments(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	events := collectEvents(t, store, nil)
+	events := collectEvents(t, store)
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
@@ -80,7 +80,7 @@ func TestAttachmentRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	events := collectEvents(t, store, nil)
+	events := collectEvents(t, store)
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
@@ -161,7 +161,7 @@ func TestMissingBlobOnRead(t *testing.T) {
 	}
 
 	// Get the blob ID, then delete it
-	events := collectEvents(t, store, nil)
+	events := collectEvents(t, store)
 	ids := attachments.BlobIDs(events[0])
 	blobID := ids["content"]
 	if err := blobs.Delete(ctx, blobID); err != nil {
@@ -169,7 +169,7 @@ func TestMissingBlobOnRead(t *testing.T) {
 	}
 
 	// Re-read — should get null content and missing flag
-	events = collectEvents(t, store, nil)
+	events = collectEvents(t, store)
 	if !attachments.IsMissing(events[0]) {
 		t.Fatal("expected event to be marked as attachmentsMissing")
 	}
@@ -204,7 +204,7 @@ func TestBlobDelete(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	events := collectEvents(t, store, nil)
+	events := collectEvents(t, store)
 	blobID := attachments.BlobIDs(events[0])["content"]
 	if blobID == "" {
 		t.Fatal("expected blob ID in metadata")
@@ -217,7 +217,7 @@ func TestBlobDelete(t *testing.T) {
 	}
 
 	// Re-reading reports the blob as missing.
-	events = collectEvents(t, store, nil)
+	events = collectEvents(t, store)
 	if !attachments.IsMissing(events[0]) {
 		t.Fatal("expected event to be marked as attachmentsMissing after Delete")
 	}
@@ -251,7 +251,7 @@ func TestBlobIDsAccessible(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	events := collectEvents(t, store, nil)
+	events := collectEvents(t, store)
 	ids := attachments.BlobIDs(events[0])
 	if ids == nil {
 		t.Fatal("expected blob IDs in metadata")
@@ -281,7 +281,7 @@ func TestMultipleAttachmentFields(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	events := collectEvents(t, store, nil)
+	events := collectEvents(t, store)
 	data, err := collie.EventData[Doc](events[0])
 	if err != nil {
 		t.Fatal(err)
@@ -327,7 +327,7 @@ func TestMixedAttachmentAndPlainEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	events := collectEvents(t, store, nil)
+	events := collectEvents(t, store)
 	if len(events) != 2 {
 		t.Fatalf("expected 2 events, got %d", len(events))
 	}

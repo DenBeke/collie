@@ -89,10 +89,10 @@ func setupStore(tb testing.TB, opts ...pgstore.Option) *pgstore.Store {
 
 // setupStagingStore is a store in staging mode without its own flusher, so a
 // test decides when staged appends move into events (flushAll).
-func setupStagingStore(tb testing.TB, opts ...pgstore.Option) *pgstore.Store {
+func setupStagingStore(tb testing.TB) *pgstore.Store {
 	tb.Helper()
 	db := setupDB(tb)
-	store := pgstore.New(db, append([]pgstore.Option{pgstore.WithoutFlusher()}, opts...)...)
+	store := pgstore.New(db, pgstore.WithoutFlusher())
 	if err := store.Migrate(); err != nil {
 		tb.Fatalf("could not migrate: %v", err)
 	}
@@ -200,7 +200,7 @@ func TestAppendConditionViolated(t *testing.T) {
 
 	e2, _ := collie.NewEvent("UserSignedUp", "alice2", collie.NewTags("username", "alice"))
 	err := store.Append(ctx, []collie.Event{e2}, condition)
-	if err != collie.ErrAppendConditionViolated {
+	if !errors.Is(err, collie.ErrAppendConditionViolated) {
 		t.Fatalf("expected ErrAppendConditionViolated, got: %v", err)
 	}
 }
@@ -218,7 +218,7 @@ func TestAppendConditionEmptyQueryMatchesAll(t *testing.T) {
 	// with After: 0 is rejected because an event already exists after 0.
 	e2, _ := collie.NewEvent("UserSignedUp", "bob", collie.NewTags("username", "bob"))
 	err := store.Append(ctx, []collie.Event{e2}, &collie.AppendCondition{Query: collie.Query{}, After: 0})
-	if err != collie.ErrAppendConditionViolated {
+	if !errors.Is(err, collie.ErrAppendConditionViolated) {
 		t.Fatalf("expected ErrAppendConditionViolated for empty-query match-all, got: %v", err)
 	}
 
@@ -460,7 +460,7 @@ func TestMultiValueConditionConflict(t *testing.T) {
 		Query: collie.Query{{Types: []string{"Transferred"}, Tags: collie.NewTags("account", "A")}},
 		After: 0,
 	}
-	if err := store.Append(ctx, []collie.Event{t2}, condA); err != collie.ErrAppendConditionViolated {
+	if err := store.Append(ctx, []collie.Event{t2}, condA); !errors.Is(err, collie.ErrAppendConditionViolated) {
 		t.Fatalf("expected ErrAppendConditionViolated for shared account-A boundary, got: %v", err)
 	}
 
@@ -504,7 +504,7 @@ func TestAppendConditionConcurrency(t *testing.T) {
 	for err := range errs {
 		if err == nil {
 			succeeded++
-		} else if err != collie.ErrAppendConditionViolated {
+		} else if !errors.Is(err, collie.ErrAppendConditionViolated) {
 			t.Errorf("unexpected error: %v", err)
 		}
 	}
@@ -578,7 +578,7 @@ func TestStagingSameBoundaryConcurrency(t *testing.T) {
 	for err := range errs {
 		if err == nil {
 			succeeded++
-		} else if err != collie.ErrAppendConditionViolated {
+		} else if !errors.Is(err, collie.ErrAppendConditionViolated) {
 			t.Errorf("unexpected error: %v", err)
 		}
 	}
@@ -715,7 +715,7 @@ func TestStagingMultiBoundaryConsistent(t *testing.T) {
 		},
 		After: 0,
 	}
-	if err := store.Append(ctx, []collie.Event{y}, cond); err != collie.ErrAppendConditionViolated {
+	if err := store.Append(ctx, []collie.Event{y}, cond); !errors.Is(err, collie.ErrAppendConditionViolated) {
 		t.Fatalf("expected conflict from the pending staging event (multi-boundary), got: %v", err)
 	}
 }
@@ -783,11 +783,11 @@ func TestUnkeyableConditionRejected(t *testing.T) {
 
 // --- Encryption integration tests ---
 
-func collectPGEvents(t *testing.T, store collie.Store, query collie.Query) []collie.SequencedEvent {
+func collectPGEvents(t *testing.T, store collie.Store) []collie.SequencedEvent {
 	t.Helper()
 	ctx := context.Background()
 	var events []collie.SequencedEvent
-	stream, _, err := store.Read(ctx, query, 0)
+	stream, _, err := store.Read(ctx, nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -820,7 +820,7 @@ func TestPGEncryptedRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	events := collectPGEvents(t, store, nil)
+	events := collectPGEvents(t, store)
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
@@ -882,7 +882,7 @@ func TestPGForgetRedactsData(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	events := collectPGEvents(t, store, nil)
+	events := collectPGEvents(t, store)
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
@@ -915,7 +915,7 @@ func TestPGForgetDoesNotAffectOtherSubjects(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	events := collectPGEvents(t, store, nil)
+	events := collectPGEvents(t, store)
 	if len(events) != 2 {
 		t.Fatalf("expected 2 events, got %d", len(events))
 	}
@@ -947,7 +947,7 @@ func TestPGSupersetForget(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	events := collectPGEvents(t, store, nil)
+	events := collectPGEvents(t, store)
 	if !encryption.IsRedacted(events[0]) {
 		t.Fatal("expected event to be redacted after superset forget")
 	}
@@ -969,7 +969,7 @@ func TestPGMixedEncryptedAndPlainEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	events := collectPGEvents(t, store, nil)
+	events := collectPGEvents(t, store)
 	if len(events) != 2 {
 		t.Fatalf("expected 2 events, got %d", len(events))
 	}
@@ -1004,7 +1004,7 @@ func TestPGAppendConditionThroughEncryption(t *testing.T) {
 		"userId", "user-1",
 	), encryption.WithEncryptionKeys("userId"))
 	err := store.Append(ctx, []collie.Event{e2}, condition)
-	if err != collie.ErrAppendConditionViolated {
+	if !errors.Is(err, collie.ErrAppendConditionViolated) {
 		t.Fatalf("expected ErrAppendConditionViolated, got %v", err)
 	}
 }

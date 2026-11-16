@@ -2,6 +2,7 @@ package encryption_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -23,11 +24,11 @@ func newStore() (*collie.MiddlewareStore, *encryption.EventEncryptor) {
 	return store, enc
 }
 
-func collectEvents(t *testing.T, store collie.Store, query collie.Query) []collie.SequencedEvent {
+func collectEvents(t *testing.T, store collie.Store) []collie.SequencedEvent {
 	t.Helper()
 	ctx := context.Background()
 	var events []collie.SequencedEvent
-	stream, _, err := store.Read(ctx, query, 0)
+	stream, _, err := store.Read(ctx, nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,7 +53,7 @@ func TestPassthroughWithoutEncryptionKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	events := collectEvents(t, store, nil)
+	events := collectEvents(t, store)
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
@@ -85,7 +86,7 @@ func TestEncryptedRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	events := collectEvents(t, store, nil)
+	events := collectEvents(t, store)
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
@@ -118,7 +119,7 @@ func TestEnvelopeSurvivesEncryption(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	events := collectEvents(t, store, nil)
+	events := collectEvents(t, store)
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
@@ -154,7 +155,7 @@ func TestEncryptedAtRest(t *testing.T) {
 	}
 
 	// Read through encrypted store — should get plaintext
-	events := collectEvents(t, encryptedStore, nil)
+	events := collectEvents(t, encryptedStore)
 	data, err := collie.EventData[string](events[0])
 	if err != nil {
 		t.Fatal(err)
@@ -164,7 +165,7 @@ func TestEncryptedAtRest(t *testing.T) {
 	}
 
 	// Read through raw store — should get ciphertext (not plaintext)
-	rawEvents := collectEvents(t, raw, nil)
+	rawEvents := collectEvents(t, raw)
 	if string(rawEvents[0].Data) == `"secret-data"` {
 		t.Fatal("data should be encrypted at rest, but found plaintext in raw store")
 	}
@@ -190,7 +191,7 @@ func TestForgetRedactsData(t *testing.T) {
 	}
 
 	// Read — event should still exist but with nil Data
-	events := collectEvents(t, store, nil)
+	events := collectEvents(t, store)
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
@@ -227,7 +228,7 @@ func TestForgetDoesNotAffectOtherSubjects(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	events := collectEvents(t, store, nil)
+	events := collectEvents(t, store)
 	if len(events) != 2 {
 		t.Fatalf("expected 2 events, got %d", len(events))
 	}
@@ -260,7 +261,7 @@ func TestSameSubjectSameKey(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	events := collectEvents(t, store, nil)
+	events := collectEvents(t, store)
 	if len(events) != 2 {
 		t.Fatalf("expected 2 events, got %d", len(events))
 	}
@@ -269,7 +270,7 @@ func TestSameSubjectSameKey(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	events = collectEvents(t, store, nil)
+	events = collectEvents(t, store)
 	for i, e := range events {
 		if !encryption.IsRedacted(e) {
 			t.Fatalf("event %d: expected to be redacted after forget", i)
@@ -289,7 +290,7 @@ func TestSupersetForgetWithMultiKeySubject(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	events := collectEvents(t, store, nil)
+	events := collectEvents(t, store)
 	data, _ := collie.EventData[string](events[0])
 	if data != "request-data" {
 		t.Fatalf("expected request-data, got %s", data)
@@ -299,7 +300,7 @@ func TestSupersetForgetWithMultiKeySubject(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	events = collectEvents(t, store, nil)
+	events = collectEvents(t, store)
 	if !encryption.IsRedacted(events[0]) {
 		t.Fatal("expected event to be redacted after superset forget")
 	}
@@ -327,7 +328,7 @@ func TestAppendConditionWorksThroughEncryption(t *testing.T) {
 		"userId", "user-1",
 	), encryption.WithEncryptionKeys("userId"))
 	err := store.Append(ctx, []collie.Event{e2}, condition)
-	if err != collie.ErrAppendConditionViolated {
+	if !errors.Is(err, collie.ErrAppendConditionViolated) {
 		t.Fatalf("expected ErrAppendConditionViolated, got %v", err)
 	}
 }
@@ -348,7 +349,7 @@ func TestMixedEncryptedAndPlainEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	events := collectEvents(t, store, nil)
+	events := collectEvents(t, store)
 	if len(events) != 2 {
 		t.Fatalf("expected 2 events, got %d", len(events))
 	}
@@ -375,7 +376,7 @@ func TestNoMiddlewarePassthrough(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	events := collectEvents(t, store, nil)
+	events := collectEvents(t, store)
 	data, err := collie.EventData[string](events[0])
 	if err != nil || data != "data" {
 		t.Fatalf("expected plaintext passthrough: data=%s, err=%v", data, err)
@@ -413,7 +414,7 @@ func TestFieldLevelWithoutEncryptionKeysIsNoOp(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	events := collectEvents(t, store, nil)
+	events := collectEvents(t, store)
 	data, err := collie.EventData[user](events[0])
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -444,7 +445,7 @@ func TestFieldLevelRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	events := collectEvents(t, store, nil)
+	events := collectEvents(t, store)
 	data, err := collie.EventData[user](events[0])
 	if err != nil {
 		t.Fatalf("unexpected unmarshal error: %v", err)
@@ -478,7 +479,7 @@ func TestFieldLevelEncryptedAtRest(t *testing.T) {
 	}
 
 	// Raw store should have "role" in plaintext but "email" should be opaque
-	rawEvents := collectEvents(t, raw, nil)
+	rawEvents := collectEvents(t, raw)
 	rawData := string(rawEvents[0].Data)
 	if !strings.Contains(rawData, `"role":"admin"`) {
 		t.Fatalf("expected non-encrypted field 'role' in plaintext, got: %s", rawData)
@@ -511,7 +512,7 @@ func TestFieldLevelForgetRedactsOnlyEncryptedFields(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	events := collectEvents(t, store, nil)
+	events := collectEvents(t, store)
 	if !encryption.IsRedacted(events[0]) {
 		t.Fatal("expected event to be marked as redacted")
 	}
@@ -561,7 +562,7 @@ func TestFieldLevelNestedStructRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	events := collectEvents(t, store, nil)
+	events := collectEvents(t, store)
 	data, err := collie.EventData[user](events[0])
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -614,7 +615,7 @@ func TestMixedFullBlobAndFieldLevelEvents(t *testing.T) {
 	}
 
 	// Both readable before forget
-	events := collectEvents(t, store, nil)
+	events := collectEvents(t, store)
 	if len(events) != 2 {
 		t.Fatalf("expected 2 events, got %d", len(events))
 	}
@@ -624,7 +625,7 @@ func TestMixedFullBlobAndFieldLevelEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	events = collectEvents(t, store, nil)
+	events = collectEvents(t, store)
 
 	// Full-blob: Data should be nil
 	if !encryption.IsRedacted(events[0]) {
@@ -666,7 +667,7 @@ func TestEncryptedMultiUserSubject(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, e := range collectEvents(t, store, nil) {
+	for _, e := range collectEvents(t, store) {
 		if encryption.IsRedacted(e) {
 			t.Fatalf("event %s unexpectedly redacted before forget", e.Type)
 		}
@@ -679,7 +680,7 @@ func TestEncryptedMultiUserSubject(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	for _, e := range collectEvents(t, store, nil) {
+	for _, e := range collectEvents(t, store) {
 		if !encryption.IsRedacted(e) {
 			t.Errorf("event %s should be redacted after forgetting user-A", e.Type)
 		}
@@ -702,7 +703,7 @@ func TestEncryptedMultiUserForgetEither(t *testing.T) {
 			if err := enc.Forget(ctx, collie.NewTags("user", forget)); err != nil {
 				t.Fatal(err)
 			}
-			events := collectEvents(t, store, nil)
+			events := collectEvents(t, store)
 			if len(events) != 1 || !encryption.IsRedacted(events[0]) {
 				t.Fatalf("message should be redacted after forgetting %s", forget)
 			}

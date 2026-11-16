@@ -17,9 +17,9 @@ type payload struct {
 	Name    string `json:"name"`
 	Opt     string `json:"opt,omitempty"`
 	Hidden  string `json:"-"`
-	Dash    string `json:"-,"`
+	Dash    string `json:"-,"` //nolint:staticcheck // a field named "-" is what this fixture is for
 	Untaged string
-	secret  string
+	secret  string //nolint:unused // an unexported field is what this fixture is for
 }
 
 type viaPointer struct {

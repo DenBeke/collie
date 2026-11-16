@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -115,7 +116,7 @@ func (p *KeyedProjection[V]) Apply(ctx context.Context, e collie.SequencedEvent)
 		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 			Where("projection_name = ?", p.name).First(&cp).Error
 		switch {
-		case err == gorm.ErrRecordNotFound:
+		case errors.Is(err, gorm.ErrRecordNotFound):
 			// First event for this projection.
 		case err != nil:
 			return fmt.Errorf("could not lock checkpoint: %w", err)
@@ -169,7 +170,7 @@ func (p *KeyedProjection[V]) Apply(ctx context.Context, e collie.SequencedEvent)
 		}).Error
 	})
 	switch {
-	case err == errAlreadyApplied:
+	case errors.Is(err, errAlreadyApplied):
 		p.position = e.SequenceNumber
 		return nil
 	case err != nil:
@@ -188,7 +189,7 @@ func (p *KeyedProjection[V]) Get(ctx context.Context, key string) (keyedprojecti
 	var row projectionEntry
 	err := p.db.WithContext(ctx).
 		Where("projection_name = ? AND key = ?", p.name, key).First(&row).Error
-	if err == gorm.ErrRecordNotFound {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return keyedprojection.Entry[V]{}, false, nil
 	}
 	if err != nil {
@@ -345,7 +346,7 @@ func (p *KeyedProjection[V]) Reset(ctx context.Context) error {
 func (p *KeyedProjection[V]) loadCheckpoint() error {
 	var cp projectionCheckpoint
 	err := p.db.Where("projection_name = ?", p.name).First(&cp).Error
-	if err == gorm.ErrRecordNotFound {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil
 	}
 	if err != nil {
@@ -358,7 +359,7 @@ func (p *KeyedProjection[V]) loadCheckpoint() error {
 func (p *KeyedProjection[V]) loadRow(tx *gorm.DB, key string) (*V, map[string]string, error) {
 	var row projectionEntry
 	err := tx.Where("projection_name = ? AND key = ?", p.name, key).First(&row).Error
-	if err == gorm.ErrRecordNotFound {
+	if errors.Is(err, gorm.ErrRecordNotFound) {
 		return nil, nil, nil
 	}
 	if err != nil {
