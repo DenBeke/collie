@@ -692,7 +692,7 @@ func TestStagingFlushMonotonic(t *testing.T) {
 // TestStagingMultiBoundaryConsistent: an event pending in staging (not yet
 // flushed) is still seen by a later multi-boundary condition check — the
 // out-of-order-commit position gap that makes plain per-boundary locking unsafe
-// (see appendbench-conclusion.md) cannot form here, because the staging check reads
+// (see docs/benchmark.md) cannot form here, because the staging check reads
 // staging ∪ events in one snapshot.
 func TestStagingMultiBoundaryConsistent(t *testing.T) {
 	store := setupStagingStore(t)

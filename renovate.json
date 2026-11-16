@@ -3,5 +3,6 @@
   "extends": [
     "config:best-practices"
   ],
-  "minimumReleaseAge": "2 days"
+  "minimumReleaseAge": "2 days",
+  "gitAuthor": "Renovate Bot <git-renovate@denbeke.be>"
 }

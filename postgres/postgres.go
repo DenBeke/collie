@@ -527,7 +527,7 @@ func (s *Store) Append(ctx context.Context, events []collie.Event, condition *co
 // Two other strategies were prototyped and benchmarked but deliberately NOT kept:
 // per-boundary locks (fast but positions commit out of order, so multi-boundary
 // conditions are gappy without xid8 cursors) and a per-boundary-check + global-write
-// "hybrid" (consistent but lands at ~global throughput). See appendbench-conclusion.md
+// "hybrid" (consistent but lands at ~global throughput). See docs/benchmark.md
 // for the full comparison and why staging won; the implementations live in this
 // repo's git history (the commit before the staging consolidation).
 func (s *Store) appendGlobal(ctx context.Context, events []collie.Event, condition *collie.AppendCondition) error {

@@ -353,5 +353,3 @@ per-boundary throughput while keeping a plain integer cursor and full consistenc
 the flush lag + the flusher daemon).** Per-boundary (with xid8 opaque cursors) remains the option if
 you can't tolerate any read lag. To push the write ceiling higher, fix the **indexes/WAL** (drop the
 single-value `type` and monotonic `created_at` indexes, batch events, partition), not the storage.
-
-*(Full methodology and every run: see `appendbench-scaleway.md`.)*

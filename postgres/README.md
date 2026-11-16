@@ -42,8 +42,7 @@ it and would install its own functions at `Migrate`; keep those away from a data
 
 The design and the benchmarks behind choosing staging (including the per-boundary and hybrid
 strategies that were evaluated and rejected) are written up in
-[`appendbench-conclusion.md`](../appendbench-conclusion.md), with full methodology in
-[`appendbench-scaleway.md`](../appendbench-scaleway.md).
+[`docs/benchmark.md`](../docs/benchmark.md).
 
 ## Projection tables
 

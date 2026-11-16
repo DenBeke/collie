@@ -10,7 +10,7 @@ A load tester for the postgres event store's append paths, selected with `-lock`
   `-flush-interval` and `-flush-batch`.
 
 The two other strategies benchmarked during the exploration (per-boundary and hybrid locks)
-were removed from the library when consolidating on staging; see `appendbench-conclusion.md`
+were removed from the library when consolidating on staging; see `docs/benchmark.md`
 for the full four-way comparison and why staging was chosen.
 
 ## The idea it measures
@@ -46,7 +46,7 @@ it co-locates client and DB on one host, so numbers are inflated — prefer an e
 for real measurements). Needs Docker; with Colima:
 
 ```sh
-export DOCKER_HOST=unix://${HOME}/.colima/default/docker.sock
+export DOCKER_HOST="unix://${HOME}/.colima/default/docker.sock"
 export TESTCONTAINERS_RYUK_DISABLED=true
 ```
 
