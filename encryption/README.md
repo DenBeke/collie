@@ -11,9 +11,9 @@ Create an `EventEncryptor` and compose it with a store via `MiddlewareStore`:
 ```go
 keys := encryption.NewMemoryKeyStore()
 encryptor := encryption.NewEventEncryptor(keys)
-store := eventstore.NewMiddlewareStore(memory.New(),
-    eventstore.WithAppendMiddleware(encryptor.OnAppend),
-    eventstore.WithReadMiddleware(encryptor.OnRead),
+store := collie.NewMiddlewareStore(memory.New(),
+    collie.WithAppendMiddleware(encryptor.OnAppend),
+    collie.WithReadMiddleware(encryptor.OnRead),
 )
 ```
 
@@ -23,9 +23,9 @@ For PostgreSQL, use the built-in `KeyStore` to persist keys in the database:
 pgstore.MigrateKeyStore(db)
 keys := pgstore.NewKeyStore(db)
 encryptor := encryption.NewEventEncryptor(keys)
-store := eventstore.NewMiddlewareStore(pgstore.New(db),
-    eventstore.WithAppendMiddleware(encryptor.OnAppend),
-    eventstore.WithReadMiddleware(encryptor.OnRead),
+store := collie.NewMiddlewareStore(pgstore.New(db),
+    collie.WithAppendMiddleware(encryptor.OnAppend),
+    collie.WithReadMiddleware(encryptor.OnRead),
 )
 ```
 
@@ -39,7 +39,7 @@ type UserRegistered struct {
     Name   string `json:"name"   dcb-encrypt:"tag:user"`
 }
 
-event, _ := eventstore.NewEventFrom("UserRegistered", UserRegistered{UserID: "user-123", Name: "Ada"})
+event, _ := collie.NewEventFrom("UserRegistered", UserRegistered{UserID: "user-123", Name: "Ada"})
 ```
 
 This needs `encryption.RegisterStructTags()` once at boot (see "Struct tags and hooks" below). The hook checks at construction that `user` is a tag on the event, that the field is in `Data` and is not itself a tag, and that every encrypted field in the struct names the same subject. Group several personal fields in a nested struct and tag that one field: the block is stored as one ciphertext, so not even its key names are visible at rest, and it redacts to one `null`:
@@ -54,7 +54,7 @@ type SupplierRegistered struct {
 For events built without a struct, the options declare the same thing. `WithEncryptionKeys` names the tag(s) identifying the subject and, on its own, encrypts the whole payload; `WithEncryptedFields` limits it to the listed top-level JSON fields:
 
 ```go
-event, _ := eventstore.NewEvent("UserSignedUp", userData, eventstore.NewTags("userId", "user-123"),
+event, _ := collie.NewEvent("UserSignedUp", userData, collie.NewTags("userId", "user-123"),
     encryption.WithEncryptionKeys("userId"),
     encryption.WithEncryptedFields("name", "email"),
 )
@@ -71,7 +71,7 @@ On read, encrypted fields are transparently decrypted. After a `Forget`, encrypt
 Call `Forget` directly on the encryptor:
 
 ```go
-encryptor.Forget(ctx, eventstore.NewTags("user", "user-123"))
+encryptor.Forget(ctx, collie.NewTags("user", "user-123"))
 ```
 
 This deletes the encryption key. All events for that subject are now permanently unreadable. The forget uses **superset matching**: forgetting `user=user-1` also deletes keys for compound subjects such as `user=user-1, tenant=acme`, and a message shared between two users is shredded when either of them is forgotten.
@@ -81,12 +81,12 @@ This deletes the encryption key. All events for that subject are now permanently
 After forgetting, events still flow through the store with their type, tags, and sequence number preserved, but the data is redacted. For full-blob encryption `Data` is nil; for field-level encryption `Data` is preserved with encrypted fields set to `null`. Use `encryption.IsRedacted(e)` to check:
 
 ```go
-Handlers: map[string]eventstore.HandleFunc[MyState]{
-    "UserSignedUp": func(state MyState, e eventstore.SequencedEvent) (MyState, error) {
+Handlers: map[string]collie.HandleFunc[MyState]{
+    "UserSignedUp": func(state MyState, e collie.SequencedEvent) (MyState, error) {
         if encryption.IsRedacted(e) {
             return state, nil // crypto-shredded, skip
         }
-        data, err := eventstore.EventData[UserData](e)
+        data, err := collie.EventData[UserData](e)
         if err != nil {
             return state, err
         }
@@ -107,11 +107,11 @@ type UserDeleted struct {
     UserID string `json:"userId" dcb:"tag:user"`
 }
 
-func deleteUser(ctx context.Context, store eventstore.Store, encryptor *encryption.EventEncryptor, userID string) error {
-    event, _ := eventstore.NewEventFrom("UserDeleted", UserDeleted{UserID: userID})
-    store.Append(ctx, []eventstore.Event{event}, nil)
+func deleteUser(ctx context.Context, store collie.Store, encryptor *encryption.EventEncryptor, userID string) error {
+    event, _ := collie.NewEventFrom("UserDeleted", UserDeleted{UserID: userID})
+    store.Append(ctx, []collie.Event{event}, nil)
 
-    return encryptor.Forget(ctx, eventstore.NewTags("user", userID))
+    return encryptor.Forget(ctx, collie.NewTags("user", userID))
 }
 ```
 
@@ -123,9 +123,9 @@ A PostgreSQL-backed key store is provided out of the box via `postgres.NewKeySto
 
 ```go
 type KeyStore interface {
-    GetOrCreate(ctx context.Context, subject []eventstore.Tag) ([]byte, error)
-    Get(ctx context.Context, subject []eventstore.Tag) ([]byte, bool, error)
-    Forget(ctx context.Context, tags []eventstore.Tag) error
+    GetOrCreate(ctx context.Context, subject []collie.Tag) ([]byte, error)
+    Get(ctx context.Context, subject []collie.Tag) ([]byte, bool, error)
+    Forget(ctx context.Context, tags []collie.Tag) error
 }
 ```
 
@@ -141,4 +141,4 @@ encryption.RegisterStructTags()
 attachments.RegisterStructTags()
 ```
 
-A `Hook` is `func(e *Event, payload any) error`, registered with `eventstore.RegisterHook`. It runs on every event built by `NewEvent` or `NewEventFrom`, after the tags and the options, and sees the typed payload. The rule a hook follows: fill what is absent, verify what is present, never overwrite. A struct tag and an option that agree are fine; ones that disagree fail construction. Registration is not synchronised with construction, so register at boot.
+A `Hook` is `func(e *Event, payload any) error`, registered with `collie.RegisterHook`. It runs on every event built by `NewEvent` or `NewEventFrom`, after the tags and the options, and sees the typed payload. The rule a hook follows: fill what is absent, verify what is present, never overwrite. A struct tag and an option that agree are fine; ones that disagree fail construction. Registration is not synchronised with construction, so register at boot.

@@ -99,7 +99,7 @@ func setupStagingStore(tb testing.TB, opts ...pgstore.Option) *pgstore.Store {
 	return store
 }
 
-func setupEncryptedStore(tb testing.TB) (*eventstore.MiddlewareStore, *encryption.EventEncryptor) {
+func setupEncryptedStore(tb testing.TB) (*collie.MiddlewareStore, *encryption.EventEncryptor) {
 	tb.Helper()
 	db := setupDB(tb)
 	if err := pgstore.MigrateKeyStore(db); err != nil {
@@ -111,9 +111,9 @@ func setupEncryptedStore(tb testing.TB) (*eventstore.MiddlewareStore, *encryptio
 	if err := store.Migrate(); err != nil {
 		tb.Fatalf("could not migrate: %v", err)
 	}
-	mw := eventstore.NewMiddlewareStore(store,
-		eventstore.WithAppendMiddleware(enc.OnAppend),
-		eventstore.WithReadMiddleware(enc.OnRead),
+	mw := collie.NewMiddlewareStore(store,
+		collie.WithAppendMiddleware(enc.OnAppend),
+		collie.WithReadMiddleware(enc.OnRead),
 	)
 	return mw, enc
 }
@@ -122,14 +122,14 @@ func TestAppendAndRead(t *testing.T) {
 	store := setupStore(t)
 	ctx := context.Background()
 
-	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", eventstore.NewTags("username", "alice"))
-	e2, _ := eventstore.NewEvent("UserSignedUp", "bob", eventstore.NewTags("username", "bob"))
+	e1, _ := collie.NewEvent("UserSignedUp", "alice", collie.NewTags("username", "alice"))
+	e2, _ := collie.NewEvent("UserSignedUp", "bob", collie.NewTags("username", "bob"))
 
-	if err := store.Append(ctx, []eventstore.Event{e1, e2}, nil); err != nil {
+	if err := store.Append(ctx, []collie.Event{e1, e2}, nil); err != nil {
 		t.Fatalf("append failed: %v", err)
 	}
 
-	var events []eventstore.SequencedEvent
+	var events []collie.SequencedEvent
 	stream, _, err := store.Read(ctx, nil, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -162,21 +162,21 @@ func TestAppendConditionPasses(t *testing.T) {
 	store := setupStore(t)
 	ctx := context.Background()
 
-	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", eventstore.NewTags("username", "alice"))
-	if err := store.Append(ctx, []eventstore.Event{e1}, nil); err != nil {
+	e1, _ := collie.NewEvent("UserSignedUp", "alice", collie.NewTags("username", "alice"))
+	if err := store.Append(ctx, []collie.Event{e1}, nil); err != nil {
 		t.Fatalf("append failed: %v", err)
 	}
 
-	condition := &eventstore.AppendCondition{
-		Query: eventstore.Query{{
+	condition := &collie.AppendCondition{
+		Query: collie.Query{{
 			Types: []string{"UserSignedUp"},
-			Tags:  eventstore.NewTags("username", "bob"),
+			Tags:  collie.NewTags("username", "bob"),
 		}},
 		After: 0,
 	}
 
-	e2, _ := eventstore.NewEvent("UserSignedUp", "bob", eventstore.NewTags("username", "bob"))
-	if err := store.Append(ctx, []eventstore.Event{e2}, condition); err != nil {
+	e2, _ := collie.NewEvent("UserSignedUp", "bob", collie.NewTags("username", "bob"))
+	if err := store.Append(ctx, []collie.Event{e2}, condition); err != nil {
 		t.Fatalf("expected append to succeed, got: %v", err)
 	}
 }
@@ -185,22 +185,22 @@ func TestAppendConditionViolated(t *testing.T) {
 	store := setupStore(t)
 	ctx := context.Background()
 
-	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", eventstore.NewTags("username", "alice"))
-	if err := store.Append(ctx, []eventstore.Event{e1}, nil); err != nil {
+	e1, _ := collie.NewEvent("UserSignedUp", "alice", collie.NewTags("username", "alice"))
+	if err := store.Append(ctx, []collie.Event{e1}, nil); err != nil {
 		t.Fatalf("append failed: %v", err)
 	}
 
-	condition := &eventstore.AppendCondition{
-		Query: eventstore.Query{{
+	condition := &collie.AppendCondition{
+		Query: collie.Query{{
 			Types: []string{"UserSignedUp"},
-			Tags:  eventstore.NewTags("username", "alice"),
+			Tags:  collie.NewTags("username", "alice"),
 		}},
 		After: 0,
 	}
 
-	e2, _ := eventstore.NewEvent("UserSignedUp", "alice2", eventstore.NewTags("username", "alice"))
-	err := store.Append(ctx, []eventstore.Event{e2}, condition)
-	if err != eventstore.ErrAppendConditionViolated {
+	e2, _ := collie.NewEvent("UserSignedUp", "alice2", collie.NewTags("username", "alice"))
+	err := store.Append(ctx, []collie.Event{e2}, condition)
+	if err != collie.ErrAppendConditionViolated {
 		t.Fatalf("expected ErrAppendConditionViolated, got: %v", err)
 	}
 }
@@ -209,16 +209,16 @@ func TestAppendConditionEmptyQueryMatchesAll(t *testing.T) {
 	store := setupStore(t)
 	ctx := context.Background()
 
-	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", eventstore.NewTags("username", "alice"))
-	if err := store.Append(ctx, []eventstore.Event{e1}, nil); err != nil {
+	e1, _ := collie.NewEvent("UserSignedUp", "alice", collie.NewTags("username", "alice"))
+	if err := store.Append(ctx, []collie.Event{e1}, nil); err != nil {
 		t.Fatalf("append failed: %v", err)
 	}
 
 	// A non-nil condition with an empty Query matches ALL events, so appending
 	// with After: 0 is rejected because an event already exists after 0.
-	e2, _ := eventstore.NewEvent("UserSignedUp", "bob", eventstore.NewTags("username", "bob"))
-	err := store.Append(ctx, []eventstore.Event{e2}, &eventstore.AppendCondition{Query: eventstore.Query{}, After: 0})
-	if err != eventstore.ErrAppendConditionViolated {
+	e2, _ := collie.NewEvent("UserSignedUp", "bob", collie.NewTags("username", "bob"))
+	err := store.Append(ctx, []collie.Event{e2}, &collie.AppendCondition{Query: collie.Query{}, After: 0})
+	if err != collie.ErrAppendConditionViolated {
 		t.Fatalf("expected ErrAppendConditionViolated for empty-query match-all, got: %v", err)
 	}
 
@@ -235,7 +235,7 @@ func TestAppendConditionEmptyQueryMatchesAll(t *testing.T) {
 		}
 		head = ev.SequenceNumber
 	}
-	if err := store.Append(ctx, []eventstore.Event{e2}, &eventstore.AppendCondition{Query: eventstore.Query{}, After: head}); err != nil {
+	if err := store.Append(ctx, []collie.Event{e2}, &collie.AppendCondition{Query: collie.Query{}, After: head}); err != nil {
 		t.Fatalf("expected append to succeed when After is at head, got: %v", err)
 	}
 }
@@ -244,19 +244,19 @@ func TestTagsFiltering(t *testing.T) {
 	store := setupStore(t)
 	ctx := context.Background()
 
-	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", eventstore.NewTags("username", "alice", "tenant", "t1"))
-	e2, _ := eventstore.NewEvent("UserSignedUp", "bob", eventstore.NewTags("username", "bob", "tenant", "t2"))
-	e3, _ := eventstore.NewEvent("UserSignedUp", "charlie", eventstore.NewTags("username", "charlie", "tenant", "t1"))
-	if err := store.Append(ctx, []eventstore.Event{e1, e2, e3}, nil); err != nil {
+	e1, _ := collie.NewEvent("UserSignedUp", "alice", collie.NewTags("username", "alice", "tenant", "t1"))
+	e2, _ := collie.NewEvent("UserSignedUp", "bob", collie.NewTags("username", "bob", "tenant", "t2"))
+	e3, _ := collie.NewEvent("UserSignedUp", "charlie", collie.NewTags("username", "charlie", "tenant", "t1"))
+	if err := store.Append(ctx, []collie.Event{e1, e2, e3}, nil); err != nil {
 		t.Fatalf("append failed: %v", err)
 	}
 
-	query := eventstore.Query{{
+	query := collie.Query{{
 		Types: []string{"UserSignedUp"},
-		Tags:  eventstore.NewTags("tenant", "t1"),
+		Tags:  collie.NewTags("tenant", "t1"),
 	}}
 
-	var events []eventstore.SequencedEvent
+	var events []collie.SequencedEvent
 	stream, _, err := store.Read(ctx, query, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -277,14 +277,14 @@ func TestReadAfter(t *testing.T) {
 	store := setupStore(t)
 	ctx := context.Background()
 
-	e1, _ := eventstore.NewEvent("A", nil, nil)
-	e2, _ := eventstore.NewEvent("B", nil, nil)
-	e3, _ := eventstore.NewEvent("C", nil, nil)
-	if err := store.Append(ctx, []eventstore.Event{e1, e2, e3}, nil); err != nil {
+	e1, _ := collie.NewEvent("A", nil, nil)
+	e2, _ := collie.NewEvent("B", nil, nil)
+	e3, _ := collie.NewEvent("C", nil, nil)
+	if err := store.Append(ctx, []collie.Event{e1, e2, e3}, nil); err != nil {
 		t.Fatalf("append failed: %v", err)
 	}
 
-	var all []eventstore.SequencedEvent
+	var all []collie.SequencedEvent
 	stream, _, err := store.Read(ctx, nil, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -296,7 +296,7 @@ func TestReadAfter(t *testing.T) {
 		all = append(all, e)
 	}
 
-	var after []eventstore.SequencedEvent
+	var after []collie.SequencedEvent
 	stream, _, err = store.Read(ctx, nil, all[1].SequenceNumber)
 	if err != nil {
 		t.Fatal(err)
@@ -321,13 +321,13 @@ func TestBatching(t *testing.T) {
 	ctx := context.Background()
 
 	for i := range 5 {
-		e, _ := eventstore.NewEvent("Event", fmt.Sprintf("data-%d", i), nil)
-		if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
+		e, _ := collie.NewEvent("Event", fmt.Sprintf("data-%d", i), nil)
+		if err := store.Append(ctx, []collie.Event{e}, nil); err != nil {
 			t.Fatalf("append failed: %v", err)
 		}
 	}
 
-	var events []eventstore.SequencedEvent
+	var events []collie.SequencedEvent
 	stream, _, err := store.Read(ctx, nil, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -348,18 +348,18 @@ func TestMultiTagEventFiltering(t *testing.T) {
 	store := setupStore(t)
 	ctx := context.Background()
 
-	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", eventstore.NewTags("tenant_id", "t1", "username", "alice"))
-	e2, _ := eventstore.NewEvent("UserSignedUp", "bob", eventstore.NewTags("tenant_id", "t2", "username", "bob"))
-	e3, _ := eventstore.NewEvent("UserSignedUp", "charlie", eventstore.NewTags("tenant_id", "t1", "username", "charlie"))
-	if err := store.Append(ctx, []eventstore.Event{e1, e2, e3}, nil); err != nil {
+	e1, _ := collie.NewEvent("UserSignedUp", "alice", collie.NewTags("tenant_id", "t1", "username", "alice"))
+	e2, _ := collie.NewEvent("UserSignedUp", "bob", collie.NewTags("tenant_id", "t2", "username", "bob"))
+	e3, _ := collie.NewEvent("UserSignedUp", "charlie", collie.NewTags("tenant_id", "t1", "username", "charlie"))
+	if err := store.Append(ctx, []collie.Event{e1, e2, e3}, nil); err != nil {
 		t.Fatalf("append failed: %v", err)
 	}
 
-	query := eventstore.Query{{
-		Tags: eventstore.NewTags("tenant_id", "t1"),
+	query := collie.Query{{
+		Tags: collie.NewTags("tenant_id", "t1"),
 	}}
 
-	var events []eventstore.SequencedEvent
+	var events []collie.SequencedEvent
 	stream, _, err := store.Read(ctx, query, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -375,11 +375,11 @@ func TestMultiTagEventFiltering(t *testing.T) {
 		t.Fatalf("expected 2 events for tenant_id t1, got %d", len(events))
 	}
 
-	query2 := eventstore.Query{{
-		Tags: eventstore.NewTags("username", "bob"),
+	query2 := collie.Query{{
+		Tags: collie.NewTags("username", "bob"),
 	}}
 
-	var events2 []eventstore.SequencedEvent
+	var events2 []collie.SequencedEvent
 	stream, _, err = store.Read(ctx, query2, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -402,13 +402,13 @@ func TestMultiValueTags(t *testing.T) {
 	store := setupStore(t)
 	ctx := context.Background()
 
-	transfer, _ := eventstore.NewEvent("Transferred", nil, eventstore.NewTags("account", "A", "account", "B"))
-	other, _ := eventstore.NewEvent("Transferred", nil, eventstore.NewTags("account", "C", "account", "D"))
-	if err := store.Append(ctx, []eventstore.Event{transfer, other}, nil); err != nil {
+	transfer, _ := collie.NewEvent("Transferred", nil, collie.NewTags("account", "A", "account", "B"))
+	other, _ := collie.NewEvent("Transferred", nil, collie.NewTags("account", "C", "account", "D"))
+	if err := store.Append(ctx, []collie.Event{transfer, other}, nil); err != nil {
 		t.Fatalf("append failed: %v", err)
 	}
 
-	read := func(q eventstore.Query) int {
+	read := func(q collie.Query) int {
 		t.Helper()
 		n := 0
 		stream, _, err := store.Read(ctx, q, 0)
@@ -424,19 +424,19 @@ func TestMultiValueTags(t *testing.T) {
 		return n
 	}
 
-	if n := read(eventstore.Query{{Tags: eventstore.NewTags("account", "A")}}); n != 1 {
+	if n := read(collie.Query{{Tags: collie.NewTags("account", "A")}}); n != 1 {
 		t.Errorf("touching A: got %d, want 1", n)
 	}
-	if n := read(eventstore.Query{{Tags: eventstore.NewTags("account", "B")}}); n != 1 {
+	if n := read(collie.Query{{Tags: collie.NewTags("account", "B")}}); n != 1 {
 		t.Errorf("touching B: got %d, want 1", n)
 	}
-	if n := read(eventstore.Query{{Tags: eventstore.NewTags("account", "A", "account", "B")}}); n != 1 {
+	if n := read(collie.Query{{Tags: collie.NewTags("account", "A", "account", "B")}}); n != 1 {
 		t.Errorf("touching A AND B (same event): got %d, want 1", n)
 	}
-	if n := read(eventstore.Query{{Tags: eventstore.NewTags("account", "A", "account", "C")}}); n != 0 {
+	if n := read(collie.Query{{Tags: collie.NewTags("account", "A", "account", "C")}}); n != 0 {
 		t.Errorf("touching A AND C (no single event has both): got %d, want 0", n)
 	}
-	if n := read(eventstore.Query{{Tags: eventstore.NewTags("account", "Z")}}); n != 0 {
+	if n := read(collie.Query{{Tags: collie.NewTags("account", "Z")}}); n != 0 {
 		t.Errorf("touching Z: got %d, want 0", n)
 	}
 }
@@ -447,29 +447,29 @@ func TestMultiValueConditionConflict(t *testing.T) {
 	store := setupStore(t)
 	ctx := context.Background()
 
-	t1, _ := eventstore.NewEvent("Transferred", nil, eventstore.NewTags("account", "A", "account", "B"))
-	if err := store.Append(ctx, []eventstore.Event{t1}, nil); err != nil {
+	t1, _ := collie.NewEvent("Transferred", nil, collie.NewTags("account", "A", "account", "B"))
+	if err := store.Append(ctx, []collie.Event{t1}, nil); err != nil {
 		t.Fatalf("append failed: %v", err)
 	}
 
-	t2, _ := eventstore.NewEvent("Transferred", nil, eventstore.NewTags("account", "A", "account", "C"))
+	t2, _ := collie.NewEvent("Transferred", nil, collie.NewTags("account", "A", "account", "C"))
 
 	// Guarded by "no Transferred touching account A since 0" — must be rejected,
 	// because t1 touched A.
-	condA := &eventstore.AppendCondition{
-		Query: eventstore.Query{{Types: []string{"Transferred"}, Tags: eventstore.NewTags("account", "A")}},
+	condA := &collie.AppendCondition{
+		Query: collie.Query{{Types: []string{"Transferred"}, Tags: collie.NewTags("account", "A")}},
 		After: 0,
 	}
-	if err := store.Append(ctx, []eventstore.Event{t2}, condA); err != eventstore.ErrAppendConditionViolated {
+	if err := store.Append(ctx, []collie.Event{t2}, condA); err != collie.ErrAppendConditionViolated {
 		t.Fatalf("expected ErrAppendConditionViolated for shared account-A boundary, got: %v", err)
 	}
 
 	// Guarded on an untouched account D — must succeed.
-	condD := &eventstore.AppendCondition{
-		Query: eventstore.Query{{Types: []string{"Transferred"}, Tags: eventstore.NewTags("account", "D")}},
+	condD := &collie.AppendCondition{
+		Query: collie.Query{{Types: []string{"Transferred"}, Tags: collie.NewTags("account", "D")}},
 		After: 0,
 	}
-	if err := store.Append(ctx, []eventstore.Event{t2}, condD); err != nil {
+	if err := store.Append(ctx, []collie.Event{t2}, condD); err != nil {
 		t.Fatalf("expected append guarded on untouched account D to succeed, got: %v", err)
 	}
 }
@@ -486,15 +486,15 @@ func TestAppendConditionConcurrency(t *testing.T) {
 	for range n {
 		go func() {
 			defer wg.Done()
-			e, _ := eventstore.NewEvent("UserSignedUp", "alice", eventstore.NewTags("username", "alice"))
-			condition := &eventstore.AppendCondition{
-				Query: eventstore.Query{{
+			e, _ := collie.NewEvent("UserSignedUp", "alice", collie.NewTags("username", "alice"))
+			condition := &collie.AppendCondition{
+				Query: collie.Query{{
 					Types: []string{"UserSignedUp"},
-					Tags:  eventstore.NewTags("username", "alice"),
+					Tags:  collie.NewTags("username", "alice"),
 				}},
 				After: 0,
 			}
-			errs <- store.Append(ctx, []eventstore.Event{e}, condition)
+			errs <- store.Append(ctx, []collie.Event{e}, condition)
 		}()
 	}
 	wg.Wait()
@@ -504,7 +504,7 @@ func TestAppendConditionConcurrency(t *testing.T) {
 	for err := range errs {
 		if err == nil {
 			succeeded++
-		} else if err != eventstore.ErrAppendConditionViolated {
+		} else if err != collie.ErrAppendConditionViolated {
 			t.Errorf("unexpected error: %v", err)
 		}
 	}
@@ -513,7 +513,7 @@ func TestAppendConditionConcurrency(t *testing.T) {
 		t.Fatalf("expected exactly 1 successful append, got %d", succeeded)
 	}
 
-	var events []eventstore.SequencedEvent
+	var events []collie.SequencedEvent
 	stream, _, err := store.Read(ctx, nil, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -560,15 +560,15 @@ func TestStagingSameBoundaryConcurrency(t *testing.T) {
 	for range n {
 		go func() {
 			defer wg.Done()
-			e, _ := eventstore.NewEvent("UserSignedUp", "alice", eventstore.NewTags("username", "alice"))
-			condition := &eventstore.AppendCondition{
-				Query: eventstore.Query{{
+			e, _ := collie.NewEvent("UserSignedUp", "alice", collie.NewTags("username", "alice"))
+			condition := &collie.AppendCondition{
+				Query: collie.Query{{
 					Types: []string{"UserSignedUp"},
-					Tags:  eventstore.NewTags("username", "alice"),
+					Tags:  collie.NewTags("username", "alice"),
 				}},
 				After: 0,
 			}
-			errs <- store.Append(ctx, []eventstore.Event{e}, condition)
+			errs <- store.Append(ctx, []collie.Event{e}, condition)
 		}()
 	}
 	wg.Wait()
@@ -578,7 +578,7 @@ func TestStagingSameBoundaryConcurrency(t *testing.T) {
 	for err := range errs {
 		if err == nil {
 			succeeded++
-		} else if err != eventstore.ErrAppendConditionViolated {
+		} else if err != collie.ErrAppendConditionViolated {
 			t.Errorf("unexpected error: %v", err)
 		}
 	}
@@ -601,15 +601,15 @@ func TestStagingDisjointConcurrency(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			user := fmt.Sprintf("user-%d", i)
-			e, _ := eventstore.NewEvent("UserSignedUp", user, eventstore.NewTags("username", user))
-			condition := &eventstore.AppendCondition{
-				Query: eventstore.Query{{
+			e, _ := collie.NewEvent("UserSignedUp", user, collie.NewTags("username", user))
+			condition := &collie.AppendCondition{
+				Query: collie.Query{{
 					Types: []string{"UserSignedUp"},
-					Tags:  eventstore.NewTags("username", user),
+					Tags:  collie.NewTags("username", user),
 				}},
 				After: 0,
 			}
-			errs <- store.Append(ctx, []eventstore.Event{e}, condition)
+			errs <- store.Append(ctx, []collie.Event{e}, condition)
 		}(i)
 	}
 	wg.Wait()
@@ -651,8 +651,8 @@ func TestStagingFlushMonotonic(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			ent := fmt.Sprintf("e-%d", i)
-			e, _ := eventstore.NewEvent("Thing", ent, eventstore.NewTags("entity", ent))
-			if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
+			e, _ := collie.NewEvent("Thing", ent, collie.NewTags("entity", ent))
+			if err := store.Append(ctx, []collie.Event{e}, nil); err != nil {
 				t.Errorf("append %s: %v", ent, err)
 			}
 		}(i)
@@ -699,23 +699,23 @@ func TestStagingMultiBoundaryConsistent(t *testing.T) {
 	ctx := context.Background()
 
 	// X lands in staging (course c2), unconditional — not yet flushed to events.
-	x, _ := eventstore.NewEvent("Enrolled", nil, eventstore.NewTags("course", "c2"))
-	if err := store.Append(ctx, []eventstore.Event{x}, nil); err != nil {
+	x, _ := collie.NewEvent("Enrolled", nil, collie.NewTags("course", "c2"))
+	if err := store.Append(ctx, []collie.Event{x}, nil); err != nil {
 		t.Fatalf("append X: %v", err)
 	}
 
 	// Y guarded by (Enrolled@course:c2 OR Enrolled@student:s1) from After=0. X
 	// matches course:c2 and is pending in staging, so Y must conflict — even though
 	// X is not yet in events.
-	y, _ := eventstore.NewEvent("Enrolled", nil, eventstore.NewTags("student", "s1"))
-	cond := &eventstore.AppendCondition{
-		Query: eventstore.Query{
-			{Types: []string{"Enrolled"}, Tags: eventstore.NewTags("course", "c2")},
-			{Types: []string{"Enrolled"}, Tags: eventstore.NewTags("student", "s1")},
+	y, _ := collie.NewEvent("Enrolled", nil, collie.NewTags("student", "s1"))
+	cond := &collie.AppendCondition{
+		Query: collie.Query{
+			{Types: []string{"Enrolled"}, Tags: collie.NewTags("course", "c2")},
+			{Types: []string{"Enrolled"}, Tags: collie.NewTags("student", "s1")},
 		},
 		After: 0,
 	}
-	if err := store.Append(ctx, []eventstore.Event{y}, cond); err != eventstore.ErrAppendConditionViolated {
+	if err := store.Append(ctx, []collie.Event{y}, cond); err != collie.ErrAppendConditionViolated {
 		t.Fatalf("expected conflict from the pending staging event (multi-boundary), got: %v", err)
 	}
 }
@@ -733,12 +733,12 @@ func TestStagingNoDeadlock(t *testing.T) {
 	for i := range n {
 		go func(i int) {
 			defer wg.Done()
-			tags := eventstore.NewTags(
+			tags := collie.NewTags(
 				fmt.Sprintf("slot%d", i%4), "x",
 				fmt.Sprintf("slot%d", (i+1)%4), "x",
 			)
-			e, _ := eventstore.NewEvent("Slot", nil, tags)
-			errs <- store.Append(ctx, []eventstore.Event{e}, nil)
+			e, _ := collie.NewEvent("Slot", nil, tags)
+			errs <- store.Append(ctx, []collie.Event{e}, nil)
 		}(i)
 	}
 	wg.Wait()
@@ -758,35 +758,35 @@ func TestStagingNoDeadlock(t *testing.T) {
 func TestUnkeyableConditionRejected(t *testing.T) {
 	store := setupStagingStore(t)
 	ctx := context.Background()
-	e, _ := eventstore.NewEvent("Thing", nil, eventstore.NewTags("k", "v"))
+	e, _ := collie.NewEvent("Thing", nil, collie.NewTags("k", "v"))
 
-	unkeyable := []*eventstore.AppendCondition{
+	unkeyable := []*collie.AppendCondition{
 		{Query: nil, After: 0}, // match-all (empty query)
-		{Query: eventstore.Query{{Tags: eventstore.NewTags("email", "x")}}, After: 0}, // type-less
-		{Query: eventstore.Query{{Types: []string{"Thing"}}}, After: 0},               // tag-less
+		{Query: collie.Query{{Tags: collie.NewTags("email", "x")}}, After: 0}, // type-less
+		{Query: collie.Query{{Types: []string{"Thing"}}}, After: 0},           // tag-less
 	}
 	for _, c := range unkeyable {
-		if err := store.Append(ctx, []eventstore.Event{e}, c); !errors.Is(err, pgstore.ErrUnkeyableCondition) {
+		if err := store.Append(ctx, []collie.Event{e}, c); !errors.Is(err, pgstore.ErrUnkeyableCondition) {
 			t.Errorf("staging Append with unkeyable condition %+v: want ErrUnkeyableCondition, got %v", c.Query, err)
 		}
 	}
 
 	// A keyable condition is still accepted.
-	keyable := &eventstore.AppendCondition{
-		Query: eventstore.Query{{Types: []string{"Thing"}, Tags: eventstore.NewTags("k", "v")}},
+	keyable := &collie.AppendCondition{
+		Query: collie.Query{{Types: []string{"Thing"}, Tags: collie.NewTags("k", "v")}},
 		After: 0,
 	}
-	if err := store.Append(ctx, []eventstore.Event{e}, keyable); err != nil {
+	if err := store.Append(ctx, []collie.Event{e}, keyable); err != nil {
 		t.Errorf("keyable condition should be accepted, got %v", err)
 	}
 }
 
 // --- Encryption integration tests ---
 
-func collectPGEvents(t *testing.T, store eventstore.Store, query eventstore.Query) []eventstore.SequencedEvent {
+func collectPGEvents(t *testing.T, store collie.Store, query collie.Query) []collie.SequencedEvent {
 	t.Helper()
 	ctx := context.Background()
-	var events []eventstore.SequencedEvent
+	var events []collie.SequencedEvent
 	stream, _, err := store.Read(ctx, query, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -810,13 +810,13 @@ func TestPGEncryptedRoundTrip(t *testing.T) {
 	}
 	userData := user{Name: "Alice", Email: "alice@example.com"}
 
-	e, err := eventstore.NewEvent("UserSignedUp", userData, eventstore.NewTags(
+	e, err := collie.NewEvent("UserSignedUp", userData, collie.NewTags(
 		"userId", "user-123",
 	), encryption.WithEncryptionKeys("userId"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
+	if err := store.Append(ctx, []collie.Event{e}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -824,7 +824,7 @@ func TestPGEncryptedRoundTrip(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
-	data, err := eventstore.EventData[user](events[0])
+	data, err := collie.EventData[user](events[0])
 	if err != nil {
 		t.Fatalf("unexpected unmarshal error: %v", err)
 	}
@@ -844,16 +844,16 @@ func TestPGEncryptedAtRest(t *testing.T) {
 	if err := raw.Migrate(); err != nil {
 		t.Fatalf("could not migrate: %v", err)
 	}
-	store := eventstore.NewMiddlewareStore(raw,
-		eventstore.WithAppendMiddleware(enc.OnAppend),
-		eventstore.WithReadMiddleware(enc.OnRead),
+	store := collie.NewMiddlewareStore(raw,
+		collie.WithAppendMiddleware(enc.OnAppend),
+		collie.WithReadMiddleware(enc.OnRead),
 	)
 
 	ctx := context.Background()
-	e, _ := eventstore.NewEvent("UserSignedUp", "secret-data", eventstore.NewTags(
+	e, _ := collie.NewEvent("UserSignedUp", "secret-data", collie.NewTags(
 		"userId", "user-123",
 	), encryption.WithEncryptionKeys("userId"))
-	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
+	if err := store.Append(ctx, []collie.Event{e}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -871,14 +871,14 @@ func TestPGForgetRedactsData(t *testing.T) {
 	store, enc := setupEncryptedStore(t)
 	ctx := context.Background()
 
-	e, _ := eventstore.NewEvent("UserSignedUp", "alice-data", eventstore.NewTags(
+	e, _ := collie.NewEvent("UserSignedUp", "alice-data", collie.NewTags(
 		"userId", "user-123",
 	), encryption.WithEncryptionKeys("userId"))
-	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
+	if err := store.Append(ctx, []collie.Event{e}, nil); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := enc.Forget(ctx, eventstore.NewTags("userId", "user-123")); err != nil {
+	if err := enc.Forget(ctx, collie.NewTags("userId", "user-123")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -901,17 +901,17 @@ func TestPGForgetDoesNotAffectOtherSubjects(t *testing.T) {
 	store, enc := setupEncryptedStore(t)
 	ctx := context.Background()
 
-	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", eventstore.NewTags(
+	e1, _ := collie.NewEvent("UserSignedUp", "alice", collie.NewTags(
 		"userId", "user-1",
 	), encryption.WithEncryptionKeys("userId"))
-	e2, _ := eventstore.NewEvent("UserSignedUp", "bob", eventstore.NewTags(
+	e2, _ := collie.NewEvent("UserSignedUp", "bob", collie.NewTags(
 		"userId", "user-2",
 	), encryption.WithEncryptionKeys("userId"))
-	if err := store.Append(ctx, []eventstore.Event{e1, e2}, nil); err != nil {
+	if err := store.Append(ctx, []collie.Event{e1, e2}, nil); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := enc.Forget(ctx, eventstore.NewTags("userId", "user-1")); err != nil {
+	if err := enc.Forget(ctx, collie.NewTags("userId", "user-1")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -922,7 +922,7 @@ func TestPGForgetDoesNotAffectOtherSubjects(t *testing.T) {
 	if !encryption.IsRedacted(events[0]) {
 		t.Fatal("expected user-1 to be redacted")
 	}
-	data, err := eventstore.EventData[string](events[1])
+	data, err := collie.EventData[string](events[1])
 	if err != nil {
 		t.Fatalf("unexpected error reading user-2: %v", err)
 	}
@@ -935,15 +935,15 @@ func TestPGSupersetForget(t *testing.T) {
 	store, enc := setupEncryptedStore(t)
 	ctx := context.Background()
 
-	e, _ := eventstore.NewEvent("FriendRequest", "request-data", eventstore.NewTags(
+	e, _ := collie.NewEvent("FriendRequest", "request-data", collie.NewTags(
 		"senderId", "user-1",
 		"receiverId", "user-2",
 	), encryption.WithEncryptionKeys("senderId", "receiverId"))
-	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
+	if err := store.Append(ctx, []collie.Event{e}, nil); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := enc.Forget(ctx, eventstore.NewTags("senderId", "user-1")); err != nil {
+	if err := enc.Forget(ctx, collie.NewTags("senderId", "user-1")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -957,15 +957,15 @@ func TestPGMixedEncryptedAndPlainEvents(t *testing.T) {
 	store, enc := setupEncryptedStore(t)
 	ctx := context.Background()
 
-	plain, _ := eventstore.NewEvent("SystemBooted", "v1.0", nil)
-	encrypted, _ := eventstore.NewEvent("UserSignedUp", "alice", eventstore.NewTags(
+	plain, _ := collie.NewEvent("SystemBooted", "v1.0", nil)
+	encrypted, _ := collie.NewEvent("UserSignedUp", "alice", collie.NewTags(
 		"userId", "user-1",
 	), encryption.WithEncryptionKeys("userId"))
-	if err := store.Append(ctx, []eventstore.Event{plain, encrypted}, nil); err != nil {
+	if err := store.Append(ctx, []collie.Event{plain, encrypted}, nil); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := enc.Forget(ctx, eventstore.NewTags("userId", "user-1")); err != nil {
+	if err := enc.Forget(ctx, collie.NewTags("userId", "user-1")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -973,7 +973,7 @@ func TestPGMixedEncryptedAndPlainEvents(t *testing.T) {
 	if len(events) != 2 {
 		t.Fatalf("expected 2 events, got %d", len(events))
 	}
-	data, err := eventstore.EventData[string](events[0])
+	data, err := collie.EventData[string](events[0])
 	if err != nil || data != "v1.0" {
 		t.Fatalf("plain event should be readable: data=%s, err=%v", data, err)
 	}
@@ -986,25 +986,25 @@ func TestPGAppendConditionThroughEncryption(t *testing.T) {
 	store, _ := setupEncryptedStore(t)
 	ctx := context.Background()
 
-	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", eventstore.NewTags(
+	e1, _ := collie.NewEvent("UserSignedUp", "alice", collie.NewTags(
 		"userId", "user-1",
 	), encryption.WithEncryptionKeys("userId"))
-	if err := store.Append(ctx, []eventstore.Event{e1}, nil); err != nil {
+	if err := store.Append(ctx, []collie.Event{e1}, nil); err != nil {
 		t.Fatal(err)
 	}
 
-	condition := &eventstore.AppendCondition{
-		Query: eventstore.Query{
-			eventstore.QueryItem{Types: []string{"UserSignedUp"}, Tags: eventstore.NewTags("userId", "user-1")},
+	condition := &collie.AppendCondition{
+		Query: collie.Query{
+			collie.QueryItem{Types: []string{"UserSignedUp"}, Tags: collie.NewTags("userId", "user-1")},
 		},
 		After: 0,
 	}
 
-	e2, _ := eventstore.NewEvent("UserSignedUp", "alice-again", eventstore.NewTags(
+	e2, _ := collie.NewEvent("UserSignedUp", "alice-again", collie.NewTags(
 		"userId", "user-1",
 	), encryption.WithEncryptionKeys("userId"))
-	err := store.Append(ctx, []eventstore.Event{e2}, condition)
-	if err != eventstore.ErrAppendConditionViolated {
+	err := store.Append(ctx, []collie.Event{e2}, condition)
+	if err != collie.ErrAppendConditionViolated {
 		t.Fatalf("expected ErrAppendConditionViolated, got %v", err)
 	}
 }
@@ -1019,15 +1019,15 @@ func BenchmarkAppendConcurrent(b *testing.B) {
 		for pb.Next() {
 			id := counter.Add(1)
 			username := fmt.Sprintf("user-%d", id)
-			e, _ := eventstore.NewEvent("UserSignedUp", username, eventstore.NewTags("username", username))
-			condition := &eventstore.AppendCondition{
-				Query: eventstore.Query{{
+			e, _ := collie.NewEvent("UserSignedUp", username, collie.NewTags("username", username))
+			condition := &collie.AppendCondition{
+				Query: collie.Query{{
 					Types: []string{"UserSignedUp"},
-					Tags:  eventstore.NewTags("username", username),
+					Tags:  collie.NewTags("username", username),
 				}},
 				After: 0,
 			}
-			if err := store.Append(ctx, []eventstore.Event{e}, condition); err != nil {
+			if err := store.Append(ctx, []collie.Event{e}, condition); err != nil {
 				b.Errorf("append failed: %v", err)
 			}
 		}
@@ -1046,16 +1046,16 @@ func TestNewEventFromRoundTrip(t *testing.T) {
 		To   string `json:"to"   dcb:"tag:user"`
 		Body string `json:"body"`
 	}
-	sent, err := eventstore.NewEventFrom("MessageSent", messageSent{From: "alice", To: "bob", Body: "hi"})
+	sent, err := collie.NewEventFrom("MessageSent", messageSent{From: "alice", To: "bob", Body: "hi"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Append(ctx, []eventstore.Event{sent}, nil); err != nil {
+	if err := store.Append(ctx, []collie.Event{sent}, nil); err != nil {
 		t.Fatalf("append failed: %v", err)
 	}
 
 	count := 0
-	stream, _, err := store.Read(ctx, eventstore.Query{{Tags: eventstore.NewTags("user", "bob")}}, 0)
+	stream, _, err := store.Read(ctx, collie.Query{{Tags: collie.NewTags("user", "bob")}}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1064,10 +1064,10 @@ func TestNewEventFromRoundTrip(t *testing.T) {
 			t.Fatalf("read error: %v", err)
 		}
 		count++
-		if want := eventstore.NewTags("user", "alice", "user", "bob"); !slices.Equal(e.Tags, want) {
+		if want := collie.NewTags("user", "alice", "user", "bob"); !slices.Equal(e.Tags, want) {
 			t.Errorf("tags = %v, want %v", e.Tags, want)
 		}
-		msg, err := eventstore.EventData[messageSent](e)
+		msg, err := collie.EventData[messageSent](e)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1082,9 +1082,9 @@ func TestNewEventFromRoundTrip(t *testing.T) {
 
 func pgAppend(t *testing.T, store *pgstore.Store, eventType string, n int) {
 	t.Helper()
-	events := make([]eventstore.Event, n)
+	events := make([]collie.Event, n)
 	for i := range events {
-		e, err := eventstore.NewEvent(eventType, nil, eventstore.NewTags("id", eventType))
+		e, err := collie.NewEvent(eventType, nil, collie.NewTags("id", eventType))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1118,7 +1118,7 @@ func TestReadReturnsHead(t *testing.T) {
 	}
 
 	pgAppend(t, store, "Other", 2)
-	events, head, err := store.Read(ctx, eventstore.Query{{Types: []string{"Wanted"}}}, 0)
+	events, head, err := store.Read(ctx, collie.Query{{Types: []string{"Wanted"}}}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1160,11 +1160,11 @@ func TestReadHeadIgnoresStaging(t *testing.T) {
 	store := setupStagingStore(t)
 	ctx := context.Background()
 
-	e, err := eventstore.NewEvent("Staged", nil, eventstore.NewTags("id", "s1"))
+	e, err := collie.NewEvent("Staged", nil, collie.NewTags("id", "s1"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Append(ctx, []eventstore.Event{e, e}, nil); err != nil {
+	if err := store.Append(ctx, []collie.Event{e, e}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, head, err := store.Read(ctx, nil, 0); err != nil || head != 0 {

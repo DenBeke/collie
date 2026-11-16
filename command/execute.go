@@ -39,11 +39,11 @@ type Command interface {
 	// allows projections that load persisted state (e.g.
 	// [snapshot.Projection]); return an error if that loading fails.
 	// Returning no projections makes the append unconditional.
-	Projections(ctx context.Context) ([]eventstore.Projection, error)
+	Projections(ctx context.Context) ([]collie.Projection, error)
 	// Decide runs after the projections are loaded. It reads their state and
 	// returns the events to append, an error to abort (nothing is appended), or
 	// no events for a no-op.
-	Decide(ctx context.Context) ([]eventstore.Event, error)
+	Decide(ctx context.Context) ([]collie.Event, error)
 }
 
 // Preparer is implemented by commands that must do work before the decision: an
@@ -203,7 +203,7 @@ func WithBackoff(backoff func(ctx context.Context, attempt int)) ExecuteOption {
 // errors.Is(err, ErrCommandRejected)) with the domain message unchanged. If
 // Decide returns no events, Execute is a no-op. A command that declares no
 // projections appends unconditionally.
-func Execute(ctx context.Context, store eventstore.Store, command Command, options ...ExecuteOption) error {
+func Execute(ctx context.Context, store collie.Store, command Command, options ...ExecuteOption) error {
 	config := executeConfig{maxAttempts: 1}
 	for _, option := range options {
 		option(&config)
@@ -241,9 +241,9 @@ func Execute(ctx context.Context, store eventstore.Store, command Command, optio
 			return fmt.Errorf("could not build projections: %w", err)
 		}
 
-		var condition *eventstore.AppendCondition
+		var condition *collie.AppendCondition
 		if len(projections) > 0 {
-			built, err := eventstore.BuildDecisionModel(ctx, store, projections...)
+			built, err := collie.BuildDecisionModel(ctx, store, projections...)
 			if err != nil {
 				return fmt.Errorf("could not build decision model: %w", err)
 			}
@@ -274,7 +274,7 @@ func Execute(ctx context.Context, store eventstore.Store, command Command, optio
 		if err == nil {
 			return nil
 		}
-		if !errors.Is(err, eventstore.ErrAppendConditionViolated) || attempt >= config.maxAttempts {
+		if !errors.Is(err, collie.ErrAppendConditionViolated) || attempt >= config.maxAttempts {
 			return fmt.Errorf("could not append events: %w", err)
 		}
 		if config.backoff != nil {
@@ -285,7 +285,7 @@ func Execute(ctx context.Context, store eventstore.Store, command Command, optio
 
 // authorizeBeforePrepare builds a throwaway decision model purely so Authorize
 // has one to read; nothing folded here reaches Prepare — the loop asks again.
-func authorizeBeforePrepare(ctx context.Context, store eventstore.Store, command Command) error {
+func authorizeBeforePrepare(ctx context.Context, store collie.Store, command Command) error {
 	cmd := commandForAttempt(command)
 
 	projections, err := cmd.Projections(ctx)
@@ -293,7 +293,7 @@ func authorizeBeforePrepare(ctx context.Context, store eventstore.Store, command
 		return fmt.Errorf("could not build projections: %w", err)
 	}
 	if len(projections) > 0 {
-		_, err = eventstore.BuildDecisionModel(ctx, store, projections...)
+		_, err = collie.BuildDecisionModel(ctx, store, projections...)
 		if err != nil {
 			return fmt.Errorf("could not build decision model: %w", err)
 		}

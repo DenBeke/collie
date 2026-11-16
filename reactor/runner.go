@@ -16,7 +16,7 @@ import (
 // constrains nothing, so the whole log is delivered and each reactor filters for
 // itself. The runner cannot know which types a handler cares about, and a query
 // derived from a guess would silently skip the event that mattered.
-var everyEvent = eventstore.Query{eventstore.QueryItem{}}
+var everyEvent = collie.Query{collie.QueryItem{}}
 
 // readBatchSize bounds how many events one read pulls into memory before any of
 // them is handled. A pass keeps reading batches until the log runs out, so this
@@ -36,7 +36,7 @@ var _ CommandExecutor = (*command.Registry)(nil)
 // time, executes what comes back, and saves the checkpoint after each. One
 // checkpoint per reactor, so a stuck reactor holds up only itself.
 type Runner struct {
-	store       eventstore.Store
+	store       collie.Store
 	checkpoints CheckpointStore
 	commands    CommandExecutor
 	interval    time.Duration
@@ -71,7 +71,7 @@ type Option func(*Runner)
 // NewRunner reads from store, keeps positions in checkpoints, and executes
 // reactions through commands. It ticks once a second unless [WithInterval] says
 // otherwise, and does nothing until [Runner.Tick] or [Runner.Run] is called.
-func NewRunner(store eventstore.Store, checkpoints CheckpointStore, commands CommandExecutor, options ...Option) *Runner {
+func NewRunner(store collie.Store, checkpoints CheckpointStore, commands CommandExecutor, options ...Option) *Runner {
 	runner := &Runner{
 		store:       store,
 		checkpoints: checkpoints,
@@ -251,12 +251,12 @@ func (r *Runner) tick(ctx context.Context, reg *registration) error {
 // point of it — finishes the read before anything is handled. A reactor's
 // command appends to the store being read, and a store that holds a read lock
 // across iteration, as the in-memory one does, would deadlock against it.
-func (r *Runner) read(ctx context.Context, after uint64) ([]eventstore.SequencedEvent, error) {
+func (r *Runner) read(ctx context.Context, after uint64) ([]collie.SequencedEvent, error) {
 	stream, _, err := r.store.Read(ctx, everyEvent, after)
 	if err != nil {
 		return nil, err
 	}
-	events := make([]eventstore.SequencedEvent, 0, 64)
+	events := make([]collie.SequencedEvent, 0, 64)
 	for event, err := range stream {
 		if err != nil {
 			return nil, err
@@ -272,13 +272,13 @@ func (r *Runner) read(ctx context.Context, after uint64) ([]eventstore.Sequenced
 // deliver runs one event through one reactor and reports whether the checkpoint
 // may advance past it: only when React succeeded and every command reached a
 // verdict, appended or refused for a reason repeating cannot change.
-func (r *Runner) deliver(ctx context.Context, reg *registration, event eventstore.SequencedEvent) bool {
+func (r *Runner) deliver(ctx context.Context, reg *registration, event collie.SequencedEvent) bool {
 	// The envelope on everything appended under this delivery: this reactor is
 	// the actor, the event it is answering is the cause. It goes on before React
 	// and not just around Execute, because a reactor that needs the answer
 	// dispatches its own commands with the context it was handed.
-	ctx = eventstore.ContextWithActor(ctx, "reactor:"+reg.name)
-	ctx = eventstore.ContextWithCause(ctx, fmt.Sprintf("event:%d", event.SequenceNumber))
+	ctx = collie.ContextWithActor(ctx, "reactor:"+reg.name)
+	ctx = collie.ContextWithCause(ctx, fmt.Sprintf("event:%d", event.SequenceNumber))
 
 	commands, err := r.react(ctx, reg, event)
 	if err != nil {
@@ -312,7 +312,7 @@ func (r *Runner) deliver(ctx context.Context, reg *registration, event eventstor
 // react calls the handler and turns a panic into an error, so one reactor cannot
 // take down the runner and every other reactor with it. A panic is at least as
 // suspect as a returned error: do not advance.
-func (r *Runner) react(ctx context.Context, reg *registration, event eventstore.SequencedEvent) (commands []command.Command, err error) {
+func (r *Runner) react(ctx context.Context, reg *registration, event collie.SequencedEvent) (commands []command.Command, err error) {
 	defer func() {
 		recovered := recover()
 		if recovered != nil {

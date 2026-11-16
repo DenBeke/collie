@@ -29,7 +29,7 @@ Done:
   fields of the payload struct (see README, "Tags from struct fields"). The tag
   field is a *copy*: it stays in `Data` and is read back from there, so
   `EventData` needed no change and folds read the id from the struct.
-- Construction hooks (`eventstore.RegisterHook`) and the `dcb-<plugin>`
+- Construction hooks (`collie.RegisterHook`) and the `dcb-<plugin>`
   struct-tag convention: `dcb-encrypt:"tag:<key>"` and
   `dcb-attachment:"blob"` are resolved into the existing Metadata by a hook
   each plugin registers once at boot, so a policy declared on a field cannot

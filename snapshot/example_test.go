@@ -33,50 +33,50 @@ type SubscribeStudentToCourse struct {
 
 	courseSeats    *snapshot.Projection[int]
 	studentCourses *snapshot.Projection[int]
-	subscribed     *eventstore.DefaultProjection[bool]
+	subscribed     *collie.DefaultProjection[bool]
 }
 
 // countSubscriptions counts StudentSubscribed events; the partition tags passed
 // to snapshot.NewProjection scope which ones. The event types to read derive
 // from the handler keys, so no Query is spelled out.
-var countSubscriptions = eventstore.DefaultProjection[int]{
-	Handlers: map[string]eventstore.HandleFunc[int]{
-		"StudentSubscribed": func(count int, _ eventstore.SequencedEvent) (int, error) { return count + 1, nil },
+var countSubscriptions = collie.DefaultProjection[int]{
+	Handlers: map[string]collie.HandleFunc[int]{
+		"StudentSubscribed": func(count int, _ collie.SequencedEvent) (int, error) { return count + 1, nil },
 	},
 }
 
-func (cmd *SubscribeStudentToCourse) Projections(ctx context.Context) ([]eventstore.Projection, error) {
+func (cmd *SubscribeStudentToCourse) Projections(ctx context.Context) ([]collie.Projection, error) {
 	// Partition {course: X}: seats taken in this course.
 	courseSeats, err := snapshot.NewProjection(ctx, cmd.snapshots, "course-seats", countSubscriptions,
-		eventstore.NewTag("course", cmd.CourseID))
+		collie.NewTag("course", cmd.CourseID))
 	if err != nil {
 		return nil, fmt.Errorf("could not load course seats: %w", err)
 	}
 
 	// Partition {student: X}: courses this student takes.
 	studentCourses, err := snapshot.NewProjection(ctx, cmd.snapshots, "student-courses", countSubscriptions,
-		eventstore.NewTag("student", cmd.StudentID))
+		collie.NewTag("student", cmd.StudentID))
 	if err != nil {
 		return nil, fmt.Errorf("could not load student courses: %w", err)
 	}
 
 	// Pair {student: X, course: Y}: already subscribed? Ephemeral on purpose.
-	subscribed := eventstore.DefaultProjection[bool]{
-		Query: eventstore.QueryItem{
-			Tags: eventstore.NewTags("student", cmd.StudentID, "course", cmd.CourseID),
+	subscribed := collie.DefaultProjection[bool]{
+		Query: collie.QueryItem{
+			Tags: collie.NewTags("student", cmd.StudentID, "course", cmd.CourseID),
 		},
-		Handlers: map[string]eventstore.HandleFunc[bool]{
-			"StudentSubscribed": func(bool, eventstore.SequencedEvent) (bool, error) { return true, nil },
+		Handlers: map[string]collie.HandleFunc[bool]{
+			"StudentSubscribed": func(bool, collie.SequencedEvent) (bool, error) { return true, nil },
 		},
 	}
 
 	cmd.courseSeats = courseSeats
 	cmd.studentCourses = studentCourses
 	cmd.subscribed = &subscribed
-	return []eventstore.Projection{cmd.courseSeats, cmd.studentCourses, cmd.subscribed}, nil
+	return []collie.Projection{cmd.courseSeats, cmd.studentCourses, cmd.subscribed}, nil
 }
 
-func (cmd *SubscribeStudentToCourse) Decide(context.Context) ([]eventstore.Event, error) {
+func (cmd *SubscribeStudentToCourse) Decide(context.Context) ([]collie.Event, error) {
 	if cmd.subscribed.State {
 		return nil, fmt.Errorf("student %s is already subscribed to %s", cmd.StudentID, cmd.CourseID)
 	}
@@ -87,12 +87,12 @@ func (cmd *SubscribeStudentToCourse) Decide(context.Context) ([]eventstore.Event
 		return nil, fmt.Errorf("student %s already takes %d courses", cmd.StudentID, maxCoursesPerStudent)
 	}
 	// One event, two boundaries — this is why tags are a list, not a map.
-	event, err := eventstore.NewEvent("StudentSubscribed", nil,
-		eventstore.NewTags("student", cmd.StudentID, "course", cmd.CourseID))
+	event, err := collie.NewEvent("StudentSubscribed", nil,
+		collie.NewTags("student", cmd.StudentID, "course", cmd.CourseID))
 	if err != nil {
 		return nil, fmt.Errorf("could not create StudentSubscribed event: %w", err)
 	}
-	return []eventstore.Event{event}, nil
+	return []collie.Event{event}, nil
 }
 
 // ExampleNewProjection subscribes students to courses. Every rule is enforced

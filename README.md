@@ -1,8 +1,14 @@
-# eventstore
+# Collie
+
+<p align="center">
+  <img src="docs/collie.jpg" width="375" alt="A border collie with a Go bandana herds sheep through a gate while a gopher ticks them off on a clipboard">
+</p>
 
 A Go implementation of [Dynamic Consistency Boundaries](https://dcb.events/) (DCB) event sourcing, including a Postgres event store implementation.
 
 Classic event sourcing fixes its consistency boundaries at design time: one aggregate, one stream, and a rule that spans two aggregates needs a saga. With DCB there are no more aggregates and no more streams. There is one global log of events, every event carries tags, and every decision names the events it depends on with a query. An append is refused when a matching event arrived after the decision read the log.
+
+That is also where the name "Collie" comes from: instead of fixed fences that keep sheep together, a border collie decides dynamically which sheep to round up.
 
 ⚠ This is my own experimental implementation of the DCB spec.  
 It's currently running stable on one of my own projects (20 million events in the store, increasing every day). But I keep on improving on the interface and the design. I hope to inspire people with this project, and I hope people will start using it, however, which means that sometimes I might break the interfaces to make it even better 😉.
@@ -24,7 +30,7 @@ import (
 	"context"
 	"fmt"
 
-	eventstore "github.com/DenBeke/collie"
+	"github.com/DenBeke/collie"
 	"github.com/DenBeke/collie/memory"
 )
 
@@ -34,19 +40,19 @@ type UserSignedUp struct {
 }
 
 // usernameTaken folds the signups for one username into a bool.
-func usernameTaken(username string) eventstore.DefaultProjection[bool] {
-	return eventstore.DefaultProjection[bool]{
-		Query: eventstore.QueryItem{Tags: eventstore.NewTags("username", username)},
-		Handlers: map[string]eventstore.HandleFunc[bool]{
-			"UserSignedUp": func(bool, eventstore.SequencedEvent) (bool, error) { return true, nil },
+func usernameTaken(username string) collie.DefaultProjection[bool] {
+	return collie.DefaultProjection[bool]{
+		Query: collie.QueryItem{Tags: collie.NewTags("username", username)},
+		Handlers: map[string]collie.HandleFunc[bool]{
+			"UserSignedUp": func(bool, collie.SequencedEvent) (bool, error) { return true, nil },
 		},
 	}
 }
 
-func signUp(ctx context.Context, store eventstore.Store, username string) error {
+func signUp(ctx context.Context, store collie.Store, username string) error {
 	// 1. Read the events this decision depends on.
 	taken := usernameTaken(username)
-	condition, err := eventstore.BuildDecisionModel(ctx, store, &taken)
+	condition, err := collie.BuildDecisionModel(ctx, store, &taken)
 	if err != nil {
 		return err
 	}
@@ -57,11 +63,11 @@ func signUp(ctx context.Context, store eventstore.Store, username string) error 
 	}
 
 	// 3. Append, on the condition that no such event arrived since step 1.
-	event, err := eventstore.NewEventFrom("UserSignedUp", UserSignedUp{Username: username})
+	event, err := collie.NewEventFrom("UserSignedUp", UserSignedUp{Username: username})
 	if err != nil {
 		return err
 	}
-	return store.Append(ctx, []eventstore.Event{event}, condition)
+	return store.Append(ctx, []collie.Event{event}, condition)
 }
 
 func main() {
@@ -79,7 +85,7 @@ If two requests claim `alice` at the same moment, both pass step 2, one append s
 
 ![A decision reads the events matching its query, folds them into a state, decides, and appends on the condition that no matching event was added since. On a conflict it retries.](docs/how-it-works.svg)
 
-**Events and tags.** An event has a type, a payload and tags. A tag is a key and a value, such as `username=alice`, and names one thing the event is a fact about. An event can carry several tags, and the same key could have multiple values. `NewEventFrom` takes the tags from `dcb:"tag:<key>"` struct fields. `NewEvent` takes them as an argument. Read a payload back with `eventstore.EventData[UserSignedUp](event)`.
+**Events and tags.** An event has a type, a payload and tags. A tag is a key and a value, such as `username=alice`, and names one thing the event is a fact about. An event can carry several tags, and the same key could have multiple values. `NewEventFrom` takes the tags from `dcb:"tag:<key>"` struct fields. `NewEvent` takes them as an argument. Read a payload back with `collie.EventData[UserSignedUp](event)`.
 
 **Queries.** A `QueryItem` matches events that have one of its `Types` and carry all of its `Tags`. A `Query` is a list of items and matches an event that matches any of them.
 
@@ -99,23 +105,23 @@ The `command` package wraps the loop above, including the retry. A command decla
 type SignUp struct {
 	Username string `json:"username"`
 
-	taken eventstore.DefaultProjection[bool]
+	taken collie.DefaultProjection[bool]
 }
 
-func (c *SignUp) Projections(context.Context) ([]eventstore.Projection, error) {
+func (c *SignUp) Projections(context.Context) ([]collie.Projection, error) {
 	c.taken = usernameTaken(c.Username)
-	return []eventstore.Projection{&c.taken}, nil
+	return []collie.Projection{&c.taken}, nil
 }
 
-func (c *SignUp) Decide(context.Context) ([]eventstore.Event, error) {
+func (c *SignUp) Decide(context.Context) ([]collie.Event, error) {
 	if c.taken.State {
 		return nil, fmt.Errorf("username %q is already taken", c.Username)
 	}
-	event, err := eventstore.NewEventFrom("UserSignedUp", UserSignedUp{Username: c.Username})
+	event, err := collie.NewEventFrom("UserSignedUp", UserSignedUp{Username: c.Username})
 	if err != nil {
 		return nil, err
 	}
-	return []eventstore.Event{event}, nil
+	return []collie.Event{event}, nil
 }
 
 err := command.Execute(ctx, store, &SignUp{Username: "alice"}, command.WithMaxAttempts(3))
@@ -140,11 +146,11 @@ Two general-purpose projections are provided:
 ```go
 // The handler has two methods. Key: which value an event belongs to. Apply: fold it in.
 profiles := memory.NewKeyedProjection[UserProfile](
-	eventstore.QueryItem{Types: []string{"UserSignedUp", "UserEmailChanged"}},
+	collie.QueryItem{Types: []string{"UserSignedUp", "UserEmailChanged"}},
 	userProfileHandler{},
 )
 
-err := eventstore.UpdateProjection(ctx, store, profiles) // catch up, then serve
+err := collie.UpdateProjection(ctx, store, profiles) // catch up, then serve
 
 entry, found, err := profiles.Get(ctx, "user-123")
 page, err := profiles.List(ctx, keyedprojection.ListQuery{
@@ -161,8 +167,8 @@ A keyed projection is safe to share between requests. A `snapshot.Projection` is
 The two above are a starting point. A read model with a shape of its own, such as tables with real columns and joins, a search index or a report, is better written by hand. Any type with these four methods is a `CheckpointProjection`, and `UpdateProjection` drives it like the provided ones:
 
 ```go
-EventQuery() eventstore.QueryItem                               // which events to read
-Apply(ctx context.Context, e eventstore.SequencedEvent) error   // fold one event in
+EventQuery() collie.QueryItem                               // which events to read
+Apply(ctx context.Context, e collie.SequencedEvent) error   // fold one event in
 After() uint64                                                  // the position read up to
 Checkpoint(ctx context.Context, upTo uint64) error              // record the new position
 ```
@@ -189,7 +195,7 @@ To guarantee the consistency without losing performance, there are a couple of t
 
 ## Optional packages
 
-`eventstore.NewMiddlewareStore` wraps any `Store` with functions that change events on their way in and out. Envelope, encryption and attachments are built on it. These packages are younger than the core and more likely to change.
+`collie.NewMiddlewareStore` wraps any `Store` with functions that change events on their way in and out. Envelope, encryption and attachments are built on it. These packages are younger than the core and more likely to change.
 
 | Package | What it does |
 |---|---|

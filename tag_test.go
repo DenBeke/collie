@@ -1,4 +1,4 @@
-package eventstore_test
+package collie_test
 
 import (
 	"context"
@@ -10,8 +10,8 @@ import (
 )
 
 func TestTagsConstructor(t *testing.T) {
-	got := eventstore.NewTags("a", "1", "b", "2")
-	want := []eventstore.Tag{{Key: "a", Value: "1"}, {Key: "b", Value: "2"}}
+	got := collie.NewTags("a", "1", "b", "2")
+	want := []collie.Tag{{Key: "a", Value: "1"}, {Key: "b", Value: "2"}}
 	if len(got) != len(want) {
 		t.Fatalf("len = %d, want %d", len(got), len(want))
 	}
@@ -27,11 +27,11 @@ func TestTagsConstructor(t *testing.T) {
 			t.Errorf("odd args: expected panic")
 		}
 	}()
-	eventstore.NewTags("a", "1", "dangling")
+	collie.NewTags("a", "1", "dangling")
 }
 
 func TestTagValues(t *testing.T) {
-	e := eventstore.Event{Tags: eventstore.NewTags("account", "A", "account", "B", "user", "u1")}
+	e := collie.Event{Tags: collie.NewTags("account", "A", "account", "B", "user", "u1")}
 	if got := e.TagValues("account"); !slices.Equal(got, []string{"A", "B"}) {
 		t.Errorf("TagValues(account) = %v; want [A B]", got)
 	}
@@ -46,22 +46,22 @@ func TestTagValues(t *testing.T) {
 // TestQueryItemMatchesMultiValue locks the in-memory matching semantics for an
 // event that carries the same key twice (a transfer touching two accounts).
 func TestQueryItemMatchesMultiValue(t *testing.T) {
-	transfer := eventstore.SequencedEvent{
-		Event:          eventstore.Event{Type: "Transferred", Tags: eventstore.NewTags("account", "A", "account", "B")},
+	transfer := collie.SequencedEvent{
+		Event:          collie.Event{Type: "Transferred", Tags: collie.NewTags("account", "A", "account", "B")},
 		SequenceNumber: 1,
 	}
 	cases := []struct {
 		name  string
-		item  eventstore.QueryItem
+		item  collie.QueryItem
 		match bool
 	}{
-		{"first value", eventstore.QueryItem{Tags: eventstore.NewTags("account", "A")}, true},
-		{"second value", eventstore.QueryItem{Tags: eventstore.NewTags("account", "B")}, true},
-		{"absent value", eventstore.QueryItem{Tags: eventstore.NewTags("account", "C")}, false},
-		{"both values (AND)", eventstore.QueryItem{Tags: eventstore.NewTags("account", "A", "account", "B")}, true},
-		{"one present one absent", eventstore.QueryItem{Tags: eventstore.NewTags("account", "A", "account", "C")}, false},
-		{"type match + tag", eventstore.QueryItem{Types: []string{"Transferred"}, Tags: eventstore.NewTags("account", "A")}, true},
-		{"type mismatch", eventstore.QueryItem{Types: []string{"Other"}, Tags: eventstore.NewTags("account", "A")}, false},
+		{"first value", collie.QueryItem{Tags: collie.NewTags("account", "A")}, true},
+		{"second value", collie.QueryItem{Tags: collie.NewTags("account", "B")}, true},
+		{"absent value", collie.QueryItem{Tags: collie.NewTags("account", "C")}, false},
+		{"both values (AND)", collie.QueryItem{Tags: collie.NewTags("account", "A", "account", "B")}, true},
+		{"one present one absent", collie.QueryItem{Tags: collie.NewTags("account", "A", "account", "C")}, false},
+		{"type match + tag", collie.QueryItem{Types: []string{"Transferred"}, Tags: collie.NewTags("account", "A")}, true},
+		{"type mismatch", collie.QueryItem{Types: []string{"Other"}, Tags: collie.NewTags("account", "A")}, false},
 	}
 	for _, tc := range cases {
 		if got := tc.item.Matches(transfer); got != tc.match {
@@ -77,16 +77,16 @@ func TestMemoryMultiValueTagsRoundTrip(t *testing.T) {
 	store := memory.New()
 	ctx := context.Background()
 
-	transfer, err := eventstore.NewEvent("Transferred", nil, eventstore.NewTags("account", "A", "account", "B"))
+	transfer, err := collie.NewEvent("Transferred", nil, collie.NewTags("account", "A", "account", "B"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Append(ctx, []eventstore.Event{transfer}, nil); err != nil {
+	if err := store.Append(ctx, []collie.Event{transfer}, nil); err != nil {
 		t.Fatal(err)
 	}
 
 	count := 0
-	stream, _, err := store.Read(ctx, eventstore.Query{{Tags: eventstore.NewTags("account", "A")}}, 0)
+	stream, _, err := store.Read(ctx, collie.Query{{Tags: collie.NewTags("account", "A")}}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +103,7 @@ func TestMemoryMultiValueTagsRoundTrip(t *testing.T) {
 		t.Errorf("account A: got %d events, want 1", count)
 	}
 
-	stream, _, err = store.Read(ctx, eventstore.Query{{Tags: eventstore.NewTags("account", "C")}}, 0)
+	stream, _, err = store.Read(ctx, collie.Query{{Tags: collie.NewTags("account", "C")}}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}

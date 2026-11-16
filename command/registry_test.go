@@ -16,36 +16,36 @@ import (
 // signUp is a test command mirroring the library example.
 type signUp struct {
 	Username string `json:"username"`
-	exists   *eventstore.DefaultProjection[bool]
+	exists   *collie.DefaultProjection[bool]
 }
 
-func (cmd *signUp) Projections(context.Context) ([]eventstore.Projection, error) {
-	cmd.exists = &eventstore.DefaultProjection[bool]{
-		Query: eventstore.QueryItem{
+func (cmd *signUp) Projections(context.Context) ([]collie.Projection, error) {
+	cmd.exists = &collie.DefaultProjection[bool]{
+		Query: collie.QueryItem{
 			Types: []string{"UserSignedUp"},
-			Tags:  eventstore.NewTags("username", cmd.Username),
+			Tags:  collie.NewTags("username", cmd.Username),
 		},
-		Handlers: map[string]eventstore.HandleFunc[bool]{
-			"UserSignedUp": func(bool, eventstore.SequencedEvent) (bool, error) { return true, nil },
+		Handlers: map[string]collie.HandleFunc[bool]{
+			"UserSignedUp": func(bool, collie.SequencedEvent) (bool, error) { return true, nil },
 		},
 	}
-	return []eventstore.Projection{cmd.exists}, nil
+	return []collie.Projection{cmd.exists}, nil
 }
 
-func (cmd *signUp) Decide(context.Context) ([]eventstore.Event, error) {
+func (cmd *signUp) Decide(context.Context) ([]collie.Event, error) {
 	if cmd.exists.State {
 		return nil, fmt.Errorf("username %q is already taken", cmd.Username)
 	}
-	event, err := eventstore.NewEvent("UserSignedUp", cmd.Username, eventstore.NewTags("username", cmd.Username))
+	event, err := collie.NewEvent("UserSignedUp", cmd.Username, collie.NewTags("username", cmd.Username))
 	if err != nil {
 		return nil, fmt.Errorf("could not create UserSignedUp event: %w", err)
 	}
-	return []eventstore.Event{event}, nil
+	return []collie.Event{event}, nil
 }
 
-func usersNamed(t *testing.T, store eventstore.Store, username string) int {
+func usersNamed(t *testing.T, store collie.Store, username string) int {
 	t.Helper()
-	query := eventstore.Query{{Types: []string{"UserSignedUp"}, Tags: eventstore.NewTags("username", username)}}
+	query := collie.Query{{Types: []string{"UserSignedUp"}, Tags: collie.NewTags("username", username)}}
 	count := 0
 	stream, _, err := store.Read(context.Background(), query, 0)
 	if err != nil {
@@ -299,19 +299,19 @@ func (cmd *needsSnapshotStore) UseSnapshotStore(snapshotStore snapshot.Store) {
 	cmd.snapshotStore = snapshotStore
 }
 
-func (cmd *needsSnapshotStore) Projections(context.Context) ([]eventstore.Projection, error) {
+func (cmd *needsSnapshotStore) Projections(context.Context) ([]collie.Projection, error) {
 	if cmd.snapshotStore == nil {
 		return nil, errors.New("snapshot store not injected")
 	}
 	return nil, nil
 }
 
-func (cmd *needsSnapshotStore) Decide(context.Context) ([]eventstore.Event, error) {
-	event, err := eventstore.NewEvent("Ok", nil, nil)
+func (cmd *needsSnapshotStore) Decide(context.Context) ([]collie.Event, error) {
+	event, err := collie.NewEvent("Ok", nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("could not create Ok event: %w", err)
 	}
-	return []eventstore.Event{event}, nil
+	return []collie.Event{event}, nil
 }
 
 // touchCounter is a cached command: it builds a StoredProjection from the injected
@@ -324,27 +324,27 @@ type touchCounter struct {
 	touches *snapshot.Projection[int]
 }
 
-func (cmd *touchCounter) Projections(ctx context.Context) ([]eventstore.Projection, error) {
+func (cmd *touchCounter) Projections(ctx context.Context) ([]collie.Projection, error) {
 	projection, err := snapshot.NewProjection(ctx, cmd.SnapshotStore(), "touch-"+cmd.ID,
-		eventstore.DefaultProjection[int]{
-			Query: eventstore.QueryItem{Types: []string{"Touched"}, Tags: eventstore.NewTags("id", cmd.ID)},
-			Handlers: map[string]eventstore.HandleFunc[int]{
-				"Touched": func(count int, _ eventstore.SequencedEvent) (int, error) { return count + 1, nil },
+		collie.DefaultProjection[int]{
+			Query: collie.QueryItem{Types: []string{"Touched"}, Tags: collie.NewTags("id", cmd.ID)},
+			Handlers: map[string]collie.HandleFunc[int]{
+				"Touched": func(count int, _ collie.SequencedEvent) (int, error) { return count + 1, nil },
 			},
 		})
 	if err != nil {
 		return nil, fmt.Errorf("could not load touch projection: %w", err)
 	}
 	cmd.touches = projection
-	return []eventstore.Projection{cmd.touches}, nil
+	return []collie.Projection{cmd.touches}, nil
 }
 
-func (cmd *touchCounter) Decide(context.Context) ([]eventstore.Event, error) {
-	event, err := eventstore.NewEvent("Touched", nil, eventstore.NewTags("id", cmd.ID))
+func (cmd *touchCounter) Decide(context.Context) ([]collie.Event, error) {
+	event, err := collie.NewEvent("Touched", nil, collie.NewTags("id", cmd.ID))
 	if err != nil {
 		return nil, fmt.Errorf("could not create Touched event: %w", err)
 	}
-	return []eventstore.Event{event}, nil
+	return []collie.Event{event}, nil
 }
 
 // TestDispatch_CachedCommandEndToEnd exercises the whole stack: the Registry
@@ -366,7 +366,7 @@ func TestDispatch_CachedCommandEndToEnd(t *testing.T) {
 	}
 
 	// Three dispatches → three Touched events for id=x.
-	query := eventstore.Query{{Types: []string{"Touched"}, Tags: eventstore.NewTags("id", "x")}}
+	query := collie.Query{{Types: []string{"Touched"}, Tags: collie.NewTags("id", "x")}}
 	count := 0
 	stream, _, err := store.Read(ctx, query, 0)
 	if err != nil {

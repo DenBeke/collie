@@ -11,7 +11,7 @@ import (
 	"github.com/DenBeke/collie"
 )
 
-// Projection is an [eventstore.CheckpointProjection] whose state and position
+// Projection is an [collie.CheckpointProjection] whose state and position
 // are persisted through a [Store], so it can resume from its last checkpoint
 // instead of replaying the whole stream. Apply only updates the in-memory
 // state; the snapshot is written by Checkpoint, which BuildDecisionModel and
@@ -20,7 +20,7 @@ import (
 // The state type S is marshaled to and from JSON here — in the constructor and
 // Checkpoint — so the Store only ever sees the resulting bytes.
 type Projection[S any] struct {
-	eventstore.DefaultProjection[S]
+	collie.DefaultProjection[S]
 	store    Store
 	name     string
 	position uint64
@@ -28,7 +28,7 @@ type Projection[S any] struct {
 }
 
 // Compile-time check that Projection implements CheckpointProjection.
-var _ eventstore.CheckpointProjection = (*Projection[any])(nil)
+var _ collie.CheckpointProjection = (*Projection[any])(nil)
 
 // NewProjection creates a snapshot-backed projection under name. If a snapshot
 // exists, its state and position are restored; otherwise the projection starts
@@ -45,7 +45,7 @@ var _ eventstore.CheckpointProjection = (*Projection[any])(nil)
 // A snapshot is only valid for the handler logic that built it — when handlers
 // change, version the name (e.g. "course-seats/v2") so old snapshots are
 // abandoned and rebuilt instead of silently read as wrong state.
-func NewProjection[S any](ctx context.Context, store Store, name string, def eventstore.DefaultProjection[S], partition ...eventstore.Tag) (*Projection[S], error) {
+func NewProjection[S any](ctx context.Context, store Store, name string, def collie.DefaultProjection[S], partition ...collie.Tag) (*Projection[S], error) {
 	def.Query.Tags = mergeTags(def.Query.Tags, partition)
 
 	p := &Projection[S]{
@@ -75,7 +75,7 @@ func (p *Projection[S]) After() uint64 {
 
 // Apply applies a single event to the in-memory state and advances the
 // position. The snapshot is not persisted until Checkpoint.
-func (p *Projection[S]) Apply(ctx context.Context, e eventstore.SequencedEvent) error {
+func (p *Projection[S]) Apply(ctx context.Context, e collie.SequencedEvent) error {
 	if err := p.DefaultProjection.Apply(ctx, e); err != nil {
 		return fmt.Errorf("could not apply %s event: %w", e.Type, err)
 	}
@@ -121,7 +121,7 @@ func (p *Projection[S]) Reset(ctx context.Context) error {
 }
 
 // mergeTags appends the tags of extra not already present in base.
-func mergeTags(base, extra []eventstore.Tag) []eventstore.Tag {
+func mergeTags(base, extra []collie.Tag) []collie.Tag {
 	merged := slices.Clone(base)
 	for _, tag := range extra {
 		if !slices.Contains(merged, tag) {
@@ -137,9 +137,9 @@ func mergeTags(base, extra []eventstore.Tag) []eventstore.Tag {
 // collision-free (a tag value containing '|' or '=' cannot masquerade as a
 // different tag set, and a name containing them cannot masquerade as a
 // partition).
-func snapshotName(name string, partition []eventstore.Tag) string {
+func snapshotName(name string, partition []collie.Tag) string {
 	tags := slices.Clone(partition)
-	slices.SortFunc(tags, func(a, b eventstore.Tag) int {
+	slices.SortFunc(tags, func(a, b collie.Tag) int {
 		if c := cmp.Compare(a.Key, b.Key); c != 0 {
 			return c
 		}

@@ -13,16 +13,16 @@ import (
 )
 
 // seed appends n events of the given type and returns the store.
-func seed(t *testing.T, n int, eventType string, tags []eventstore.Tag) *memory.Store {
+func seed(t *testing.T, n int, eventType string, tags []collie.Tag) *memory.Store {
 	t.Helper()
 	store := memory.New()
 	ctx := context.Background()
 	for range n {
-		event, err := eventstore.NewEvent(eventType, nil, tags)
+		event, err := collie.NewEvent(eventType, nil, tags)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := store.Append(ctx, []eventstore.Event{event}, nil); err != nil {
+		if err := store.Append(ctx, []collie.Event{event}, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -30,7 +30,7 @@ func seed(t *testing.T, n int, eventType string, tags []eventstore.Tag) *memory.
 }
 
 // countAll returns the number of events in the store (nil query matches all).
-func countAll(t *testing.T, store eventstore.Store) int {
+func countAll(t *testing.T, store collie.Store) int {
 	t.Helper()
 	count := 0
 	stream, _, err := store.Read(context.Background(), nil, 0)
@@ -60,7 +60,7 @@ func TestExecute_AppendsOnSuccess(t *testing.T) {
 
 func TestExecute_AbortsOnDecideError(t *testing.T) {
 	ctx := context.Background()
-	store := seed(t, 1, "UserSignedUp", eventstore.NewTags("username", "alice"))
+	store := seed(t, 1, "UserSignedUp", collie.NewTags("username", "alice"))
 
 	err := command.Execute(ctx, store, &signUp{Username: "alice"})
 	if err == nil || !strings.Contains(err.Error(), "already taken") {
@@ -119,7 +119,7 @@ func TestExecute_NoRetryByDefault(t *testing.T) {
 
 	cmd := newConflictOnce(store)
 	err := command.Execute(ctx, store, cmd) // default: one attempt
-	if !errors.Is(err, eventstore.ErrAppendConditionViolated) {
+	if !errors.Is(err, collie.ErrAppendConditionViolated) {
 		t.Fatalf("expected ErrAppendConditionViolated, got %v", err)
 	}
 	if cmd.state.attempts != 1 {
@@ -172,10 +172,10 @@ var errUsernameTaken = errors.New("username taken")
 // rejectingCommand always rejects with a wrapped domain sentinel.
 type rejectingCommand struct{}
 
-func (rejectingCommand) Projections(context.Context) ([]eventstore.Projection, error) {
+func (rejectingCommand) Projections(context.Context) ([]collie.Projection, error) {
 	return nil, nil
 }
-func (rejectingCommand) Decide(context.Context) ([]eventstore.Event, error) {
+func (rejectingCommand) Decide(context.Context) ([]collie.Event, error) {
 	return nil, fmt.Errorf("%w: %q", errUsernameTaken, "alice")
 }
 
@@ -216,7 +216,7 @@ func TestExecute_ConflictIsNotADecisionError(t *testing.T) {
 	store := memory.New()
 
 	err := command.Execute(ctx, store, newConflictOnce(store)) // one attempt: conflict surfaces
-	if !errors.Is(err, eventstore.ErrAppendConditionViolated) {
+	if !errors.Is(err, collie.ErrAppendConditionViolated) {
 		t.Fatalf("expected ErrAppendConditionViolated, got %v", err)
 	}
 	if errors.Is(err, command.ErrCommandRejected) {
@@ -229,21 +229,21 @@ func TestExecute_ConflictIsNotADecisionError(t *testing.T) {
 // noopCommand declares nothing and decides nothing.
 type noopCommand struct{}
 
-func (noopCommand) Projections(context.Context) ([]eventstore.Projection, error) { return nil, nil }
-func (noopCommand) Decide(context.Context) ([]eventstore.Event, error)           { return nil, nil }
+func (noopCommand) Projections(context.Context) ([]collie.Projection, error) { return nil, nil }
+func (noopCommand) Decide(context.Context) ([]collie.Event, error)           { return nil, nil }
 
 // unconditionalCommand declares no projections and always appends one event.
 type unconditionalCommand struct{}
 
-func (unconditionalCommand) Projections(context.Context) ([]eventstore.Projection, error) {
+func (unconditionalCommand) Projections(context.Context) ([]collie.Projection, error) {
 	return nil, nil
 }
-func (unconditionalCommand) Decide(context.Context) ([]eventstore.Event, error) {
-	event, err := eventstore.NewEvent("Pinged", nil, nil)
+func (unconditionalCommand) Decide(context.Context) ([]collie.Event, error) {
+	event, err := collie.NewEvent("Pinged", nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("could not create Pinged event: %w", err)
 	}
-	return []eventstore.Event{event}, nil
+	return []collie.Event{event}, nil
 }
 
 // conflictOnce forces exactly one append-condition conflict: on the first attempt
@@ -255,7 +255,7 @@ func (unconditionalCommand) Decide(context.Context) ([]eventstore.Event, error) 
 // touched is the boundary every Touched event in these tests belongs to. The
 // commands below decide on all of them, and a condition needs a tag to be
 // keyable, so the events carry a constant one.
-var touched = eventstore.NewTags("touched", "all")
+var touched = collie.NewTags("touched", "all")
 
 type conflictState struct {
 	attempts int
@@ -263,42 +263,42 @@ type conflictState struct {
 }
 
 type conflictOnce struct {
-	store eventstore.Store
+	store collie.Store
 	state *conflictState
 }
 
-func newConflictOnce(store eventstore.Store) *conflictOnce {
+func newConflictOnce(store collie.Store) *conflictOnce {
 	return &conflictOnce{store: store, state: &conflictState{}}
 }
 
-func (cmd *conflictOnce) Projections(context.Context) ([]eventstore.Projection, error) {
+func (cmd *conflictOnce) Projections(context.Context) ([]collie.Projection, error) {
 	cmd.state.attempts++
-	return []eventstore.Projection{
-		&eventstore.DefaultProjection[int]{
-			Query: eventstore.QueryItem{Types: []string{"Touched"}, Tags: touched},
-			Handlers: map[string]eventstore.HandleFunc[int]{
-				"Touched": func(seen int, _ eventstore.SequencedEvent) (int, error) { return seen + 1, nil },
+	return []collie.Projection{
+		&collie.DefaultProjection[int]{
+			Query: collie.QueryItem{Types: []string{"Touched"}, Tags: touched},
+			Handlers: map[string]collie.HandleFunc[int]{
+				"Touched": func(seen int, _ collie.SequencedEvent) (int, error) { return seen + 1, nil },
 			},
 		},
 	}, nil
 }
 
-func (cmd *conflictOnce) Decide(ctx context.Context) ([]eventstore.Event, error) {
+func (cmd *conflictOnce) Decide(ctx context.Context) ([]collie.Event, error) {
 	if !cmd.state.injected {
 		cmd.state.injected = true
-		competing, err := eventstore.NewEvent("Touched", nil, touched)
+		competing, err := collie.NewEvent("Touched", nil, touched)
 		if err != nil {
 			return nil, fmt.Errorf("could not create competing event: %w", err)
 		}
-		if err := cmd.store.Append(ctx, []eventstore.Event{competing}, nil); err != nil {
+		if err := cmd.store.Append(ctx, []collie.Event{competing}, nil); err != nil {
 			return nil, fmt.Errorf("could not append competing event: %w", err)
 		}
 	}
-	event, err := eventstore.NewEvent("Touched", nil, touched)
+	event, err := collie.NewEvent("Touched", nil, touched)
 	if err != nil {
 		return nil, fmt.Errorf("could not create Touched event: %w", err)
 	}
-	return []eventstore.Event{event}, nil
+	return []collie.Event{event}, nil
 }
 
 // cachingCommand builds its projection once and stashes it in a field, reading
@@ -306,45 +306,45 @@ func (cmd *conflictOnce) Decide(ctx context.Context) ([]eventstore.Event, error)
 // it injects one competing event in Decide to force a retry, and it rejects
 // when the count reaches capacity — which a doubled count would falsely hit.
 type cachingCommand struct {
-	store eventstore.Store
+	store collie.Store
 	state *conflictState
-	seen  *eventstore.DefaultProjection[int]
+	seen  *collie.DefaultProjection[int]
 }
 
-func newCachingCommand(store eventstore.Store) *cachingCommand {
+func newCachingCommand(store collie.Store) *cachingCommand {
 	return &cachingCommand{store: store, state: &conflictState{}}
 }
 
-func (cmd *cachingCommand) Projections(context.Context) ([]eventstore.Projection, error) {
+func (cmd *cachingCommand) Projections(context.Context) ([]collie.Projection, error) {
 	cmd.state.attempts++
 	if cmd.seen == nil {
-		cmd.seen = &eventstore.DefaultProjection[int]{
-			Query: eventstore.QueryItem{Tags: touched},
-			Handlers: map[string]eventstore.HandleFunc[int]{
-				"Touched": func(seen int, _ eventstore.SequencedEvent) (int, error) { return seen + 1, nil },
+		cmd.seen = &collie.DefaultProjection[int]{
+			Query: collie.QueryItem{Tags: touched},
+			Handlers: map[string]collie.HandleFunc[int]{
+				"Touched": func(seen int, _ collie.SequencedEvent) (int, error) { return seen + 1, nil },
 			},
 		}
 	}
-	return []eventstore.Projection{cmd.seen}, nil
+	return []collie.Projection{cmd.seen}, nil
 }
 
-func (cmd *cachingCommand) Decide(ctx context.Context) ([]eventstore.Event, error) {
+func (cmd *cachingCommand) Decide(ctx context.Context) ([]collie.Event, error) {
 	if cmd.seen.State >= 3 {
 		return nil, fmt.Errorf("capacity reached: %d touched", cmd.seen.State)
 	}
 	if !cmd.state.injected {
 		cmd.state.injected = true
-		competing, err := eventstore.NewEvent("Touched", nil, touched)
+		competing, err := collie.NewEvent("Touched", nil, touched)
 		if err != nil {
 			return nil, fmt.Errorf("could not create competing event: %w", err)
 		}
-		if err := cmd.store.Append(ctx, []eventstore.Event{competing}, nil); err != nil {
+		if err := cmd.store.Append(ctx, []collie.Event{competing}, nil); err != nil {
 			return nil, fmt.Errorf("could not append competing event: %w", err)
 		}
 	}
-	event, err := eventstore.NewEvent("Touched", nil, touched)
+	event, err := collie.NewEvent("Touched", nil, touched)
 	if err != nil {
 		return nil, fmt.Errorf("could not create Touched event: %w", err)
 	}
-	return []eventstore.Event{event}, nil
+	return []collie.Event{event}, nil
 }

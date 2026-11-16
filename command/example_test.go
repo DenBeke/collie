@@ -38,15 +38,15 @@ func (cmd *ReserveSeat) Validate() error {
 	return nil
 }
 
-func (cmd *ReserveSeat) Projections(ctx context.Context) ([]eventstore.Projection, error) {
+func (cmd *ReserveSeat) Projections(ctx context.Context) ([]collie.Projection, error) {
 	projection, err := snapshot.NewProjection(ctx, cmd.SnapshotStore(), "seats-"+cmd.Room,
-		eventstore.DefaultProjection[int]{
-			Query: eventstore.QueryItem{
+		collie.DefaultProjection[int]{
+			Query: collie.QueryItem{
 				Types: []string{"SeatReserved"},
-				Tags:  eventstore.NewTags("room", cmd.Room),
+				Tags:  collie.NewTags("room", cmd.Room),
 			},
-			Handlers: map[string]eventstore.HandleFunc[int]{
-				"SeatReserved": func(count int, _ eventstore.SequencedEvent) (int, error) {
+			Handlers: map[string]collie.HandleFunc[int]{
+				"SeatReserved": func(count int, _ collie.SequencedEvent) (int, error) {
 					return count + 1, nil
 				},
 			},
@@ -55,18 +55,18 @@ func (cmd *ReserveSeat) Projections(ctx context.Context) ([]eventstore.Projectio
 		return nil, fmt.Errorf("could not load seats projection: %w", err)
 	}
 	cmd.seatsTaken = projection
-	return []eventstore.Projection{cmd.seatsTaken}, nil
+	return []collie.Projection{cmd.seatsTaken}, nil
 }
 
-func (cmd *ReserveSeat) Decide(context.Context) ([]eventstore.Event, error) {
+func (cmd *ReserveSeat) Decide(context.Context) ([]collie.Event, error) {
 	if cmd.seatsTaken.State >= roomCapacity {
 		return nil, fmt.Errorf("room %q is full", cmd.Room)
 	}
-	event, err := eventstore.NewEvent("SeatReserved", nil, eventstore.NewTags("room", cmd.Room))
+	event, err := collie.NewEvent("SeatReserved", nil, collie.NewTags("room", cmd.Room))
 	if err != nil {
 		return nil, fmt.Errorf("could not create SeatReserved event: %w", err)
 	}
-	return []eventstore.Event{event}, nil
+	return []collie.Event{event}, nil
 }
 
 // ExampleRegistry_storedProjection registers a command that decides from a cached
@@ -116,31 +116,31 @@ func ExampleExecute() {
 // signUpExample registers a user, failing if the username is already taken.
 type signUpExample struct {
 	Username string `json:"username"`
-	exists   *eventstore.DefaultProjection[bool]
+	exists   *collie.DefaultProjection[bool]
 }
 
-func (cmd *signUpExample) Projections(context.Context) ([]eventstore.Projection, error) {
-	cmd.exists = &eventstore.DefaultProjection[bool]{
-		Query: eventstore.QueryItem{
+func (cmd *signUpExample) Projections(context.Context) ([]collie.Projection, error) {
+	cmd.exists = &collie.DefaultProjection[bool]{
+		Query: collie.QueryItem{
 			Types: []string{"UserSignedUp"},
-			Tags:  eventstore.NewTags("username", cmd.Username),
+			Tags:  collie.NewTags("username", cmd.Username),
 		},
-		Handlers: map[string]eventstore.HandleFunc[bool]{
-			"UserSignedUp": func(bool, eventstore.SequencedEvent) (bool, error) { return true, nil },
+		Handlers: map[string]collie.HandleFunc[bool]{
+			"UserSignedUp": func(bool, collie.SequencedEvent) (bool, error) { return true, nil },
 		},
 	}
-	return []eventstore.Projection{cmd.exists}, nil
+	return []collie.Projection{cmd.exists}, nil
 }
 
-func (cmd *signUpExample) Decide(context.Context) ([]eventstore.Event, error) {
+func (cmd *signUpExample) Decide(context.Context) ([]collie.Event, error) {
 	if cmd.exists.State {
 		return nil, fmt.Errorf("username %q is already taken", cmd.Username)
 	}
-	event, err := eventstore.NewEvent("UserSignedUp", cmd.Username, eventstore.NewTags("username", cmd.Username))
+	event, err := collie.NewEvent("UserSignedUp", cmd.Username, collie.NewTags("username", cmd.Username))
 	if err != nil {
 		return nil, fmt.Errorf("could not create UserSignedUp event: %w", err)
 	}
-	return []eventstore.Event{event}, nil
+	return []collie.Event{event}, nil
 }
 
 // quoteShipping prices an order through an external API. That call must not sit
@@ -151,7 +151,7 @@ func (cmd *signUpExample) Decide(context.Context) ([]eventstore.Event, error) {
 type quoteShipping struct {
 	Order string `json:"order"`
 
-	store    eventstore.Store
+	store    collie.Store
 	pricing  func(context.Context) (int, error)
 	attempts *attemptCounter
 
@@ -172,36 +172,36 @@ func (cmd *quoteShipping) Prepare(ctx context.Context) error {
 	return nil
 }
 
-func (cmd *quoteShipping) Projections(context.Context) ([]eventstore.Projection, error) {
+func (cmd *quoteShipping) Projections(context.Context) ([]collie.Projection, error) {
 	cmd.attempts.n++
-	return []eventstore.Projection{
-		&eventstore.DefaultProjection[int]{
-			Query: eventstore.QueryItem{Tags: eventstore.NewTags("order", cmd.Order)},
-			Handlers: map[string]eventstore.HandleFunc[int]{
-				"ShippingQuoted": func(n int, _ eventstore.SequencedEvent) (int, error) { return n + 1, nil },
+	return []collie.Projection{
+		&collie.DefaultProjection[int]{
+			Query: collie.QueryItem{Tags: collie.NewTags("order", cmd.Order)},
+			Handlers: map[string]collie.HandleFunc[int]{
+				"ShippingQuoted": func(n int, _ collie.SequencedEvent) (int, error) { return n + 1, nil },
 			},
 		},
 	}, nil
 }
 
-func (cmd *quoteShipping) Decide(ctx context.Context) ([]eventstore.Event, error) {
+func (cmd *quoteShipping) Decide(ctx context.Context) ([]collie.Event, error) {
 	// Slip a competing event in on the first attempt, so the guarded append
 	// conflicts once and the retry path actually runs.
 	if !cmd.attempts.injected {
 		cmd.attempts.injected = true
-		competing, err := eventstore.NewEvent("ShippingQuoted", 0, eventstore.NewTags("order", cmd.Order))
+		competing, err := collie.NewEvent("ShippingQuoted", 0, collie.NewTags("order", cmd.Order))
 		if err != nil {
 			return nil, fmt.Errorf("could not create competing event: %w", err)
 		}
-		if err := cmd.store.Append(ctx, []eventstore.Event{competing}, nil); err != nil {
+		if err := cmd.store.Append(ctx, []collie.Event{competing}, nil); err != nil {
 			return nil, fmt.Errorf("could not append competing event: %w", err)
 		}
 	}
-	event, err := eventstore.NewEvent("ShippingQuoted", cmd.price, eventstore.NewTags("order", cmd.Order))
+	event, err := collie.NewEvent("ShippingQuoted", cmd.price, collie.NewTags("order", cmd.Order))
 	if err != nil {
 		return nil, fmt.Errorf("could not create ShippingQuoted event: %w", err)
 	}
-	return []eventstore.Event{event}, nil
+	return []collie.Event{event}, nil
 }
 
 // ExampleExecute_prepare shows the phase split that makes a command with
@@ -255,7 +255,7 @@ func ExampleRegistry_errorTaxonomy() {
 			return "rejected (409): " + err.Error() // the domain message, unchanged
 		case errors.Is(err, command.ErrPrepareFailed):
 			return "dependency failed (502)" // nothing appended, safe to retry
-		case errors.Is(err, eventstore.ErrAppendConditionViolated):
+		case errors.Is(err, collie.ErrAppendConditionViolated):
 			return "conflict (409, retry later)" // optimistic retries exhausted
 		default:
 			return "internal (500)"

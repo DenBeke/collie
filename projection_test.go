@@ -1,4 +1,4 @@
-package eventstore_test
+package collie_test
 
 import (
 	"context"
@@ -12,33 +12,33 @@ import (
 // wanted is a stored projection over a type the seeded log never contains.
 // tested is the boundary appendOne puts every event on, and wanted decides on:
 // a condition needs a tag to be keyable.
-var tested = eventstore.NewTags("tested", "all")
+var tested = collie.NewTags("tested", "all")
 
 func wanted() *storedProjection[int] {
 	return &storedProjection[int]{
-		DefaultProjection: eventstore.DefaultProjection[int]{
-			Query: eventstore.QueryItem{Tags: tested},
-			Handlers: map[string]eventstore.HandleFunc[int]{
-				"Wanted": func(n int, _ eventstore.SequencedEvent) (int, error) { return n + 1, nil },
+		DefaultProjection: collie.DefaultProjection[int]{
+			Query: collie.QueryItem{Tags: tested},
+			Handlers: map[string]collie.HandleFunc[int]{
+				"Wanted": func(n int, _ collie.SequencedEvent) (int, error) { return n + 1, nil },
 			},
 		},
 	}
 }
 
-func appendOne(t *testing.T, store eventstore.Store, eventType string, condition *eventstore.AppendCondition) error {
+func appendOne(t *testing.T, store collie.Store, eventType string, condition *collie.AppendCondition) error {
 	t.Helper()
-	event, err := eventstore.NewEvent(eventType, nil, tested)
+	event, err := collie.NewEvent(eventType, nil, tested)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return store.Append(context.Background(), []eventstore.Event{event}, condition)
+	return store.Append(context.Background(), []collie.Event{event}, condition)
 }
 
 func TestUpdateProjection_AdvancesToHeadWithoutMatches(t *testing.T) {
 	store := seed(t, 3, "Other", nil)
 	p := wanted()
 
-	if err := eventstore.UpdateProjection(context.Background(), store, p); err != nil {
+	if err := collie.UpdateProjection(context.Background(), store, p); err != nil {
 		t.Fatal(err)
 	}
 	if p.After() != 3 {
@@ -52,9 +52,9 @@ func TestUpdateProjection_KeepsCheckpointOnApplyError(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := wanted()
-	p.Handlers["Wanted"] = func(int, eventstore.SequencedEvent) (int, error) { return 0, errors.New("poison") }
+	p.Handlers["Wanted"] = func(int, collie.SequencedEvent) (int, error) { return 0, errors.New("poison") }
 
-	if err := eventstore.UpdateProjection(context.Background(), store, p); err == nil {
+	if err := collie.UpdateProjection(context.Background(), store, p); err == nil {
 		t.Fatal("expected the apply error")
 	}
 	if p.After() != 0 {
@@ -63,27 +63,27 @@ func TestUpdateProjection_KeepsCheckpointOnApplyError(t *testing.T) {
 }
 
 // brokenStore reports a head, then fails during iteration.
-type brokenStore struct{ eventstore.Store }
+type brokenStore struct{ collie.Store }
 
-func (brokenStore) Read(context.Context, eventstore.Query, uint64) (iter.Seq2[eventstore.SequencedEvent, error], uint64, error) {
-	return func(yield func(eventstore.SequencedEvent, error) bool) {
-		yield(eventstore.SequencedEvent{}, errors.New("connection lost"))
+func (brokenStore) Read(context.Context, collie.Query, uint64) (iter.Seq2[collie.SequencedEvent, error], uint64, error) {
+	return func(yield func(collie.SequencedEvent, error) bool) {
+		yield(collie.SequencedEvent{}, errors.New("connection lost"))
 	}, 10, nil
 }
 
 // headlessStore cannot read the head.
-type headlessStore struct{ eventstore.Store }
+type headlessStore struct{ collie.Store }
 
-func (headlessStore) Read(context.Context, eventstore.Query, uint64) (iter.Seq2[eventstore.SequencedEvent, error], uint64, error) {
+func (headlessStore) Read(context.Context, collie.Query, uint64) (iter.Seq2[collie.SequencedEvent, error], uint64, error) {
 	return nil, 0, errors.New("connection refused")
 }
 
 func TestUpdateProjection_KeepsCheckpointOnReadError(t *testing.T) {
-	for name, store := range map[string]eventstore.Store{"head": headlessStore{}, "iteration": brokenStore{}} {
+	for name, store := range map[string]collie.Store{"head": headlessStore{}, "iteration": brokenStore{}} {
 		t.Run(name, func(t *testing.T) {
 			p := wanted()
 			p.after = 2
-			if err := eventstore.UpdateProjection(context.Background(), store, p); err == nil {
+			if err := collie.UpdateProjection(context.Background(), store, p); err == nil {
 				t.Fatal("expected the read error")
 			}
 			if p.After() != 2 {

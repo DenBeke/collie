@@ -44,18 +44,18 @@ type Reactor interface {
 	// redelivered next tick and the reactor sees nothing newer until it passes.
 	// Order is a guarantee, so a poisoned event stalls this reactor loudly. React
 	// runs synchronously in the runner's pass; honour the ctx it is handed.
-	React(ctx context.Context, event eventstore.SequencedEvent) ([]command.Command, error)
+	React(ctx context.Context, event collie.SequencedEvent) ([]command.Command, error)
 }
 
 // ReactorFunc adapts a plain function to [Reactor], as http.HandlerFunc does for
 // http.Handler: a reactor with no dependencies should not need a struct.
 //
 //	runner.Register("orientation/v1", reactor.ReactorFunc(subscribeToOrientation))
-type ReactorFunc func(ctx context.Context, event eventstore.SequencedEvent) ([]command.Command, error)
+type ReactorFunc func(ctx context.Context, event collie.SequencedEvent) ([]command.Command, error)
 
 var _ Reactor = ReactorFunc(nil)
 
 // React calls f.
-func (f ReactorFunc) React(ctx context.Context, event eventstore.SequencedEvent) ([]command.Command, error) {
+func (f ReactorFunc) React(ctx context.Context, event collie.SequencedEvent) ([]command.Command, error) {
 	return f(ctx, event)
 }

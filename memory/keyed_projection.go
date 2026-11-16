@@ -9,11 +9,11 @@ import (
 	"strings"
 	"sync"
 
-	eventstore "github.com/DenBeke/collie"
+	"github.com/DenBeke/collie"
 	"github.com/DenBeke/collie/keyedprojection"
 )
 
-// KeyedProjection is an in-memory eventstore.KeyedProjection.
+// KeyedProjection is an in-memory collie.KeyedProjection.
 //
 // It exists so the read side can be exercised — in tests, in a workshop demo,
 // in anything that should not need a database — with the same folds and the
@@ -21,7 +21,7 @@ import (
 // loudly: an ordering this one cannot express returns an error rather than a
 // silently arbitrary order.
 type KeyedProjection[V any] struct {
-	query   eventstore.QueryItem
+	query   collie.QueryItem
 	handler keyedprojection.Handler[V]
 
 	mu       sync.RWMutex
@@ -33,7 +33,7 @@ type KeyedProjection[V any] struct {
 var _ keyedprojection.Projection[any] = (*KeyedProjection[any])(nil)
 
 // NewKeyedProjection builds an empty keyed projection.
-func NewKeyedProjection[V any](query eventstore.QueryItem, handler keyedprojection.Handler[V]) *KeyedProjection[V] {
+func NewKeyedProjection[V any](query collie.QueryItem, handler keyedprojection.Handler[V]) *KeyedProjection[V] {
 	return &KeyedProjection[V]{
 		query:   query,
 		handler: handler,
@@ -42,7 +42,7 @@ func NewKeyedProjection[V any](query eventstore.QueryItem, handler keyedprojecti
 	}
 }
 
-func (p *KeyedProjection[V]) EventQuery() eventstore.QueryItem { return p.query }
+func (p *KeyedProjection[V]) EventQuery() collie.QueryItem { return p.query }
 
 func (p *KeyedProjection[V]) After() uint64 {
 	p.mu.RLock()
@@ -59,7 +59,7 @@ func (p *KeyedProjection[V]) Checkpoint(_ context.Context, upTo uint64) error {
 	return nil
 }
 
-func (p *KeyedProjection[V]) Apply(_ context.Context, e eventstore.SequencedEvent) error {
+func (p *KeyedProjection[V]) Apply(_ context.Context, e collie.SequencedEvent) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 

@@ -41,7 +41,7 @@ These were discussed and are now the framework's explicit stance:
 7. **Snapshots are caches, never sources of truth.** Racing writers can regress a snapshot's
    position; that is benign because state+position are saved atomically and the next catch-up
    re-applies the delta. Worth a README section — it's a genuinely nice property of the design.
-8. **Package boundary: `eventstore` is the DCB spec kernel; frameworks live beside it.** The
+8. **Package boundary: `collie` is the DCB spec kernel; frameworks live beside it.** The
    core holds what the specification defines (store, events, queries, projections, decision
    model) and privileges no command style or caching strategy. `command` is the command
    framework (`Command`, `Execute` and its options, `DecisionError`/`ErrCommandRejected`,
@@ -52,7 +52,7 @@ These were discussed and are now the framework's explicit stance:
    `context.Context` as precedent; a typical command file imports all three packages.
 9. **Staging is the committed append strategy, selected at store construction.** The
    staging design (per-boundary locks + singleton flusher assigning gap-free positions) stays
-   on its own merits. But it must be reachable through `eventstore.Store` — today
+   on its own merits. But it must be reachable through `collie.Store` — today
    `command.Execute` and `BuildDecisionModel` call `Append`, and `AppendStaging` is a sibling
    method the framework can't see. Fix: **constructor mode** — `postgres.New(db)` keeps the
    simple direct append (no flusher needed; right for small apps, dev, tests), and
@@ -71,7 +71,7 @@ These were discussed and are now the framework's explicit stance:
     memory implementation for tests, postgres implementation for production. The new view code
     is gorm-free from the start (`database/sql` in the public API).
 12. **View catch-up is pluggable, one contract, two shipped drivers.** The contract is the
-    existing `CheckpointProjection` lifecycle driven by `eventstore.UpdateProjection`. Driver A:
+    existing `CheckpointProjection` lifecycle driven by `collie.UpdateProjection`. Driver A:
     on-demand pull (call `UpdateProjection` before serving a read). Driver B: a background
     runner woken by Postgres LISTEN/NOTIFY with a polling fallback (and a `Tick` waker for any
     store). See the view subsystem section.
@@ -147,7 +147,7 @@ items 1, 5, 7, 8 and 14 are now consolidated into the **view subsystem** design 
    identical method sets, so:
 
    ```go
-   // eventstore: marks projections whose query is narrow enough for a consistency boundary.
+   // collie: marks projections whose query is narrow enough for a consistency boundary.
    type DecisionProjection interface {
        Projection
        DecisionModel() // marker; no behavior
@@ -155,7 +155,7 @@ items 1, 5, 7, 8 and 14 are now consolidated into the **view subsystem** design 
    ```
 
    `BuildDecisionModel(ctx, store, projections ...DecisionProjection)`;
-   `command.Command.Projections` returns `[]eventstore.DecisionProjection`.
+   `command.Command.Projections` returns `[]collie.DecisionProjection`.
    `DefaultProjection[S]` and `snapshot.Projection[S]` gain the no-op marker; `view.View[V]`
    implements `CheckpointProjection` but **not** the marker — passing a view to a decision is a
    compile error, while views keep riding `UpdateProjection` (settled decision 13).
@@ -164,7 +164,7 @@ items 1, 5, 7, 8 and 14 are now consolidated into the **view subsystem** design 
 
    ```go
    snapshot.NewProjection[S](ctx, store snapshot.Store, name string,
-       def eventstore.DefaultProjection[S], partition ...Tag) (*snapshot.Projection[S], error)
+       def collie.DefaultProjection[S], partition ...Tag) (*snapshot.Projection[S], error)
    ```
 
    Partition tags are AND-ed into the query and the snapshot name is canonically derived
@@ -199,7 +199,7 @@ items 1, 5, 7, 8 and 14 are now consolidated into the **view subsystem** design 
      application error types reachable via `errors.Is/As`, and whose `Is` method *claims* the
      `ErrCommandRejected` sentinel — the sentinel is a pure identity token that never appears
      in any chain or message.
-   - `eventstore.ErrAppendConditionViolated` — conflict, retries exhausted (→ 409/503)
+   - `collie.ErrAppendConditionViolated` — conflict, retries exhausted (→ 409/503)
    - anything else — infrastructure (→ 500)
 10. **Validation.** ✅ Implemented, two layers, both wrapping `ErrValidationFailed` with the
     cause chained (so e.g. `validator.ValidationErrors` stays `errors.As`-reachable for
@@ -376,19 +376,19 @@ package view
 type Handler[V any] interface {
     // Keys returns the row keys affected by e — several for multi-entity
     // events (a transfer touches both accounts).                    (item 7)
-    Keys(e eventstore.SequencedEvent) ([]string, error)
+    Keys(e collie.SequencedEvent) ([]string, error)
     // Apply transforms the row for one key. current is nil when the row does
     // not exist; return nil to delete it.
-    Apply(e eventstore.SequencedEvent, key string, current *V) (*V, error)
+    Apply(e collie.SequencedEvent, key string, current *V) (*V, error)
 }
 
-func New[V any](store Store, name string, query eventstore.Query, handler Handler[V],
+func New[V any](store Store, name string, query collie.Query, handler Handler[V],
     opts ...Option) *View[V]
 func FlushEvery(n int) Option // ops per Commit during catch-up; default 1000
 
 type Entry[V any] struct{ Key string; Value V }
 
-// View[V] implements eventstore.CheckpointProjection — but NOT DecisionProjection
+// View[V] implements collie.CheckpointProjection — but NOT DecisionProjection
 // (item 5), so it cannot enter BuildDecisionModel. Plus the read API:
 //   Get(ctx, key) (*V, error)                       // nil = absent
 //   List(ctx, ...ListOption) ([]Entry[V], error)    // item 8: keys included
@@ -419,7 +419,7 @@ Lifecycle, mapped onto the settled `Checkpoint` batch-close contract:
 
 ### Catch-up drivers — one contract, two drivers
 
-- **Pull** (unchanged core pattern): `eventstore.UpdateProjection(ctx, store, v)` before
+- **Pull** (unchanged core pattern): `collie.UpdateProjection(ctx, store, v)` before
   `v.Get`/`v.List`.
 - **Runner**:
 
@@ -436,8 +436,8 @@ Lifecycle, mapped onto the settled `Checkpoint` batch-close contract:
   }
   // Run catches up views on every wake until ctx is cancelled. It runs on the
   // caller's goroutine (house style: postgres.Store.RunFlusher).
-  func Run(ctx context.Context, events eventstore.Store, w Waker, opts RunOptions,
-      views ...eventstore.CheckpointProjection) error
+  func Run(ctx context.Context, events collie.Store, w Waker, opts RunOptions,
+      views ...collie.CheckpointProjection) error
   ```
 
 - **Wake seam implementations**: `postgres.NewListener(dsn, ...) *Listener` owns one dedicated
@@ -497,20 +497,20 @@ first-class: the `partition ...Tag` parameter of `snapshot.NewProjection`.
 The canonical course-subscription command needs three differently-scoped pieces of state:
 
 ```go
-func (cmd *SubscribeToCourse) Projections(ctx context.Context) ([]eventstore.Projection, error) {
+func (cmd *SubscribeToCourse) Projections(ctx context.Context) ([]collie.Projection, error) {
     // Partition key {course: c1} — one snapshot per course
     capacity, _ := snapshot.NewProjection(ctx, cmd.SnapshotStore(), "course-capacity",
-        capacityDef, eventstore.NewTag("course", cmd.CourseID))
+        capacityDef, collie.NewTag("course", cmd.CourseID))
 
     // Partition key {student: s1} — one snapshot per student
     count, _ := snapshot.NewProjection(ctx, cmd.SnapshotStore(), "student-subscriptions",
-        countDef, eventstore.NewTag("student", cmd.StudentID))
+        countDef, collie.NewTag("student", cmd.StudentID))
 
     // Partition key {student: s1, course: c1} — one snapshot per pair
     already, _ := snapshot.NewProjection(ctx, cmd.SnapshotStore(), "subscription",
-        existsDef, eventstore.NewTag("student", cmd.StudentID), eventstore.NewTag("course", cmd.CourseID))
+        existsDef, collie.NewTag("student", cmd.StudentID), collie.NewTag("course", cmd.CourseID))
 
-    return []eventstore.Projection{capacity, count, already}, nil
+    return []collie.Projection{capacity, count, already}, nil
 }
 ```
 
@@ -635,11 +635,11 @@ Two shapes were designed for `view.View[V]`:
 1. *Standalone type with its own `Update(ctx, events)` driver, outside the `Projection`
    interfaces entirely.* Safety by subtraction — a view can't be passed to `BuildDecisionModel`
    because it doesn't satisfy the parameter type; no marker method needed; a full
-   `eventstore.Query` (OR over items) without touching the root interface; the checkpoint can
+   `collie.Query` (OR over items) without touching the root interface; the checkpoint can
    be re-read from the store at the start of every catch-up because `Update` owns the whole
    lifecycle.
 2. **Chosen: stay a `CheckpointProjection`, guarded by the `DecisionProjection` marker
-   (item 5).** Views keep riding `eventstore.UpdateProjection` as the single catch-up
+   (item 5).** Views keep riding `collie.UpdateProjection` as the single catch-up
    primitive — one lifecycle concept in the whole framework instead of two ("catch up a
    projection" vs "update a view"), and `Run` can drive any `CheckpointProjection`, snapshot
    read models included. Costs accepted: the marker interface is new API (but it was already
@@ -654,7 +654,7 @@ staging table, singleton flusher, gap-free positions) are both correct alone and
 a direct append's condition check never looks at staging, and the global lock and per-boundary
 locks share no key, so a conflict between the two paths goes unnoticed. The old shape — two
 public sibling methods and a doc warning — also left the staging path unreachable from
-`command.Execute`/`BuildDecisionModel`, which only see `eventstore.Store.Append`.
+`command.Execute`/`BuildDecisionModel`, which only see `collie.Store.Append`.
 
 Options: (a) staging only — delete the direct path; every deployment, including tests and toy
 apps, runs a flusher. (b) Keep both methods and document. (c) **Constructor mode — chosen**:

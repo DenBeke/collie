@@ -25,19 +25,19 @@ func TestSnapshotStore_ResumesFromSnapshot(t *testing.T) {
 	snapshotStore := pgstore.NewSnapshotStore(db)
 
 	for range 3 {
-		event, err := eventstore.NewEvent("UserSignedUp", nil, nil)
+		event, err := collie.NewEvent("UserSignedUp", nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := store.Append(ctx, []eventstore.Event{event}, nil); err != nil {
+		if err := store.Append(ctx, []collie.Event{event}, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	projectionDef := eventstore.DefaultProjection[int]{
-		Query: eventstore.QueryItem{Types: []string{"UserSignedUp"}},
-		Handlers: map[string]eventstore.HandleFunc[int]{
-			"UserSignedUp": func(count int, _ eventstore.SequencedEvent) (int, error) { return count + 1, nil },
+	projectionDef := collie.DefaultProjection[int]{
+		Query: collie.QueryItem{Types: []string{"UserSignedUp"}},
+		Handlers: map[string]collie.HandleFunc[int]{
+			"UserSignedUp": func(count int, _ collie.SequencedEvent) (int, error) { return count + 1, nil },
 		},
 	}
 
@@ -46,7 +46,7 @@ func TestSnapshotStore_ResumesFromSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := eventstore.UpdateProjection(ctx, store, projection); err != nil {
+	if err := collie.UpdateProjection(ctx, store, projection); err != nil {
 		t.Fatal(err)
 	}
 	if projection.State != 3 || projection.After() != 3 {

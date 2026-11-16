@@ -26,7 +26,7 @@ import (
 // 0x4443425F617070 is ASCII for "DCB_app".
 const appendLock int64 = 0x4443425F617070
 
-// ErrUnkeyableCondition is eventstore.ErrUnkeyableCondition, so errors.Is
+// ErrUnkeyableCondition is collie.ErrUnkeyableCondition, so errors.Is
 // matches either. Append returns it in staging mode (the default) when the condition
 // cannot be reduced to a finite set of (type,tag,value) boundaries: a match-all
 // (empty Query) or any item missing a type or a tag. Such a condition would
@@ -35,10 +35,10 @@ const appendLock int64 = 0x4443425F617070
 // per-boundary append would go unnoticed). Give every query item at least one
 // type AND one tag (a constant tag on every event of a kind names a boundary
 // over all of them), or use WithGlobalLock.
-var ErrUnkeyableCondition = eventstore.ErrUnkeyableCondition
+var ErrUnkeyableCondition = collie.ErrUnkeyableCondition
 
-// Compile-time check that Store implements eventstore.Store.
-var _ eventstore.Store = (*Store)(nil)
+// Compile-time check that Store implements collie.Store.
+var _ collie.Store = (*Store)(nil)
 
 const defaultBatchSize = 1000
 
@@ -229,27 +229,27 @@ func (s *Store) Migrate() error {
 // Read returns an iterator over events matching the query with a sequence
 // number greater than after, and the head of the log. Events are fetched in
 // batches to keep memory usage bounded even for large event streams.
-func (s *Store) Read(ctx context.Context, query eventstore.Query, after uint64) (iter.Seq2[eventstore.SequencedEvent, error], uint64, error) {
+func (s *Store) Read(ctx context.Context, query collie.Query, after uint64) (iter.Seq2[collie.SequencedEvent, error], uint64, error) {
 	// Sequence order is commit order (one writer), so everything up to max is committed.
 	var head uint64
 	err := s.db.WithContext(ctx).Raw("SELECT COALESCE(max(sequence_number), 0) FROM events").Scan(&head).Error
 	if err != nil {
 		return nil, 0, fmt.Errorf("could not read the head of the log: %w", err)
 	}
-	return func(yield func(eventstore.SequencedEvent, error) bool) {
+	return func(yield func(collie.SequencedEvent, error) bool) {
 		cursor := after
 		for {
 			var batch []event
 			sql, args := buildReadSQL(query, cursor, s.batchSize)
 			if err := s.db.WithContext(ctx).Raw(sql, args...).Scan(&batch).Error; err != nil {
-				yield(eventstore.SequencedEvent{}, fmt.Errorf("could not read events: %w", err))
+				yield(collie.SequencedEvent{}, fmt.Errorf("could not read events: %w", err))
 				return
 			}
 
 			for _, e := range batch {
 				se, err := toSequencedEvent(e)
 				if err != nil {
-					if !yield(eventstore.SequencedEvent{}, err) {
+					if !yield(collie.SequencedEvent{}, err) {
 						return
 					}
 					continue
@@ -448,7 +448,7 @@ $func$;`
 type appendEvent struct {
 	Type     string            `json:"type"`
 	Data     string            `json:"data"`
-	Tags     []eventstore.Tag  `json:"tags"`
+	Tags     []collie.Tag      `json:"tags"`
 	Actor    string            `json:"actor,omitempty"`
 	Cause    string            `json:"cause,omitempty"`
 	Metadata map[string]string `json:"metadata,omitempty"`
@@ -459,20 +459,20 @@ type appendEvent struct {
 // type and match what dcb_append reads (item->'types', item->'tags'); omitempty
 // makes an absent Types/Tags a SQL NULL (= no constraint) rather than json null.
 type queryItemDTO struct {
-	Types []string         `json:"types,omitempty"`
-	Tags  []eventstore.Tag `json:"tags,omitempty"`
+	Types []string     `json:"types,omitempty"`
+	Tags  []collie.Tag `json:"tags,omitempty"`
 }
 
 // appendArgs marshals events and an optional condition into the arguments shared
 // by the dcb_append / dcb_append_staging functions: the events as a JSON array
 // string, the query as a JSON string (or nil => SQL NULL => unconditional), and
 // the After cursor. Data is base64-encoded because it is arbitrary bytes.
-func appendArgs(events []eventstore.Event, condition *eventstore.AppendCondition) (eventsJSON string, queryArg any, after int64, err error) {
+func appendArgs(events []collie.Event, condition *collie.AppendCondition) (eventsJSON string, queryArg any, after int64, err error) {
 	wire := make([]appendEvent, len(events))
 	for i, e := range events {
 		tags := e.Tags
 		if tags == nil {
-			tags = []eventstore.Tag{}
+			tags = []collie.Tag{}
 		}
 		wire[i] = appendEvent{
 			Type:     e.Type,
@@ -512,7 +512,7 @@ func appendArgs(events []eventstore.Event, condition *eventstore.AppendCondition
 // condition already sees them while staged. The condition must be keyable (see
 // ErrUnkeyableCondition). With WithGlobalLock they are readable as soon as
 // Append returns, and every append serializes on one lock.
-func (s *Store) Append(ctx context.Context, events []eventstore.Event, condition *eventstore.AppendCondition) error {
+func (s *Store) Append(ctx context.Context, events []collie.Event, condition *collie.AppendCondition) error {
 	if s.mode == modeGlobal {
 		return s.appendGlobal(ctx, events, condition)
 	}
@@ -530,7 +530,7 @@ func (s *Store) Append(ctx context.Context, events []eventstore.Event, condition
 // "hybrid" (consistent but lands at ~global throughput). See appendbench-conclusion.md
 // for the full comparison and why staging won; the implementations live in this
 // repo's git history (the commit before the staging consolidation).
-func (s *Store) appendGlobal(ctx context.Context, events []eventstore.Event, condition *eventstore.AppendCondition) error {
+func (s *Store) appendGlobal(ctx context.Context, events []collie.Event, condition *collie.AppendCondition) error {
 	if len(events) == 0 && condition == nil {
 		return nil
 	}
@@ -547,7 +547,7 @@ func (s *Store) appendGlobal(ctx context.Context, events []eventstore.Event, con
 		return fmt.Errorf("could not append events: %w", modeError(err))
 	}
 	if !appended {
-		return eventstore.ErrAppendConditionViolated
+		return collie.ErrAppendConditionViolated
 	}
 	return nil
 }
@@ -577,7 +577,7 @@ func lockKey(eventType, tagKey, tagValue string) int64 {
 // (empty Query) or any item lacking a type or a tag. Those can't be expressed as a
 // finite (type,tag,value) boundary set, so they'd need the global lock, which does
 // not compose with the per-boundary locks.
-func boundaryLockKeys(events []eventstore.Event, cond *eventstore.AppendCondition) (keys []int64, keyable bool) {
+func boundaryLockKeys(events []collie.Event, cond *collie.AppendCondition) (keys []int64, keyable bool) {
 	set := make(map[int64]struct{})
 	if cond != nil {
 		if !cond.Keyable() {
@@ -630,7 +630,7 @@ func bigintArrayLiteral(keys []int64) string {
 // until the flusher moves it into events — eventual read-visibility bounded by the
 // flush interval. It is fully consistent for multi-boundary conditions AND keeps the
 // plain uint64 cursor, because events is written only by the single flusher.
-func (s *Store) appendStaging(ctx context.Context, events []eventstore.Event, condition *eventstore.AppendCondition) error {
+func (s *Store) appendStaging(ctx context.Context, events []collie.Event, condition *collie.AppendCondition) error {
 	if len(events) == 0 && condition == nil {
 		return nil
 	}
@@ -653,7 +653,7 @@ func (s *Store) appendStaging(ctx context.Context, events []eventstore.Event, co
 		return fmt.Errorf("could not append events (staging): %w", modeError(err))
 	}
 	if !appended {
-		return eventstore.ErrAppendConditionViolated
+		return collie.ErrAppendConditionViolated
 	}
 	return nil
 }
@@ -820,7 +820,7 @@ func (s *Store) flush(ctx context.Context, batchSize int) (int64, error) {
 // matching events in sequence order. An empty query reads straight off the events
 // primary key. Placeholders are GORM "?" (rewritten to $N by the postgres
 // driver); args are appended in placeholder order.
-func buildReadSQL(query eventstore.Query, cursor uint64, limit int) (string, []any) {
+func buildReadSQL(query collie.Query, cursor uint64, limit int) (string, []any) {
 	const cols = "e.sequence_number, e.type, e.data, e.tags, e.metadata, " +
 		"e.actor, e.cause, e.recorded_at"
 
@@ -851,7 +851,7 @@ func buildReadSQL(query eventstore.Query, cursor uint64, limit int) (string, []a
 // sequence_numbers matching a single query item. A tag-less item scans events
 // (optionally by type); a tagged item anchors on the first tag via event_tags,
 // requires the rest via EXISTS, and filters type with a primary-key join.
-func buildReadItem(item eventstore.QueryItem, cursor uint64, limit int, ph func(any) string) string {
+func buildReadItem(item collie.QueryItem, cursor uint64, limit int, ph func(any) string) string {
 	typeIn := func(col string) string {
 		phs := make([]string, len(item.Types))
 		for i, t := range item.Types {
@@ -885,21 +885,21 @@ func buildReadItem(item eventstore.QueryItem, cursor uint64, limit int, ph func(
 		" ORDER BY t.sequence_number LIMIT " + ph(limit) + ")"
 }
 
-func toSequencedEvent(e event) (eventstore.SequencedEvent, error) {
-	var tags []eventstore.Tag
+func toSequencedEvent(e event) (collie.SequencedEvent, error) {
+	var tags []collie.Tag
 	if len(e.Tags) > 0 {
 		if err := json.Unmarshal(e.Tags, &tags); err != nil {
-			return eventstore.SequencedEvent{}, fmt.Errorf("could not unmarshal event tags: %w", err)
+			return collie.SequencedEvent{}, fmt.Errorf("could not unmarshal event tags: %w", err)
 		}
 	}
 	var metadata map[string]string
 	if len(e.Metadata) > 0 {
 		if err := json.Unmarshal(e.Metadata, &metadata); err != nil {
-			return eventstore.SequencedEvent{}, fmt.Errorf("could not unmarshal event metadata: %w", err)
+			return collie.SequencedEvent{}, fmt.Errorf("could not unmarshal event metadata: %w", err)
 		}
 	}
-	return eventstore.SequencedEvent{
-		Event: eventstore.Event{
+	return collie.SequencedEvent{
+		Event: collie.Event{
 			Type:     e.Type,
 			Data:     e.Data,
 			Tags:     tags,

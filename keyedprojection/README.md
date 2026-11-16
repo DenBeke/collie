@@ -19,7 +19,7 @@ type UserProfile struct {
 
 type userProfileHandler struct{}
 
-func (userProfileHandler) Key(e eventstore.SequencedEvent) (string, error) {
+func (userProfileHandler) Key(e collie.SequencedEvent) (string, error) {
     ids := e.TagValues("userId")
     if len(ids) == 0 {
         return "", fmt.Errorf("%s carries no userId tag", e.Type)
@@ -27,16 +27,16 @@ func (userProfileHandler) Key(e eventstore.SequencedEvent) (string, error) {
     return ids[0], nil
 }
 
-func (userProfileHandler) Apply(e eventstore.SequencedEvent, current *UserProfile) (*UserProfile, error) {
+func (userProfileHandler) Apply(e collie.SequencedEvent, current *UserProfile) (*UserProfile, error) {
     switch e.Type {
     case "UserSignedUp":
-        d, err := eventstore.EventData[UserProfile](e)
+        d, err := collie.EventData[UserProfile](e)
         if err != nil {
             return nil, err
         }
         return &d, nil
     case "UserEmailChanged":
-        d, err := eventstore.EventData[UserProfile](e)
+        d, err := collie.EventData[UserProfile](e)
         if err != nil {
             return nil, err
         }
@@ -53,7 +53,7 @@ Then create it and read from it:
 
 ```go
 profiles, err := postgres.NewKeyedProjection[UserProfile](db, "user_profiles",
-    eventstore.QueryItem{Types: []string{"UserSignedUp", "UserEmailChanged", "UserDeleted"}},
+    collie.QueryItem{Types: []string{"UserSignedUp", "UserEmailChanged", "UserDeleted"}},
     userProfileHandler{},
 )
 
@@ -61,7 +61,7 @@ profiles, err := postgres.NewKeyedProjection[UserProfile](db, "user_profiles",
 // pulls the projection forward — only reactors watch the log on their
 // own schedule. Safe to call concurrently — Apply skips an event it has
 // already applied, so racing catch-ups converge instead of double-counting.
-eventstore.UpdateProjection(ctx, store, profiles)
+collie.UpdateProjection(ctx, store, profiles)
 
 // One value by key.
 entry, found, err := profiles.Get(ctx, "user-123")
@@ -71,7 +71,7 @@ fmt.Println(entry.Key, entry.Value.Name)
 // contain its own id.
 page, err := profiles.List(ctx, keyedprojection.ListQuery{
     Where: []keyedprojection.FieldEquals{{Field: "status", Value: "active"}},
-    Tags:  []eventstore.Tag{eventstore.NewTag("tenant", "acme")},
+    Tags:  []collie.Tag{collie.NewTag("tenant", "acme")},
     Order: []keyedprojection.SortKey{{Field: "name"}},
     Limit: 20,
 })

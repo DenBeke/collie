@@ -26,13 +26,13 @@ var ErrInvalidStructTags = errors.New("invalid dcb-attachment struct tags")
 // RegisterStructTags makes every event built from now on honour the TagKey
 // declarations on its payload. Call once at boot, before any event is built.
 func RegisterStructTags() {
-	eventstore.RegisterHook(resolveStructTags)
+	collie.RegisterHook(resolveStructTags)
 }
 
 // resolveStructTags is the hook: it turns TagKey declarations into the
 // metadata OnAppend reads, filling what is absent and verifying what an option
 // already set.
-func resolveStructTags(e *eventstore.Event, payload any) error {
+func resolveStructTags(e *collie.Event, payload any) error {
 	var fields []string
 	for f, v := range structtag.Fields(payload) {
 		raw, ok := f.Tag.Lookup(TagKey)

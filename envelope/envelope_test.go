@@ -12,20 +12,20 @@ import (
 
 // newStore wires the stamper the way an application does: one append middleware
 // in front of a store, so the tests assert on what was persisted.
-func newStore(options ...envelope.Option) *eventstore.MiddlewareStore {
-	return eventstore.NewMiddlewareStore(memory.New(),
-		eventstore.WithAppendMiddleware(envelope.New(options...).OnAppend),
+func newStore(options ...envelope.Option) *collie.MiddlewareStore {
+	return collie.NewMiddlewareStore(memory.New(),
+		collie.WithAppendMiddleware(envelope.New(options...).OnAppend),
 	)
 }
 
-func appendOne(ctx context.Context, store eventstore.Store, e eventstore.Event) error {
-	return store.Append(ctx, []eventstore.Event{e}, nil)
+func appendOne(ctx context.Context, store collie.Store, e collie.Event) error {
+	return store.Append(ctx, []collie.Event{e}, nil)
 }
 
 // only reads the single event a test appended.
-func only(t *testing.T, store eventstore.Store) eventstore.SequencedEvent {
+func only(t *testing.T, store collie.Store) collie.SequencedEvent {
 	t.Helper()
-	var events []eventstore.SequencedEvent
+	var events []collie.SequencedEvent
 	stream, _, err := store.Read(context.Background(), nil, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -44,9 +44,9 @@ func only(t *testing.T, store eventstore.Store) eventstore.SequencedEvent {
 
 func TestStampsActorAndCauseFromContext(t *testing.T) {
 	store := newStore()
-	ctx := eventstore.ContextWithCause(eventstore.ContextWithActor(context.Background(), "student:s1"), "request:8f3a")
+	ctx := collie.ContextWithCause(collie.ContextWithActor(context.Background(), "student:s1"), "request:8f3a")
 
-	e, err := eventstore.NewEvent("StudentRegistered", nil, nil)
+	e, err := collie.NewEvent("StudentRegistered", nil, nil)
 	if err != nil {
 		t.Fatalf("build the event: %v", err)
 	}
@@ -72,9 +72,9 @@ func TestStampsActorAndCauseFromContext(t *testing.T) {
 // A command that sets Actor itself is not trusted, it is corrected.
 func TestStampOverwritesWhatTheCallerWrote(t *testing.T) {
 	store := newStore()
-	ctx := eventstore.ContextWithCause(eventstore.ContextWithActor(context.Background(), "student:s1"), "request:8f3a")
+	ctx := collie.ContextWithCause(collie.ContextWithActor(context.Background(), "student:s1"), "request:8f3a")
 
-	e, err := eventstore.NewEvent("StudentRegistered", nil, nil)
+	e, err := collie.NewEvent("StudentRegistered", nil, nil)
 	if err != nil {
 		t.Fatalf("build the event: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestStampOverwritesWhatTheCallerWrote(t *testing.T) {
 // it is the whole teaching value of refusing.
 func TestStrictRefusesAnAnonymousAppend(t *testing.T) {
 	stamper := envelope.New()
-	e, err := eventstore.NewEvent("StudentRegistered", nil, nil)
+	e, err := collie.NewEvent("StudentRegistered", nil, nil)
 	if err != nil {
 		t.Fatalf("build the event: %v", err)
 	}
@@ -108,7 +108,7 @@ func TestStrictRefusesAnAnonymousAppend(t *testing.T) {
 	if !errors.Is(err, envelope.ErrNoActor) {
 		t.Fatalf("append without an actor: %v, want ErrNoActor", err)
 	}
-	const want = "append has no actor: set one with eventstore.ContextWithActor, " +
+	const want = "append has no actor: set one with collie.ContextWithActor, " +
 		"or allow anonymous appends explicitly with envelope.AllowAnonymous()"
 	if err.Error() != want {
 		t.Errorf("message = %q, want %q", err.Error(), want)
@@ -119,7 +119,7 @@ func TestStrictRefusesAnAnonymousAppend(t *testing.T) {
 // middleware chain, and nothing is persisted.
 func TestStrictRefusalReachesTheCaller(t *testing.T) {
 	store := newStore()
-	e, err := eventstore.NewEvent("StudentRegistered", nil, nil)
+	e, err := collie.NewEvent("StudentRegistered", nil, nil)
 	if err != nil {
 		t.Fatalf("build the event: %v", err)
 	}
@@ -141,9 +141,9 @@ func TestStrictRefusalReachesTheCaller(t *testing.T) {
 // a cause on its own does not buy an append its way in.
 func TestStrictRefusesACauseWithoutAnActor(t *testing.T) {
 	store := newStore()
-	ctx := eventstore.ContextWithCause(context.Background(), "event:7")
+	ctx := collie.ContextWithCause(context.Background(), "event:7")
 
-	e, err := eventstore.NewEvent("StudentRegistered", nil, nil)
+	e, err := collie.NewEvent("StudentRegistered", nil, nil)
 	if err != nil {
 		t.Fatalf("build the event: %v", err)
 	}
@@ -155,9 +155,9 @@ func TestStrictRefusesACauseWithoutAnActor(t *testing.T) {
 
 func TestAllowAnonymousPermitsAnEmptyActor(t *testing.T) {
 	store := newStore(envelope.AllowAnonymous())
-	ctx := eventstore.ContextWithCause(context.Background(), "request:8f3a")
+	ctx := collie.ContextWithCause(context.Background(), "request:8f3a")
 
-	e, err := eventstore.NewEvent("StudentRegistered", nil, nil)
+	e, err := collie.NewEvent("StudentRegistered", nil, nil)
 	if err != nil {
 		t.Fatalf("build the event: %v", err)
 	}

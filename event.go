@@ -1,4 +1,4 @@
-package eventstore
+package collie
 
 import (
 	"encoding/json"
@@ -28,7 +28,7 @@ func NewTag(key, value string) Tag {
 // silently dropped trailing key would widen a consistency boundary.
 func NewTags(keyValuePairs ...string) []Tag {
 	if len(keyValuePairs)%2 != 0 {
-		panic("eventstore.NewTags: odd argument count")
+		panic("collie.NewTags: odd argument count")
 	}
 	tags := make([]Tag, 0, len(keyValuePairs)/2)
 	for i := 0; i+1 < len(keyValuePairs); i += 2 {

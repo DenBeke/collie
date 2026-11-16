@@ -9,20 +9,20 @@ import (
 	"github.com/DenBeke/collie/memory"
 )
 
-func newStore() (*eventstore.MiddlewareStore, *attachments.MemoryBlobStore) {
+func newStore() (*collie.MiddlewareStore, *attachments.MemoryBlobStore) {
 	blobs := attachments.NewMemoryBlobStore()
 	att := attachments.NewAttachmentMiddleware(blobs)
-	store := eventstore.NewMiddlewareStore(memory.New(),
-		eventstore.WithAppendMiddleware(att.OnAppend),
-		eventstore.WithReadMiddleware(att.OnRead),
+	store := collie.NewMiddlewareStore(memory.New(),
+		collie.WithAppendMiddleware(att.OnAppend),
+		collie.WithReadMiddleware(att.OnRead),
 	)
 	return store, blobs
 }
 
-func collectEvents(t *testing.T, store eventstore.Store, query eventstore.Query) []eventstore.SequencedEvent {
+func collectEvents(t *testing.T, store collie.Store, query collie.Query) []collie.SequencedEvent {
 	t.Helper()
 	ctx := context.Background()
-	var events []eventstore.SequencedEvent
+	var events []collie.SequencedEvent
 	stream, _, err := store.Read(ctx, query, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -40,11 +40,11 @@ func TestPassthroughWithoutAttachments(t *testing.T) {
 	store, _ := newStore()
 	ctx := context.Background()
 
-	e, err := eventstore.NewEvent("OrderPlaced", map[string]string{"orderId": "123"}, nil)
+	e, err := collie.NewEvent("OrderPlaced", map[string]string{"orderId": "123"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
+	if err := store.Append(ctx, []collie.Event{e}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -52,7 +52,7 @@ func TestPassthroughWithoutAttachments(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
-	data, err := eventstore.EventData[map[string]string](events[0])
+	data, err := collie.EventData[map[string]string](events[0])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,13 +70,13 @@ func TestAttachmentRoundTrip(t *testing.T) {
 		Content  []byte `json:"content"`
 	}
 	doc := Doc{FileName: "report.pdf", Content: []byte("big-binary-data")}
-	e, err := eventstore.NewEvent("DocumentUploaded", doc, nil,
+	e, err := collie.NewEvent("DocumentUploaded", doc, nil,
 		attachments.WithAttachments("content"),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
+	if err := store.Append(ctx, []collie.Event{e}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -84,7 +84,7 @@ func TestAttachmentRoundTrip(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
-	data, err := eventstore.EventData[Doc](events[0])
+	data, err := collie.EventData[Doc](events[0])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,9 +100,9 @@ func TestAttachmentNotStoredInline(t *testing.T) {
 	blobs := attachments.NewMemoryBlobStore()
 	att := attachments.NewAttachmentMiddleware(blobs)
 	raw := memory.New()
-	store := eventstore.NewMiddlewareStore(raw,
-		eventstore.WithAppendMiddleware(att.OnAppend),
-		eventstore.WithReadMiddleware(att.OnRead),
+	store := collie.NewMiddlewareStore(raw,
+		collie.WithAppendMiddleware(att.OnAppend),
+		collie.WithReadMiddleware(att.OnRead),
 	)
 	ctx := context.Background()
 
@@ -110,18 +110,18 @@ func TestAttachmentNotStoredInline(t *testing.T) {
 		FileName string `json:"fileName"`
 		Content  string `json:"content"`
 	}
-	e, err := eventstore.NewEvent("DocumentUploaded", Doc{FileName: "f.txt", Content: "secret-content"}, nil,
+	e, err := collie.NewEvent("DocumentUploaded", Doc{FileName: "f.txt", Content: "secret-content"}, nil,
 		attachments.WithAttachments("content"),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
+	if err := store.Append(ctx, []collie.Event{e}, nil); err != nil {
 		t.Fatal(err)
 	}
 
 	// Read through raw store — content should not be present inline
-	var rawEvents []eventstore.SequencedEvent
+	var rawEvents []collie.SequencedEvent
 	stream, _, err := raw.Read(ctx, nil, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -150,13 +150,13 @@ func TestMissingBlobOnRead(t *testing.T) {
 		Content  *string `json:"content"`
 	}
 	content := "will-be-deleted"
-	e, err := eventstore.NewEvent("DocumentUploaded", Doc{FileName: "f.txt", Content: &content}, nil,
+	e, err := collie.NewEvent("DocumentUploaded", Doc{FileName: "f.txt", Content: &content}, nil,
 		attachments.WithAttachments("content"),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
+	if err := store.Append(ctx, []collie.Event{e}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -173,7 +173,7 @@ func TestMissingBlobOnRead(t *testing.T) {
 	if !attachments.IsMissing(events[0]) {
 		t.Fatal("expected event to be marked as attachmentsMissing")
 	}
-	data, err := eventstore.EventData[Doc](events[0])
+	data, err := collie.EventData[Doc](events[0])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,13 +194,13 @@ func TestBlobDelete(t *testing.T) {
 		Content  *string `json:"content"`
 	}
 	content := "to-be-erased"
-	e, err := eventstore.NewEvent("DocumentUploaded", Doc{FileName: "f.txt", Content: &content}, nil,
+	e, err := collie.NewEvent("DocumentUploaded", Doc{FileName: "f.txt", Content: &content}, nil,
 		attachments.WithAttachments("content"),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
+	if err := store.Append(ctx, []collie.Event{e}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -241,13 +241,13 @@ func TestBlobIDsAccessible(t *testing.T) {
 		FileName string `json:"fileName"`
 		Content  string `json:"content"`
 	}
-	e, err := eventstore.NewEvent("DocumentUploaded", Doc{FileName: "f.txt", Content: "data"}, nil,
+	e, err := collie.NewEvent("DocumentUploaded", Doc{FileName: "f.txt", Content: "data"}, nil,
 		attachments.WithAttachments("content"),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
+	if err := store.Append(ctx, []collie.Event{e}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -271,18 +271,18 @@ func TestMultipleAttachmentFields(t *testing.T) {
 		Thumbnail []byte `json:"thumbnail"`
 	}
 	doc := Doc{FileName: "photo.jpg", Content: []byte("image-bytes"), Thumbnail: []byte("thumb-bytes")}
-	e, err := eventstore.NewEvent("PhotoUploaded", doc, nil,
+	e, err := collie.NewEvent("PhotoUploaded", doc, nil,
 		attachments.WithAttachments("content", "thumbnail"),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
+	if err := store.Append(ctx, []collie.Event{e}, nil); err != nil {
 		t.Fatal(err)
 	}
 
 	events := collectEvents(t, store, nil)
-	data, err := eventstore.EventData[Doc](events[0])
+	data, err := collie.EventData[Doc](events[0])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -303,13 +303,13 @@ func TestMissingFieldOnAppendErrors(t *testing.T) {
 	store, _ := newStore()
 	ctx := context.Background()
 
-	e, err := eventstore.NewEvent("Test", map[string]string{"a": "b"}, nil,
+	e, err := collie.NewEvent("Test", map[string]string{"a": "b"}, nil,
 		attachments.WithAttachments("nonExistent"),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = store.Append(ctx, []eventstore.Event{e}, nil)
+	err = store.Append(ctx, []collie.Event{e}, nil)
 	if err == nil {
 		t.Fatal("expected error for missing field, got nil")
 	}
@@ -319,11 +319,11 @@ func TestMixedAttachmentAndPlainEvents(t *testing.T) {
 	store, _ := newStore()
 	ctx := context.Background()
 
-	plain, _ := eventstore.NewEvent("SystemBooted", "v1.0", nil)
-	withAtt, _ := eventstore.NewEvent("DocUploaded", map[string]string{"fileName": "f.txt", "content": "data"}, nil,
+	plain, _ := collie.NewEvent("SystemBooted", "v1.0", nil)
+	withAtt, _ := collie.NewEvent("DocUploaded", map[string]string{"fileName": "f.txt", "content": "data"}, nil,
 		attachments.WithAttachments("content"),
 	)
-	if err := store.Append(ctx, []eventstore.Event{plain, withAtt}, nil); err != nil {
+	if err := store.Append(ctx, []collie.Event{plain, withAtt}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -333,7 +333,7 @@ func TestMixedAttachmentAndPlainEvents(t *testing.T) {
 	}
 
 	// Plain event should be untouched
-	data, err := eventstore.EventData[string](events[0])
+	data, err := collie.EventData[string](events[0])
 	if err != nil || data != "v1.0" {
 		t.Fatalf("plain event: data=%s, err=%v", data, err)
 	}
@@ -342,7 +342,7 @@ func TestMixedAttachmentAndPlainEvents(t *testing.T) {
 	}
 
 	// Attachment event should be restored
-	attData, err := eventstore.EventData[map[string]string](events[1])
+	attData, err := collie.EventData[map[string]string](events[1])
 	if err != nil {
 		t.Fatal(err)
 	}

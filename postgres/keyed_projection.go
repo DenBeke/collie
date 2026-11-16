@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"sync"
 
-	eventstore "github.com/DenBeke/collie"
+	"github.com/DenBeke/collie"
 	"github.com/DenBeke/collie/keyedprojection"
 
 	"gorm.io/gorm"
@@ -34,7 +34,7 @@ import (
 type KeyedProjection[V any] struct {
 	db      *gorm.DB
 	name    string
-	query   eventstore.QueryItem
+	query   collie.QueryItem
 	handler keyedprojection.Handler[V]
 
 	mu       sync.Mutex
@@ -44,7 +44,7 @@ type KeyedProjection[V any] struct {
 var _ keyedprojection.Projection[any] = (*KeyedProjection[any])(nil)
 
 // NewKeyedProjection opens a keyed projection, loading its checkpoint.
-func NewKeyedProjection[V any](db *gorm.DB, name string, query eventstore.QueryItem, handler keyedprojection.Handler[V]) (*KeyedProjection[V], error) {
+func NewKeyedProjection[V any](db *gorm.DB, name string, query collie.QueryItem, handler keyedprojection.Handler[V]) (*KeyedProjection[V], error) {
 	p := &KeyedProjection[V]{db: db, name: name, query: query, handler: handler}
 	if err := p.loadCheckpoint(); err != nil {
 		return nil, err
@@ -52,7 +52,7 @@ func NewKeyedProjection[V any](db *gorm.DB, name string, query eventstore.QueryI
 	return p, nil
 }
 
-func (p *KeyedProjection[V]) EventQuery() eventstore.QueryItem { return p.query }
+func (p *KeyedProjection[V]) EventQuery() collie.QueryItem { return p.query }
 
 func (p *KeyedProjection[V]) After() uint64 {
 	p.mu.Lock()
@@ -95,7 +95,7 @@ func (p *KeyedProjection[V]) Checkpoint(ctx context.Context, upTo uint64) error 
 //   - assigning position only after the transaction commits, because doing it
 //     inside the closure means a rolled-back transaction leaves the position
 //     advanced and that event silently skipped until the process restarts.
-func (p *KeyedProjection[V]) Apply(ctx context.Context, e eventstore.SequencedEvent) error {
+func (p *KeyedProjection[V]) Apply(ctx context.Context, e collie.SequencedEvent) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -382,7 +382,7 @@ func (p *KeyedProjection[V]) loadRow(tx *gorm.DB, key string) (*V, map[string]st
 // Overwriting instead would mean a row only ever matches its most recent
 // event's tags, so a candidacy row would drop out of a jobId filter as soon as
 // an event arrived that was scoped to the profile alone.
-func mergeRowTags(existing map[string]string, tags []eventstore.Tag) map[string]string {
+func mergeRowTags(existing map[string]string, tags []collie.Tag) map[string]string {
 	out := make(map[string]string, len(existing)+len(tags))
 	for k, v := range existing {
 		out[k] = v

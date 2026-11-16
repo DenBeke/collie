@@ -31,18 +31,18 @@ type idScanned struct {
 
 func TestStructTagsDeclareWhatOptionsDeclare(t *testing.T) {
 	data := documentUploaded{DocumentID: "d1", FileName: "a.pdf", Content: []byte("pdf")}
-	declared, err := eventstore.NewEventFrom("DocumentUploaded", data)
+	declared, err := collie.NewEventFrom("DocumentUploaded", data)
 	if err != nil {
 		t.Fatal(err)
 	}
-	byOption, err := eventstore.NewEvent("DocumentUploaded", data, nil, attachments.WithAttachments("content"))
+	byOption, err := collie.NewEvent("DocumentUploaded", data, nil, attachments.WithAttachments("content"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got, want := declared.Metadata[attachments.FieldsMetadataKey], byOption.Metadata[attachments.FieldsMetadataKey]; got != want {
 		t.Errorf("%s = %q, option gives %q", attachments.FieldsMetadataKey, got, want)
 	}
-	if _, err := eventstore.NewEventFrom("DocumentUploaded", data, attachments.WithAttachments("content")); err != nil {
+	if _, err := collie.NewEventFrom("DocumentUploaded", data, attachments.WithAttachments("content")); err != nil {
 		t.Errorf("agreeing option: %v", err)
 	}
 }
@@ -51,30 +51,30 @@ func TestStructTagsRoundTrip(t *testing.T) {
 	raw := memory.New()
 	blobs := attachments.NewMemoryBlobStore()
 	att := attachments.NewAttachmentMiddleware(blobs)
-	store := eventstore.NewMiddlewareStore(raw,
-		eventstore.WithAppendMiddleware(att.OnAppend),
-		eventstore.WithReadMiddleware(att.OnRead),
+	store := collie.NewMiddlewareStore(raw,
+		collie.WithAppendMiddleware(att.OnAppend),
+		collie.WithReadMiddleware(att.OnRead),
 	)
 	ctx := context.Background()
 
-	doc, err := eventstore.NewEventFrom("DocumentUploaded", documentUploaded{DocumentID: "d1", FileName: "a.pdf", Content: []byte("pdf-bytes")})
+	doc, err := collie.NewEventFrom("DocumentUploaded", documentUploaded{DocumentID: "d1", FileName: "a.pdf", Content: []byte("pdf-bytes")})
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, err := eventstore.NewEventFrom("IDScanned", idScanned{UserID: "u1", Scan: scan{Front: []byte("f"), Back: []byte("b")}})
+	id, err := collie.NewEventFrom("IDScanned", idScanned{UserID: "u1", Scan: scan{Front: []byte("f"), Back: []byte("b")}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Append(ctx, []eventstore.Event{doc, id}, nil); err != nil {
+	if err := store.Append(ctx, []collie.Event{doc, id}, nil); err != nil {
 		t.Fatal(err)
 	}
 
 	events := collectEvents(t, store, nil)
-	gotDoc, err := eventstore.EventData[documentUploaded](events[0])
+	gotDoc, err := collie.EventData[documentUploaded](events[0])
 	if err != nil || !bytes.Equal(gotDoc.Content, []byte("pdf-bytes")) {
 		t.Errorf("document = %+v, %v", gotDoc, err)
 	}
-	gotScan, err := eventstore.EventData[idScanned](events[1])
+	gotScan, err := collie.EventData[idScanned](events[1])
 	if err != nil || string(gotScan.Scan.Back) != "b" {
 		t.Errorf("scan = %+v, %v", gotScan, err)
 	}
@@ -121,7 +121,7 @@ func TestStructTagsRejectInvalidDeclarations(t *testing.T) {
 	cases := []struct {
 		name    string
 		payload any
-		opts    []eventstore.EventOption
+		opts    []collie.EventOption
 	}{
 		{"value other than blob", badValue{}, nil},
 		{"tag field as blob", taggedBlob{ID: "x"}, nil},
@@ -129,11 +129,11 @@ func TestStructTagsRejectInvalidDeclarations(t *testing.T) {
 		{"embedded field declared", embeddedBlob{scan: scan{Front: []byte("f")}}, nil},
 		{"unexported field declared", unexportedBlob{content: []byte("c")}, nil},
 		{"field behind nil embedded pointer", absentBlob{}, nil},
-		{"option disagrees", documentUploaded{DocumentID: "d", Content: []byte("c")}, []eventstore.EventOption{attachments.WithAttachments("fileName")}},
+		{"option disagrees", documentUploaded{DocumentID: "d", Content: []byte("c")}, []collie.EventOption{attachments.WithAttachments("fileName")}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := eventstore.NewEvent("X", tc.payload, nil, tc.opts...)
+			_, err := collie.NewEvent("X", tc.payload, nil, tc.opts...)
 			if !errors.Is(err, attachments.ErrInvalidStructTags) {
 				t.Errorf("err = %v, want ErrInvalidStructTags", err)
 			}

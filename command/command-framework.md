@@ -10,13 +10,13 @@ code you write per command is your domain logic. Built on the existing primitive
 
 | Layer | Package | Provides |
 |---|---|---|
-| **Run one** | `eventstore` | `Command`, `Execute`, `ExecuteOption` |
-| **Run many** | `eventstore/command` (this package) | `Registry`, `Dispatch`, injection helpers |
+| **Run one** | `collie` | `Command`, `Execute`, `ExecuteOption` |
+| **Run many** | `collie/command` (this package) | `Registry`, `Dispatch`, injection helpers |
 
-`Command` and `Execute` live in the core `eventstore` package so they can be used on
+`Command` and `Execute` live in the core `collie` package so they can be used on
 their own; the `Registry` is an opt-in convenience on top.
 
-## Command + Execute (`eventstore`)
+## Command + Execute (`collie`)
 
 ```go
 type Command interface {
@@ -40,24 +40,24 @@ fields** (the request payload); **unexported fields** hold the loaded projection
 ```go
 type SignUp struct {
 	Username string `json:"username"`
-	exists   *eventstore.DefaultProjection[bool]
+	exists   *collie.DefaultProjection[bool]
 }
 
-func (cmd *SignUp) Projections(_ context.Context) ([]eventstore.Projection, error) {
+func (cmd *SignUp) Projections(_ context.Context) ([]collie.Projection, error) {
 	projection := usernameExistsProjection(cmd.Username)
 	cmd.exists = &projection
-	return []eventstore.Projection{cmd.exists}, nil
+	return []collie.Projection{cmd.exists}, nil
 }
 
-func (cmd *SignUp) Decide(_ context.Context) ([]eventstore.Event, error) {
+func (cmd *SignUp) Decide(_ context.Context) ([]collie.Event, error) {
 	if cmd.exists.State {
 		return nil, fmt.Errorf("username %q is already taken", cmd.Username)
 	}
-	event, err := eventstore.NewEvent("UserSignedUp", cmd.Username, eventstore.NewTags("username", cmd.Username))
+	event, err := collie.NewEvent("UserSignedUp", cmd.Username, collie.NewTags("username", cmd.Username))
 	if err != nil {
 		return nil, fmt.Errorf("could not create UserSignedUp event: %w", err)
 	}
-	return []eventstore.Event{event}, nil
+	return []collie.Event{event}, nil
 }
 ```
 
@@ -82,7 +82,7 @@ guard always covers what the decision read — **correct by construction**.
 func WithMaxAttempts(maxAttempts int) ExecuteOption               // > 1 enables retry
 func WithBackoff(backoff func(ctx context.Context, attempt int)) ExecuteOption
 
-err := eventstore.Execute(ctx, store, &SignUp{Username: "alice"}, eventstore.WithMaxAttempts(3))
+err := collie.Execute(ctx, store, &SignUp{Username: "alice"}, collie.WithMaxAttempts(3))
 ```
 
 **Error conventions:** infrastructure failures are wrapped with context
@@ -96,13 +96,13 @@ Register command **values**, run them by name. Transport-neutral: call `Dispatch
 HTTP handler, a queue consumer, a CLI, or a test.
 
 ```go
-func NewRegistry(store eventstore.Store, options ...Option) *Registry
+func NewRegistry(store collie.Store, options ...Option) *Registry
 
-func WithCommands(commands ...eventstore.Command) Option                        // names = Go type names
-func WithCommand(name string, command eventstore.Command) Option                // explicit wire name
-func WithCommandFunc(name string, newCommand func() eventstore.Command) Option  // factory (bespoke deps)
-func WithSnapshotStore(snapshotStore eventstore.SnapshotStore) Option
-func WithExecuteOptions(options ...eventstore.ExecuteOption) Option
+func WithCommands(commands ...collie.Command) Option                        // names = Go type names
+func WithCommand(name string, command collie.Command) Option                // explicit wire name
+func WithCommandFunc(name string, newCommand func() collie.Command) Option  // factory (bespoke deps)
+func WithSnapshotStore(snapshotStore collie.SnapshotStore) Option
+func WithExecuteOptions(options ...collie.ExecuteOption) Option
 
 func (registry *Registry) Dispatch(ctx context.Context, name string, payload []byte) error
 ```
@@ -111,7 +111,7 @@ func (registry *Registry) Dispatch(ctx context.Context, name string, payload []b
 registry := command.NewRegistry(store,
 	command.WithCommands(&SignUp{}, &ReserveSeat{}),
 	command.WithSnapshotStore(postgres.NewSnapshotStore(db)),
-	command.WithExecuteOptions(eventstore.WithMaxAttempts(5)),
+	command.WithExecuteOptions(collie.WithMaxAttempts(5)),
 )
 err := registry.Dispatch(ctx, "SignUp", []byte(`{"username":"alice"}`))
 ```
@@ -124,9 +124,9 @@ only `New*` here.
 ## Cached commands (stored projections)
 
 For long-lived entities, replaying the whole history on every decision is the cost to
-avoid. A command whose `Projections` returns an `eventstore.StoredProjection` reads from a
+avoid. A command whose `Projections` returns an `collie.StoredProjection` reads from a
 persisted snapshot (a cheap load + delta catch-up) instead. That persistence is a pluggable
-`eventstore.SnapshotStore` (`postgres.NewSnapshotStore(db)`, `memory.NewSnapshotStore()`,
+`collie.SnapshotStore` (`postgres.NewSnapshotStore(db)`, `memory.NewSnapshotStore()`,
 or your own), and the registry injects it into the command.
 
 Embed **`command.SnapshotStoreAccess`** (by value) to receive the store — no
@@ -137,16 +137,16 @@ type ReserveSeat struct {
 	command.SnapshotStoreAccess
 	Room string `json:"room"`
 
-	seatsTaken *eventstore.StoredProjection[int]
+	seatsTaken *collie.StoredProjection[int]
 }
 
-func (cmd *ReserveSeat) Projections(ctx context.Context) ([]eventstore.Projection, error) {
-	projection, err := eventstore.NewStoredProjection(ctx, cmd.SnapshotStore(), "seats-"+cmd.Room, seatsDef())
+func (cmd *ReserveSeat) Projections(ctx context.Context) ([]collie.Projection, error) {
+	projection, err := collie.NewStoredProjection(ctx, cmd.SnapshotStore(), "seats-"+cmd.Room, seatsDef())
 	if err != nil {
 		return nil, fmt.Errorf("could not load seats projection: %w", err)
 	}
 	cmd.seatsTaken = projection
-	return []eventstore.Projection{cmd.seatsTaken}, nil
+	return []collie.Projection{cmd.seatsTaken}, nil
 }
 ```
 
@@ -154,7 +154,7 @@ Injection is a small interface the registry type-asserts for:
 
 ```go
 type SnapshotStoreUser interface {
-	UseSnapshotStore(eventstore.SnapshotStore)
+	UseSnapshotStore(collie.SnapshotStore)
 }
 ```
 

@@ -1,5 +1,5 @@
 //nolint:all
-package eventstore_test
+package collie_test
 
 import (
 	"context"
@@ -14,15 +14,15 @@ import (
 )
 
 // usernameExistsProjection returns true if the given username is already taken.
-func usernameExistsProjection(username string) eventstore.DefaultProjection[bool] {
-	return eventstore.DefaultProjection[bool]{
-		Query: eventstore.QueryItem{
+func usernameExistsProjection(username string) collie.DefaultProjection[bool] {
+	return collie.DefaultProjection[bool]{
+		Query: collie.QueryItem{
 			Types: []string{"UserSignedUp"},
-			Tags:  eventstore.NewTags("username", username),
+			Tags:  collie.NewTags("username", username),
 		},
 		State: false,
-		Handlers: map[string]eventstore.HandleFunc[bool]{
-			"UserSignedUp": func(_ bool, _ eventstore.SequencedEvent) (bool, error) {
+		Handlers: map[string]collie.HandleFunc[bool]{
+			"UserSignedUp": func(_ bool, _ collie.SequencedEvent) (bool, error) {
 				return true, nil
 			},
 		},
@@ -30,20 +30,20 @@ func usernameExistsProjection(username string) eventstore.DefaultProjection[bool
 }
 
 // signUp registers a new user, failing if the username is already taken.
-func signUp(ctx context.Context, store eventstore.Store, username string) error {
+func signUp(ctx context.Context, store collie.Store, username string) error {
 	exists := usernameExistsProjection(username)
-	condition, err := eventstore.BuildDecisionModel(ctx, store, &exists)
+	condition, err := collie.BuildDecisionModel(ctx, store, &exists)
 	if err != nil {
 		return fmt.Errorf("could not build decision model: %w", err)
 	}
 	if exists.State {
 		return fmt.Errorf("username %q is already taken", username)
 	}
-	event, err := eventstore.NewEvent("UserSignedUp", username, eventstore.NewTags("username", username))
+	event, err := collie.NewEvent("UserSignedUp", username, collie.NewTags("username", username))
 	if err != nil {
 		return fmt.Errorf("could not create event: %w", err)
 	}
-	return store.Append(ctx, []eventstore.Event{event}, condition)
+	return store.Append(ctx, []collie.Event{event}, condition)
 }
 
 func ExampleBuildDecisionModel() {
@@ -64,13 +64,13 @@ func ExampleBuildDecisionModel() {
 // totalUsersProjection is a read model that counts all signed-up users.
 // Unlike decision model projections, it is long-lived and incrementally updated.
 func totalUsersProjection() *snapshot.Projection[int] {
-	proj, _ := snapshot.NewProjection(context.Background(), memory.NewSnapshotStore(), "total-users", eventstore.DefaultProjection[int]{
-		Query: eventstore.QueryItem{
+	proj, _ := snapshot.NewProjection(context.Background(), memory.NewSnapshotStore(), "total-users", collie.DefaultProjection[int]{
+		Query: collie.QueryItem{
 			Types: []string{"UserSignedUp"},
 		},
 		State: 0,
-		Handlers: map[string]eventstore.HandleFunc[int]{
-			"UserSignedUp": func(count int, _ eventstore.SequencedEvent) (int, error) {
+		Handlers: map[string]collie.HandleFunc[int]{
+			"UserSignedUp": func(count int, _ collie.SequencedEvent) (int, error) {
 				return count + 1, nil
 			},
 		},
@@ -84,7 +84,7 @@ func ExampleUpdateProjection() {
 	totalUsers := totalUsersProjection()
 
 	// Initial state: no users yet.
-	eventstore.UpdateProjection(ctx, store, totalUsers)
+	collie.UpdateProjection(ctx, store, totalUsers)
 	fmt.Println("total users:", totalUsers.State)
 
 	// Sign up some users.
@@ -92,14 +92,14 @@ func ExampleUpdateProjection() {
 	signUp(ctx, store, "bob")
 
 	// Catch up the read model.
-	eventstore.UpdateProjection(ctx, store, totalUsers)
+	collie.UpdateProjection(ctx, store, totalUsers)
 	fmt.Println("total users:", totalUsers.State)
 
 	// Sign up another user.
 	signUp(ctx, store, "charlie")
 
 	// Incrementally update — only processes new events since last update.
-	eventstore.UpdateProjection(ctx, store, totalUsers)
+	collie.UpdateProjection(ctx, store, totalUsers)
 	fmt.Println("total users:", totalUsers.State)
 
 	// Output:
@@ -135,7 +135,7 @@ func ExampleServe() {
 		// keeps the read model decoupled from the write side — no need to notify
 		// read models after each command. The incremental update only processes
 		// events after the last known position, so catch-up stays fast.
-		if err := eventstore.UpdateProjection(c.Request().Context(), store, totalUsers); err != nil {
+		if err := collie.UpdateProjection(c.Request().Context(), store, totalUsers); err != nil {
 			return err
 		}
 		return c.JSON(http.StatusOK, map[string]int{"total_users": totalUsers.State})
@@ -146,7 +146,7 @@ func ExampleServe() {
 
 // The same uniqueness check expressed as a self-handling command — with the
 // optimistic-concurrency retry the bare signUp helper lacks — lives in the
-// command package: see [eventstore/command.Execute] and its examples.
+// command package: see [collie/command.Execute] and its examples.
 
 // MessageSent is a fact about two people at once, so it belongs to two
 // boundaries. Declaring the tags on the fields means the struct cannot be
@@ -158,7 +158,7 @@ type MessageSent struct {
 }
 
 func ExampleNewEventFrom() {
-	event, err := eventstore.NewEventFrom("MessageSent", MessageSent{From: "alice", To: "bob", Body: "hi"})
+	event, err := collie.NewEventFrom("MessageSent", MessageSent{From: "alice", To: "bob", Body: "hi"})
 	if err != nil {
 		panic(err)
 	}

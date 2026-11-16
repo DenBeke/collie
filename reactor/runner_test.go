@@ -30,9 +30,9 @@ type noop struct {
 	Tag string
 }
 
-func (cmd *noop) Projections(context.Context) ([]eventstore.Projection, error) { return nil, nil }
+func (cmd *noop) Projections(context.Context) ([]collie.Projection, error) { return nil, nil }
 
-func (cmd *noop) Decide(context.Context) ([]eventstore.Event, error) { return nil, nil }
+func (cmd *noop) Decide(context.Context) ([]collie.Event, error) { return nil, nil }
 
 // executor is a CommandExecutor that remembers what it was asked to run and
 // answers with whatever the test needs it to.
@@ -62,14 +62,14 @@ func (e *executor) answer(err error) {
 }
 
 // appendEvents writes one event per type, unconditionally.
-func appendEvents(t *testing.T, store eventstore.Store, types ...string) {
+func appendEvents(t *testing.T, store collie.Store, types ...string) {
 	t.Helper()
 	for _, eventType := range types {
-		event, err := eventstore.NewEvent(eventType, nil, eventstore.NewTags("id", eventType))
+		event, err := collie.NewEvent(eventType, nil, collie.NewTags("id", eventType))
 		if err != nil {
 			t.Fatalf("could not build a %s event: %v", eventType, err)
 		}
-		err = store.Append(context.Background(), []eventstore.Event{event}, nil)
+		err = store.Append(context.Background(), []collie.Event{event}, nil)
 		if err != nil {
 			t.Fatalf("could not append a %s event: %v", eventType, err)
 		}
@@ -85,7 +85,7 @@ type collector struct {
 	fail     error
 }
 
-func (c *collector) React(_ context.Context, event eventstore.SequencedEvent) ([]command.Command, error) {
+func (c *collector) React(_ context.Context, event collie.SequencedEvent) ([]command.Command, error) {
 	if c.fail != nil {
 		return nil, c.fail
 	}
@@ -299,17 +299,17 @@ func TestRunnerExecutesEveryCommandFromOneEvent(t *testing.T) {
 // which is what a real one does — through a command — and what the runner must
 // therefore survive: an append made from inside the delivery of an event.
 type appender struct {
-	store eventstore.Store
+	store collie.Store
 	calls int
 }
 
 func (a *appender) Execute(ctx context.Context, _ command.Command) error {
 	a.calls++
-	event, err := eventstore.NewEvent("Reacted", nil, eventstore.NewTags("id", "reacted"))
+	event, err := collie.NewEvent("Reacted", nil, collie.NewTags("id", "reacted"))
 	if err != nil {
 		return err
 	}
-	return a.store.Append(ctx, []eventstore.Event{event}, nil)
+	return a.store.Append(ctx, []collie.Event{event}, nil)
 }
 
 // TestRunnerAppendsWhileReading pins the shape of a pass: the events are read
@@ -322,7 +322,7 @@ func TestRunnerAppendsWhileReading(t *testing.T) {
 
 	// Reacts to Interesting only, so the event its own command appends does not
 	// feed it again — a reactor that answers what it causes must converge.
-	watcher := reactor.ReactorFunc(func(_ context.Context, event eventstore.SequencedEvent) ([]command.Command, error) {
+	watcher := reactor.ReactorFunc(func(_ context.Context, event collie.SequencedEvent) ([]command.Command, error) {
 		if event.Type != "Interesting" {
 			return nil, nil
 		}
@@ -350,12 +350,12 @@ func TestRunnerAppendsWhileReading(t *testing.T) {
 func TestRunnerStampsTheEnvelopeOnItsCommands(t *testing.T) {
 	// AllowAnonymous, because the event that triggers the reaction is seeded by
 	// the test and has no actor of its own.
-	store := eventstore.NewMiddlewareStore(memory.New(),
-		eventstore.WithAppendMiddleware(envelope.New(envelope.AllowAnonymous()).OnAppend))
+	store := collie.NewMiddlewareStore(memory.New(),
+		collie.WithAppendMiddleware(envelope.New(envelope.AllowAnonymous()).OnAppend))
 	appendEvents(t, store, "Interesting")
 
 	runner := reactor.NewRunner(store, memory.NewCheckpointStore(), &appender{store: store}, quiet())
-	watcher := reactor.ReactorFunc(func(_ context.Context, event eventstore.SequencedEvent) ([]command.Command, error) {
+	watcher := reactor.ReactorFunc(func(_ context.Context, event collie.SequencedEvent) ([]command.Command, error) {
 		if event.Type != "Interesting" {
 			return nil, nil
 		}
@@ -364,8 +364,8 @@ func TestRunnerStampsTheEnvelopeOnItsCommands(t *testing.T) {
 	register(t, runner, "watcher/v1", watcher, reactor.FromBeginning())
 	tick(t, runner)
 
-	var reacted []eventstore.SequencedEvent
-	query := eventstore.Query{eventstore.QueryItem{Types: []string{"Reacted"}}}
+	var reacted []collie.SequencedEvent
+	query := collie.Query{collie.QueryItem{Types: []string{"Reacted"}}}
 	stream, _, err := store.Read(context.Background(), query, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -396,7 +396,7 @@ func TestRunnerIsolatesAPanickingReactor(t *testing.T) {
 	runner := reactor.NewRunner(store, checkpoints, &executor{}, quiet())
 
 	register(t, runner, "panicking/v1", reactor.ReactorFunc(
-		func(context.Context, eventstore.SequencedEvent) ([]command.Command, error) {
+		func(context.Context, collie.SequencedEvent) ([]command.Command, error) {
 			panic("nil map, probably")
 		}))
 	watcher := &collector{}
@@ -443,7 +443,7 @@ func TestRunnerRejectsRegistrationAfterRun(t *testing.T) {
 
 	reacted := make(chan struct{}, 1)
 	register(t, runner, "watcher/v1", reactor.ReactorFunc(
-		func(context.Context, eventstore.SequencedEvent) ([]command.Command, error) {
+		func(context.Context, collie.SequencedEvent) ([]command.Command, error) {
 			select {
 			case reacted <- struct{}{}:
 			default:
@@ -474,11 +474,11 @@ func TestRunnerRejectsRegistrationAfterRun(t *testing.T) {
 
 // headDown fails every Read while down, as a lost database connection would.
 type headDown struct {
-	eventstore.Store
+	collie.Store
 	down bool
 }
 
-func (s *headDown) Read(ctx context.Context, query eventstore.Query, after uint64) (iter.Seq2[eventstore.SequencedEvent, error], uint64, error) {
+func (s *headDown) Read(ctx context.Context, query collie.Query, after uint64) (iter.Seq2[collie.SequencedEvent, error], uint64, error) {
 	if s.down {
 		return nil, 0, errors.New("connection refused")
 	}

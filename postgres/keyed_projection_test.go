@@ -5,7 +5,7 @@ import (
 	"slices"
 	"testing"
 
-	eventstore "github.com/DenBeke/collie"
+	"github.com/DenBeke/collie"
 	"github.com/DenBeke/collie/keyedprojection"
 	"github.com/DenBeke/collie/memory"
 	"github.com/DenBeke/collie/postgres"
@@ -23,11 +23,11 @@ type kpJob struct {
 
 type kpHandler struct{}
 
-func (kpHandler) Key(e eventstore.SequencedEvent) (string, error) {
+func (kpHandler) Key(e collie.SequencedEvent) (string, error) {
 	return e.TagValues("jobId")[0], nil
 }
 
-func (kpHandler) Apply(e eventstore.SequencedEvent, cur *kpJob) (*kpJob, error) {
+func (kpHandler) Apply(e collie.SequencedEvent, cur *kpJob) (*kpJob, error) {
 	if e.Type == "JobDeleted" {
 		return nil, nil
 	}
@@ -35,7 +35,7 @@ func (kpHandler) Apply(e eventstore.SequencedEvent, cur *kpJob) (*kpJob, error) 
 	if cur != nil {
 		next = *cur
 	}
-	d, err := eventstore.EventData[kpJob](e)
+	d, err := collie.EventData[kpJob](e)
 	if err != nil {
 		return nil, err
 	}
@@ -51,17 +51,17 @@ func (kpHandler) Apply(e eventstore.SequencedEvent, cur *kpJob) (*kpJob, error) 
 	return &next, nil
 }
 
-func kpSeed(t *testing.T) eventstore.Store {
+func kpSeed(t *testing.T) collie.Store {
 	t.Helper()
 	store := memory.New()
-	add := func(typ, id string, d kpJob, extra ...eventstore.Tag) {
+	add := func(typ, id string, d kpJob, extra ...collie.Tag) {
 		t.Helper()
-		tags := append([]eventstore.Tag{eventstore.NewTag("jobId", id)}, extra...)
-		e, err := eventstore.NewEvent(typ, d, tags)
+		tags := append([]collie.Tag{collie.NewTag("jobId", id)}, extra...)
+		e, err := collie.NewEvent(typ, d, tags)
 		if err != nil {
 			t.Fatalf("new event: %v", err)
 		}
-		if err := store.Append(context.Background(), []eventstore.Event{e}, nil); err != nil {
+		if err := store.Append(context.Background(), []collie.Event{e}, nil); err != nil {
 			t.Fatalf("append: %v", err)
 		}
 	}
@@ -69,11 +69,11 @@ func kpSeed(t *testing.T) eventstore.Store {
 	add("JobCreated", "j2", kpJob{Title: "Frontend", Status: "open", Rank: 1})
 	add("JobCreated", "j3", kpJob{Title: "Designer", Status: "closed", Rank: 3})
 	add("JobDetailsChanged", "j1", kpJob{Title: "Backend engineer"},
-		eventstore.NewTag("agencyId", "a1"))
+		collie.NewTag("agencyId", "a1"))
 	return store
 }
 
-func kpProjection(t *testing.T, name string) (keyedprojection.Projection[kpJob], eventstore.Store) {
+func kpProjection(t *testing.T, name string) (keyedprojection.Projection[kpJob], collie.Store) {
 	t.Helper()
 	db := setupDB(t)
 	if err := postgres.MigrateProjections(db); err != nil {
@@ -81,12 +81,12 @@ func kpProjection(t *testing.T, name string) (keyedprojection.Projection[kpJob],
 	}
 	store := kpSeed(t)
 	p, err := postgres.NewKeyedProjection[kpJob](db, name,
-		eventstore.QueryItem{Types: []string{"JobCreated", "JobDetailsChanged", "JobDeleted"}},
+		collie.QueryItem{Types: []string{"JobCreated", "JobDetailsChanged", "JobDeleted"}},
 		kpHandler{})
 	if err != nil {
 		t.Fatalf("new keyed projection: %v", err)
 	}
-	if err := eventstore.UpdateProjection(context.Background(), store, p); err != nil {
+	if err := collie.UpdateProjection(context.Background(), store, p); err != nil {
 		t.Fatalf("catch up: %v", err)
 	}
 	return p, store
@@ -130,7 +130,7 @@ func TestPgKeyedFilterOnValueField(t *testing.T) {
 func TestPgKeyedTagsAccumulate(t *testing.T) {
 	jobs, _ := kpProjection(t, "JobsTags")
 	got, err := jobs.List(context.Background(), keyedprojection.ListQuery{
-		Tags: []eventstore.Tag{eventstore.NewTag("jobId", "j1")},
+		Tags: []collie.Tag{collie.NewTag("jobId", "j1")},
 	})
 	if err != nil {
 		t.Fatalf("List: %v", err)
@@ -188,11 +188,11 @@ func TestPgKeyedNullHandlerDropsTheRow(t *testing.T) {
 	jobs, store := kpProjection(t, "JobsDelete")
 	ctx := context.Background()
 
-	e, _ := eventstore.NewEvent("JobDeleted", kpJob{}, eventstore.NewTags("jobId", "j1"))
-	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
+	e, _ := collie.NewEvent("JobDeleted", kpJob{}, collie.NewTags("jobId", "j1"))
+	if err := store.Append(ctx, []collie.Event{e}, nil); err != nil {
 		t.Fatalf("append: %v", err)
 	}
-	if err := eventstore.UpdateProjection(ctx, store, jobs); err != nil {
+	if err := collie.UpdateProjection(ctx, store, jobs); err != nil {
 		t.Fatalf("catch up: %v", err)
 	}
 	if _, found, _ := jobs.Get(ctx, "j1"); found {
@@ -210,12 +210,12 @@ func TestPgKeyedApplyIsIdempotent(t *testing.T) {
 	store := kpSeed(t)
 	ctx := context.Background()
 
-	query := eventstore.QueryItem{Types: []string{"JobCreated", "JobDetailsChanged", "JobDeleted"}}
+	query := collie.QueryItem{Types: []string{"JobCreated", "JobDetailsChanged", "JobDeleted"}}
 	first, err := postgres.NewKeyedProjection[kpJob](db, "JobsIdem", query, kpHandler{})
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}
-	if err := eventstore.UpdateProjection(ctx, store, first); err != nil {
+	if err := collie.UpdateProjection(ctx, store, first); err != nil {
 		t.Fatalf("catch up: %v", err)
 	}
 
@@ -228,7 +228,7 @@ func TestPgKeyedApplyIsIdempotent(t *testing.T) {
 	if err := second.Reset(ctx); err != nil {
 		t.Fatalf("reset: %v", err)
 	}
-	if err := eventstore.UpdateProjection(ctx, store, second); err != nil {
+	if err := collie.UpdateProjection(ctx, store, second); err != nil {
 		t.Fatalf("catch up: %v", err)
 	}
 
@@ -264,7 +264,7 @@ func TestKeyedProjectionRecordsHeadPastTheGap(t *testing.T) {
 	ctx := context.Background()
 	open := func() *postgres.KeyedProjection[kpJob] {
 		t.Helper()
-		p, err := postgres.NewKeyedProjection(db, "jobs", eventstore.QueryItem{Types: []string{"JobCreated"}}, kpHandler{})
+		p, err := postgres.NewKeyedProjection(db, "jobs", collie.QueryItem{Types: []string{"JobCreated"}}, kpHandler{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -300,18 +300,18 @@ func TestKeyedProjectionAdvancesOverASparseLog(t *testing.T) {
 	ctx := context.Background()
 	pgAppend(t, store, "Other", 10_001)
 
-	p, err := postgres.NewKeyedProjection(db, "jobs", eventstore.QueryItem{Types: []string{"JobCreated"}}, kpHandler{})
+	p, err := postgres.NewKeyedProjection(db, "jobs", collie.QueryItem{Types: []string{"JobCreated"}}, kpHandler{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := eventstore.UpdateProjection(ctx, store, p); err != nil {
+	if err := collie.UpdateProjection(ctx, store, p); err != nil {
 		t.Fatal(err)
 	}
 	if p.After() != 10_001 {
 		t.Fatalf("after=%d, want the head (10001)", p.After())
 	}
 
-	reopened, err := postgres.NewKeyedProjection(db, "jobs", eventstore.QueryItem{Types: []string{"JobCreated"}}, kpHandler{})
+	reopened, err := postgres.NewKeyedProjection(db, "jobs", collie.QueryItem{Types: []string{"JobCreated"}}, kpHandler{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -335,19 +335,19 @@ func TestPgKeyedOrder(t *testing.T) {
 		"j2": {Title: "cherry", Rank: 9},
 		"j3": {Title: "apple", Rank: 100},
 	} {
-		e, err := eventstore.NewEvent("JobCreated", d, eventstore.NewTags("jobId", id))
+		e, err := collie.NewEvent("JobCreated", d, collie.NewTags("jobId", id))
 		if err != nil {
 			t.Fatalf("new event: %v", err)
 		}
-		if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
+		if err := store.Append(ctx, []collie.Event{e}, nil); err != nil {
 			t.Fatalf("append: %v", err)
 		}
 	}
-	jobs, err := postgres.NewKeyedProjection[kpJob](db, "JobsSorted", eventstore.QueryItem{Types: []string{"JobCreated"}}, kpHandler{})
+	jobs, err := postgres.NewKeyedProjection[kpJob](db, "JobsSorted", collie.QueryItem{Types: []string{"JobCreated"}}, kpHandler{})
 	if err != nil {
 		t.Fatalf("new keyed projection: %v", err)
 	}
-	if err := eventstore.UpdateProjection(ctx, store, jobs); err != nil {
+	if err := collie.UpdateProjection(ctx, store, jobs); err != nil {
 		t.Fatalf("catch up: %v", err)
 	}
 	// The order must not depend on the index being there.
@@ -386,11 +386,11 @@ func TestMigrateProjectionsKeepsTheRowsOfARenamedTable(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 	jobs, err := postgres.NewKeyedProjection[kpJob](db, "JobsRenamed",
-		eventstore.QueryItem{Types: []string{"JobCreated", "JobDetailsChanged", "JobDeleted"}}, kpHandler{})
+		collie.QueryItem{Types: []string{"JobCreated", "JobDetailsChanged", "JobDeleted"}}, kpHandler{})
 	if err != nil {
 		t.Fatalf("new keyed projection: %v", err)
 	}
-	if err := eventstore.UpdateProjection(context.Background(), kpSeed(t), jobs); err != nil {
+	if err := collie.UpdateProjection(context.Background(), kpSeed(t), jobs); err != nil {
 		t.Fatalf("catch up: %v", err)
 	}
 	if err := db.Exec(`ALTER TABLE projection_entries RENAME TO projection_rows`).Error; err != nil {

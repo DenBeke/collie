@@ -66,7 +66,7 @@ func eventBody(cfg *Config) []byte {
 func entityID(id int) string { return entityIDPrefix + strconv.Itoa(id) }
 
 func entityTagJSON(id int) string {
-	b, _ := json.Marshal(eventstore.NewTags(entityTagKey, entityID(id)))
+	b, _ := json.Marshal(collie.NewTags(entityTagKey, entityID(id)))
 	return string(b)
 }
 
@@ -78,18 +78,18 @@ func logErr(err error) {
 	}
 }
 
-func makeEvents(cfg *Config, id int) []eventstore.Event {
-	tag := eventstore.NewTags(entityTagKey, entityID(id))
-	events := make([]eventstore.Event, cfg.EventsPerAppend)
+func makeEvents(cfg *Config, id int) []collie.Event {
+	tag := collie.NewTags(entityTagKey, entityID(id))
+	events := make([]collie.Event, cfg.EventsPerAppend)
 	for i := range events {
-		events[i] = eventstore.Event{Type: eventType, Data: eventBody(cfg), Tags: tag}
+		events[i] = collie.Event{Type: eventType, Data: eventBody(cfg), Tags: tag}
 	}
 	return events
 }
 
 // appendWith appends through the store, whose mode New set from cfg.Lock — the
 // A/B switch under test.
-func appendWith(ctx context.Context, store *pgstore.Store, _ *Config, events []eventstore.Event, cond *eventstore.AppendCondition) error {
+func appendWith(ctx context.Context, store *pgstore.Store, _ *Config, events []collie.Event, cond *collie.AppendCondition) error {
 	return store.Append(ctx, events, cond)
 }
 
@@ -141,7 +141,7 @@ func runWorker(ctx context.Context, cancel context.CancelFunc, idx int, store *p
 func doOp(ctx context.Context, store *pgstore.Store, db *gorm.DB, cfg *Config, id int, rec bool, st *workerStats) (attempts int, success bool) {
 	// Include the type so the per-boundary lock key (type,tag,value) is defined;
 	// harmless for the global path (just a more selective check).
-	query := eventstore.Query{{Types: []string{eventType}, Tags: eventstore.NewTags(entityTagKey, entityID(id))}}
+	query := collie.Query{{Types: []string{eventType}, Tags: collie.NewTags(entityTagKey, entityID(id))}}
 
 	switch cfg.Condition {
 	case condNone:
@@ -166,7 +166,7 @@ func doOp(ctx context.Context, store *pgstore.Store, db *gorm.DB, cfg *Config, i
 		return 1, false
 
 	case condCreate:
-		cond := &eventstore.AppendCondition{Query: query, After: 0}
+		cond := &collie.AppendCondition{Query: query, After: 0}
 		t0 := time.Now()
 		err := appendWith(ctx, store, cfg, makeEvents(cfg, id), cond)
 		dt := time.Since(t0)
@@ -179,7 +179,7 @@ func doOp(ctx context.Context, store *pgstore.Store, db *gorm.DB, cfg *Config, i
 				st.retries.record(0)
 			}
 			return 1, true
-		case errors.Is(err, eventstore.ErrAppendConditionViolated):
+		case errors.Is(err, collie.ErrAppendConditionViolated):
 			st.conflicts++
 			if rec {
 				st.appendViol.Record(uint64(dt))
@@ -200,7 +200,7 @@ func doOp(ctx context.Context, store *pgstore.Store, db *gorm.DB, cfg *Config, i
 		// above any sequence number makes the check pass and insert. Models
 		// offloading the decision read to a read replica and measuring the pure
 		// append ceiling (lock + in-lock check + insert), reads excluded.
-		cond := &eventstore.AppendCondition{Query: query, After: noReadAfter}
+		cond := &collie.AppendCondition{Query: query, After: noReadAfter}
 		t0 := time.Now()
 		err := appendWith(ctx, store, cfg, makeEvents(cfg, id), cond)
 		dt := time.Since(t0)
@@ -213,7 +213,7 @@ func doOp(ctx context.Context, store *pgstore.Store, db *gorm.DB, cfg *Config, i
 				st.retries.record(0)
 			}
 			return 1, true
-		case errors.Is(err, eventstore.ErrAppendConditionViolated):
+		case errors.Is(err, collie.ErrAppendConditionViolated):
 			st.conflicts++ // not expected with the sentinel After; handled defensively
 			if rec {
 				st.appendViol.Record(uint64(dt))
@@ -235,7 +235,7 @@ func doOp(ctx context.Context, store *pgstore.Store, db *gorm.DB, cfg *Config, i
 
 // doHead implements the realistic optimistic-concurrency path: read the entity's
 // current head, append with After=head, and (closed loop) retry on violation.
-func doHead(ctx context.Context, store *pgstore.Store, db *gorm.DB, cfg *Config, query eventstore.Query, id int, rec bool, st *workerStats) (attempts int, success bool) {
+func doHead(ctx context.Context, store *pgstore.Store, db *gorm.DB, cfg *Config, query collie.Query, id int, rec bool, st *workerStats) (attempts int, success bool) {
 	eid := entityID(id)
 	entityJSON := entityTagJSON(id)
 	retries := 0
@@ -257,7 +257,7 @@ func doHead(ctx context.Context, store *pgstore.Store, db *gorm.DB, cfg *Config,
 			st.readHead.Record(uint64(dt))
 		}
 
-		cond := &eventstore.AppendCondition{Query: query, After: head}
+		cond := &collie.AppendCondition{Query: query, After: head}
 		ta := time.Now()
 		aerr := appendWith(ctx, store, cfg, makeEvents(cfg, id), cond)
 		adt := time.Since(ta)
@@ -274,7 +274,7 @@ func doHead(ctx context.Context, store *pgstore.Store, db *gorm.DB, cfg *Config,
 			}
 			return attempts, true
 
-		case errors.Is(aerr, eventstore.ErrAppendConditionViolated):
+		case errors.Is(aerr, collie.ErrAppendConditionViolated):
 			st.conflicts++
 			if rec {
 				st.appendViol.Record(uint64(adt))

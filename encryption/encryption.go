@@ -39,8 +39,8 @@ var ErrMissingField = errors.New("encrypted field not found in event data")
 // names must each exist as a key in the event's Tags; their values identify
 // the data subject whose encryption key protects this event's Data.
 // Validation is performed by the OnAppend middleware.
-func WithEncryptionKeys(keys ...string) eventstore.EventOption {
-	return func(e *eventstore.Event) {
+func WithEncryptionKeys(keys ...string) collie.EventOption {
+	return func(e *collie.Event) {
 		if e.Metadata == nil {
 			e.Metadata = make(map[string]string)
 		}
@@ -52,8 +52,8 @@ func WithEncryptionKeys(keys ...string) eventstore.EventOption {
 // instead of encrypting the entire payload. Must be combined with
 // WithEncryptionKeys. Each name must correspond to a top-level key in the
 // JSON-encoded event data.
-func WithEncryptedFields(fields ...string) eventstore.EventOption {
-	return func(e *eventstore.Event) {
+func WithEncryptedFields(fields ...string) collie.EventOption {
+	return func(e *collie.Event) {
 		if e.Metadata == nil {
 			e.Metadata = make(map[string]string)
 		}
@@ -63,7 +63,7 @@ func WithEncryptedFields(fields ...string) eventstore.EventOption {
 
 // IsRedacted returns true if the event was crypto-shredded by the encryption
 // middleware (the subject's key was forgotten).
-func IsRedacted(e eventstore.SequencedEvent) bool {
+func IsRedacted(e collie.SequencedEvent) bool {
 	return e.Metadata["redacted"] == "true"
 }
 
@@ -82,7 +82,7 @@ func NewEventEncryptor(keys KeyStore) *EventEncryptor {
 // encryption keys set in its Metadata. When encrypted fields are specified,
 // only those JSON fields are encrypted; otherwise the entire payload is
 // encrypted.
-func (enc *EventEncryptor) OnAppend(ctx context.Context, e *eventstore.Event) error {
+func (enc *EventEncryptor) OnAppend(ctx context.Context, e *collie.Event) error {
 	keys := encryptionKeys(e.Metadata)
 	if len(keys) == 0 {
 		return nil
@@ -113,7 +113,7 @@ func (enc *EventEncryptor) OnAppend(ctx context.Context, e *eventstore.Event) er
 // encryption keys set in its Metadata. If the subject's key has been
 // forgotten, Data is set to nil for full-blob encryption or fields are set
 // to null for field-level encryption.
-func (enc *EventEncryptor) OnRead(ctx context.Context, e *eventstore.SequencedEvent) error {
+func (enc *EventEncryptor) OnRead(ctx context.Context, e *collie.SequencedEvent) error {
 	keys := encryptionKeys(e.Metadata)
 	if len(keys) == 0 {
 		return nil
@@ -154,7 +154,7 @@ func (enc *EventEncryptor) OnRead(ctx context.Context, e *eventstore.SequencedEv
 }
 
 // Forget deletes all keys whose subject is a superset of the provided tags.
-func (enc *EventEncryptor) Forget(ctx context.Context, tags []eventstore.Tag) error {
+func (enc *EventEncryptor) Forget(ctx context.Context, tags []collie.Tag) error {
 	return enc.keys.Forget(ctx, tags)
 }
 
@@ -171,8 +171,8 @@ func encryptionKeys(metadata map[string]string) []string {
 // using the provided encryption key names. A name may carry multiple values
 // (e.g. a message between two users), all of which become part of the subject.
 // Returns ErrMissingTag if a name has no value on the event.
-func subjectTags(tags []eventstore.Tag, keys []string) ([]eventstore.Tag, error) {
-	var subject []eventstore.Tag
+func subjectTags(tags []collie.Tag, keys []string) ([]collie.Tag, error) {
+	var subject []collie.Tag
 	for _, name := range keys {
 		before := len(subject)
 		for _, t := range tags {
@@ -197,7 +197,7 @@ func encryptedFields(metadata map[string]string) []string {
 }
 
 // encryptFields encrypts specific JSON fields in the event data.
-func encryptFields(key []byte, e *eventstore.Event, fields []string) error {
+func encryptFields(key []byte, e *collie.Event, fields []string) error {
 	var data map[string]json.RawMessage
 	if err := json.Unmarshal(e.Data, &data); err != nil {
 		return fmt.Errorf("could not parse event data for field encryption: %w", err)
@@ -226,7 +226,7 @@ func encryptFields(key []byte, e *eventstore.Event, fields []string) error {
 }
 
 // decryptFields decrypts specific JSON fields in the event data.
-func decryptFields(key []byte, e *eventstore.SequencedEvent, fields []string) error {
+func decryptFields(key []byte, e *collie.SequencedEvent, fields []string) error {
 	var data map[string]json.RawMessage
 	if err := json.Unmarshal(e.Data, &data); err != nil {
 		return fmt.Errorf("could not parse event data for field decryption: %w", err)
@@ -259,7 +259,7 @@ func decryptFields(key []byte, e *eventstore.SequencedEvent, fields []string) er
 }
 
 // redactFields sets encrypted fields to JSON null when the key is forgotten.
-func redactFields(e *eventstore.SequencedEvent, fields []string) error {
+func redactFields(e *collie.SequencedEvent, fields []string) error {
 	var data map[string]json.RawMessage
 	if err := json.Unmarshal(e.Data, &data); err != nil {
 		return fmt.Errorf("could not parse event data for redaction: %w", err)

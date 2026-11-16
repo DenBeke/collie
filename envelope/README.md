@@ -11,14 +11,14 @@ Beside the free `Metadata` map, an event carries three typed fields — who caus
 Domain code sets none of them. It puts them on the context, and the middleware does the rest:
 
 ```go
-store := eventstore.NewMiddlewareStore(inner,
+store := collie.NewMiddlewareStore(inner,
     // Before encryption: stamp first, then encrypt.
-    eventstore.WithAppendMiddleware(envelope.New().OnAppend, encryptor.OnAppend),
-    eventstore.WithReadMiddleware(encryptor.OnRead),
+    collie.WithAppendMiddleware(envelope.New().OnAppend, encryptor.OnAppend),
+    collie.WithReadMiddleware(encryptor.OnRead),
 )
 
-ctx = eventstore.ContextWithActor(ctx, "student:s1")
-ctx = eventstore.ContextWithCause(ctx, "request:8f3a")
+ctx = collie.ContextWithActor(ctx, "student:s1")
+ctx = collie.ContextWithCause(ctx, "request:8f3a")
 ```
 
 Both are opaque `"kind:id"` strings whose grammar the application owns. The framework reserves the two prefixes it produces itself: `reactor:<registered-name>` is the actor of a command a reactor dispatched, and `event:<sequence>` is the cause it hands that command.

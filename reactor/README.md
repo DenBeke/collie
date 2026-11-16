@@ -6,7 +6,7 @@ The `reactor` package is the reacting edge: handlers that watch the log and answ
 runner := reactor.NewRunner(store, checkpoints, registry, reactor.WithInterval(time.Second))
 
 runner.Register("welcome-mailer/v1", reactor.ReactorFunc(
-    func(ctx context.Context, event eventstore.SequencedEvent) ([]command.Command, error) {
+    func(ctx context.Context, event collie.SequencedEvent) ([]command.Command, error) {
         if event.Type != "UserSignedUp" {
             return nil, nil
         }

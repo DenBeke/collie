@@ -36,8 +36,8 @@ type BlobStore interface {
 // WithAttachments marks the listed JSON field names for offloading to a blob
 // store. Each name must correspond to a top-level key in the JSON-encoded
 // event data.
-func WithAttachments(fields ...string) eventstore.EventOption {
-	return func(e *eventstore.Event) {
+func WithAttachments(fields ...string) collie.EventOption {
+	return func(e *collie.Event) {
 		if e.Metadata == nil {
 			e.Metadata = make(map[string]string)
 		}
@@ -47,13 +47,13 @@ func WithAttachments(fields ...string) eventstore.EventOption {
 
 // IsMissing returns true if one or more attachment blobs could not be
 // retrieved on read.
-func IsMissing(e eventstore.SequencedEvent) bool {
+func IsMissing(e collie.SequencedEvent) bool {
 	return e.Metadata[MissingMetadataKey] == "true"
 }
 
 // BlobIDs returns the field→blobID mapping from the event's metadata.
 // Returns nil if the event has no attachments.
-func BlobIDs(e eventstore.SequencedEvent) map[string]string {
+func BlobIDs(e collie.SequencedEvent) map[string]string {
 	v, ok := e.Metadata[MappingMetadataKey]
 	if !ok || v == "" {
 		return nil
@@ -78,7 +78,7 @@ func NewAttachmentMiddleware(blobs BlobStore) *AttachmentMiddleware {
 
 // OnAppend extracts attachment fields from event data, stores them in the
 // blob store, and replaces them with blob IDs in metadata.
-func (m *AttachmentMiddleware) OnAppend(ctx context.Context, e *eventstore.Event) error {
+func (m *AttachmentMiddleware) OnAppend(ctx context.Context, e *collie.Event) error {
 	raw, ok := e.Metadata[FieldsMetadataKey]
 	if !ok || raw == "" {
 		return nil
@@ -123,7 +123,7 @@ func (m *AttachmentMiddleware) OnAppend(ctx context.Context, e *eventstore.Event
 // OnRead restores attachment fields from the blob store into event data.
 // If a blob is missing, the field is set to JSON null and metadata is
 // marked with attachmentsMissing.
-func (m *AttachmentMiddleware) OnRead(ctx context.Context, e *eventstore.SequencedEvent) error {
+func (m *AttachmentMiddleware) OnRead(ctx context.Context, e *collie.SequencedEvent) error {
 	raw, ok := e.Metadata[MappingMetadataKey]
 	if !ok || raw == "" {
 		return nil

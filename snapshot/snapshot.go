@@ -1,9 +1,9 @@
 // Package snapshot caches projection state so decisions and read models resume
 // from a checkpoint instead of replaying their whole event stream. It is an
-// optimization layer over the eventstore core, not part of the DCB
-// specification: a [Projection] is an [eventstore.CheckpointProjection] whose
+// optimization layer over the collie core, not part of the DCB
+// specification: a [Projection] is an [collie.CheckpointProjection] whose
 // state and position persist through a [Store], and it drops unchanged into
-// eventstore.BuildDecisionModel and eventstore.UpdateProjection.
+// collie.BuildDecisionModel and collie.UpdateProjection.
 package snapshot
 
 import "context"

@@ -1,4 +1,4 @@
-package eventstore_test
+package collie_test
 
 import (
 	"context"
@@ -14,17 +14,17 @@ import (
 // CheckpointProjection so BuildDecisionModel recognizes it as a decision model
 // and skips already-processed events. Regression guard for the projector-type
 // consolidation: *snapshot.Projection must implement it.
-var _ eventstore.CheckpointProjection = (*snapshot.Projection[int])(nil)
+var _ collie.CheckpointProjection = (*snapshot.Projection[int])(nil)
 
 // BuildDecisionModel takes plain Projections, so a test double that drifts from
 // CheckpointProjection would silently become a fresh projection instead of
 // failing to compile.
-var _ eventstore.CheckpointProjection = (*storedProjection[int])(nil)
+var _ collie.CheckpointProjection = (*storedProjection[int])(nil)
 
 // storedProjection wraps a DefaultProjection with a checkpoint, implementing
 // CheckpointProjection so BuildDecisionModel skips already-processed events.
 type storedProjection[S any] struct {
-	eventstore.DefaultProjection[S]
+	collie.DefaultProjection[S]
 	after uint64
 }
 
@@ -37,16 +37,16 @@ func (s *storedProjection[S]) Checkpoint(_ context.Context, upTo uint64) error {
 }
 
 // seed appends n events of the given type and returns the store.
-func seed(t *testing.T, n int, eventType string, tags []eventstore.Tag) *memory.Store {
+func seed(t *testing.T, n int, eventType string, tags []collie.Tag) *memory.Store {
 	t.Helper()
 	store := memory.New()
 	ctx := context.Background()
 	for range n {
-		event, err := eventstore.NewEvent(eventType, nil, tags)
+		event, err := collie.NewEvent(eventType, nil, tags)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := store.Append(ctx, []eventstore.Event{event}, nil); err != nil {
+		if err := store.Append(ctx, []collie.Event{event}, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -54,20 +54,20 @@ func seed(t *testing.T, n int, eventType string, tags []eventstore.Tag) *memory.
 }
 
 func TestBuildDecisionModel_BackwardCompatible(t *testing.T) {
-	store := seed(t, 3, "UserSignedUp", eventstore.NewTags("username", "alice"))
+	store := seed(t, 3, "UserSignedUp", collie.NewTags("username", "alice"))
 	ctx := context.Background()
 
-	counter := eventstore.DefaultProjection[int]{
-		Query: eventstore.QueryItem{Types: []string{"UserSignedUp"}},
+	counter := collie.DefaultProjection[int]{
+		Query: collie.QueryItem{Types: []string{"UserSignedUp"}},
 		State: 0,
-		Handlers: map[string]eventstore.HandleFunc[int]{
-			"UserSignedUp": func(count int, _ eventstore.SequencedEvent) (int, error) {
+		Handlers: map[string]collie.HandleFunc[int]{
+			"UserSignedUp": func(count int, _ collie.SequencedEvent) (int, error) {
 				return count + 1, nil
 			},
 		},
 	}
 
-	condition, err := eventstore.BuildDecisionModel(ctx, store, &counter)
+	condition, err := collie.BuildDecisionModel(ctx, store, &counter)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,11 +86,11 @@ func TestBuildDecisionModel_StoredProjectionSkipsOldEvents(t *testing.T) {
 
 	// Pre-loaded state: already counted 3 events (at checkpoint 3).
 	projection := &storedProjection[int]{
-		DefaultProjection: eventstore.DefaultProjection[int]{
-			Query: eventstore.QueryItem{Types: []string{"UserSignedUp"}},
+		DefaultProjection: collie.DefaultProjection[int]{
+			Query: collie.QueryItem{Types: []string{"UserSignedUp"}},
 			State: 3,
-			Handlers: map[string]eventstore.HandleFunc[int]{
-				"UserSignedUp": func(count int, _ eventstore.SequencedEvent) (int, error) {
+			Handlers: map[string]collie.HandleFunc[int]{
+				"UserSignedUp": func(count int, _ collie.SequencedEvent) (int, error) {
 					return count + 1, nil
 				},
 			},
@@ -98,7 +98,7 @@ func TestBuildDecisionModel_StoredProjectionSkipsOldEvents(t *testing.T) {
 		after: 3,
 	}
 
-	condition, err := eventstore.BuildDecisionModel(ctx, store, projection)
+	condition, err := collie.BuildDecisionModel(ctx, store, projection)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,11 +118,11 @@ func TestBuildDecisionModel_NoNewEventsAfterCheckpoint(t *testing.T) {
 
 	// Stored projection already at the end of the stream.
 	projection := &storedProjection[int]{
-		DefaultProjection: eventstore.DefaultProjection[int]{
-			Query: eventstore.QueryItem{Types: []string{"UserSignedUp"}},
+		DefaultProjection: collie.DefaultProjection[int]{
+			Query: collie.QueryItem{Types: []string{"UserSignedUp"}},
 			State: 3,
-			Handlers: map[string]eventstore.HandleFunc[int]{
-				"UserSignedUp": func(count int, _ eventstore.SequencedEvent) (int, error) {
+			Handlers: map[string]collie.HandleFunc[int]{
+				"UserSignedUp": func(count int, _ collie.SequencedEvent) (int, error) {
 					return count + 1, nil
 				},
 			},
@@ -130,7 +130,7 @@ func TestBuildDecisionModel_NoNewEventsAfterCheckpoint(t *testing.T) {
 		after: 3,
 	}
 
-	condition, err := eventstore.BuildDecisionModel(ctx, store, projection)
+	condition, err := collie.BuildDecisionModel(ctx, store, projection)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,11 +151,11 @@ func TestBuildDecisionModel_MixedStoredAndFresh(t *testing.T) {
 
 	// Stored projection at checkpoint 3.
 	stored := &storedProjection[int]{
-		DefaultProjection: eventstore.DefaultProjection[int]{
-			Query: eventstore.QueryItem{Types: []string{"UserSignedUp"}},
+		DefaultProjection: collie.DefaultProjection[int]{
+			Query: collie.QueryItem{Types: []string{"UserSignedUp"}},
 			State: 3,
-			Handlers: map[string]eventstore.HandleFunc[int]{
-				"UserSignedUp": func(count int, _ eventstore.SequencedEvent) (int, error) {
+			Handlers: map[string]collie.HandleFunc[int]{
+				"UserSignedUp": func(count int, _ collie.SequencedEvent) (int, error) {
 					return count + 1, nil
 				},
 			},
@@ -164,17 +164,17 @@ func TestBuildDecisionModel_MixedStoredAndFresh(t *testing.T) {
 	}
 
 	// Fresh projection — no checkpoint.
-	fresh := &eventstore.DefaultProjection[int]{
-		Query: eventstore.QueryItem{Types: []string{"UserSignedUp"}},
+	fresh := &collie.DefaultProjection[int]{
+		Query: collie.QueryItem{Types: []string{"UserSignedUp"}},
 		State: 0,
-		Handlers: map[string]eventstore.HandleFunc[int]{
-			"UserSignedUp": func(count int, _ eventstore.SequencedEvent) (int, error) {
+		Handlers: map[string]collie.HandleFunc[int]{
+			"UserSignedUp": func(count int, _ collie.SequencedEvent) (int, error) {
 				return count + 1, nil
 			},
 		},
 	}
 
-	condition, err := eventstore.BuildDecisionModel(ctx, store, stored, fresh)
+	condition, err := collie.BuildDecisionModel(ctx, store, stored, fresh)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,11 +198,11 @@ func TestBuildDecisionModel_MultipleStoredAtDifferentCheckpoints(t *testing.T) {
 
 	// p1 at checkpoint 3, p2 at checkpoint 7.
 	p1 := &storedProjection[int]{
-		DefaultProjection: eventstore.DefaultProjection[int]{
-			Query: eventstore.QueryItem{Types: []string{"UserSignedUp"}},
+		DefaultProjection: collie.DefaultProjection[int]{
+			Query: collie.QueryItem{Types: []string{"UserSignedUp"}},
 			State: 3,
-			Handlers: map[string]eventstore.HandleFunc[int]{
-				"UserSignedUp": func(count int, _ eventstore.SequencedEvent) (int, error) {
+			Handlers: map[string]collie.HandleFunc[int]{
+				"UserSignedUp": func(count int, _ collie.SequencedEvent) (int, error) {
 					return count + 1, nil
 				},
 			},
@@ -210,11 +210,11 @@ func TestBuildDecisionModel_MultipleStoredAtDifferentCheckpoints(t *testing.T) {
 		after: 3,
 	}
 	p2 := &storedProjection[int]{
-		DefaultProjection: eventstore.DefaultProjection[int]{
-			Query: eventstore.QueryItem{Types: []string{"UserSignedUp"}},
+		DefaultProjection: collie.DefaultProjection[int]{
+			Query: collie.QueryItem{Types: []string{"UserSignedUp"}},
 			State: 7,
-			Handlers: map[string]eventstore.HandleFunc[int]{
-				"UserSignedUp": func(count int, _ eventstore.SequencedEvent) (int, error) {
+			Handlers: map[string]collie.HandleFunc[int]{
+				"UserSignedUp": func(count int, _ collie.SequencedEvent) (int, error) {
 					return count + 1, nil
 				},
 			},
@@ -222,7 +222,7 @@ func TestBuildDecisionModel_MultipleStoredAtDifferentCheckpoints(t *testing.T) {
 		after: 7,
 	}
 
-	condition, err := eventstore.BuildDecisionModel(ctx, store, p1, p2)
+	condition, err := collie.BuildDecisionModel(ctx, store, p1, p2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -247,11 +247,11 @@ func TestBuildDecisionModel_RealStoredProjectionIsCheckpointed(t *testing.T) {
 	store := seed(t, 3, "UserSignedUp", nil)
 	ctx := context.Background()
 
-	proj, err := snapshot.NewProjection(ctx, memory.NewSnapshotStore(), "total-users", eventstore.DefaultProjection[int]{
-		Query: eventstore.QueryItem{Types: []string{"UserSignedUp"}},
+	proj, err := snapshot.NewProjection(ctx, memory.NewSnapshotStore(), "total-users", collie.DefaultProjection[int]{
+		Query: collie.QueryItem{Types: []string{"UserSignedUp"}},
 		State: 0,
-		Handlers: map[string]eventstore.HandleFunc[int]{
-			"UserSignedUp": func(count int, _ eventstore.SequencedEvent) (int, error) {
+		Handlers: map[string]collie.HandleFunc[int]{
+			"UserSignedUp": func(count int, _ collie.SequencedEvent) (int, error) {
 				return count + 1, nil
 			},
 		},
@@ -261,7 +261,7 @@ func TestBuildDecisionModel_RealStoredProjectionIsCheckpointed(t *testing.T) {
 	}
 
 	// Catch the read model up to the current head (checkpoint advances to 3).
-	if err := eventstore.UpdateProjection(ctx, store, proj); err != nil {
+	if err := collie.UpdateProjection(ctx, store, proj); err != nil {
 		t.Fatal(err)
 	}
 	if proj.State != 3 || proj.After() != 3 {
@@ -270,16 +270,16 @@ func TestBuildDecisionModel_RealStoredProjectionIsCheckpointed(t *testing.T) {
 
 	// Two more events arrive after the checkpoint.
 	for range 2 {
-		e, err := eventstore.NewEvent("UserSignedUp", nil, nil)
+		e, err := collie.NewEvent("UserSignedUp", nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
+		if err := store.Append(ctx, []collie.Event{e}, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	condition, err := eventstore.BuildDecisionModel(ctx, store, proj)
+	condition, err := collie.BuildDecisionModel(ctx, store, proj)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +294,7 @@ func TestBuildDecisionModel_RealStoredProjectionIsCheckpointed(t *testing.T) {
 func TestBuildDecisionModel_AfterIsHeadWithoutMatches(t *testing.T) {
 	store := seed(t, 5, "Other", nil)
 
-	condition, err := eventstore.BuildDecisionModel(context.Background(), store, wanted())
+	condition, err := collie.BuildDecisionModel(context.Background(), store, wanted())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -308,7 +308,7 @@ func TestBuildDecisionModel_HeadConditionStillDetectsConflicts(t *testing.T) {
 	ctx := context.Background()
 
 	// Unrelated writes after the read do not conflict.
-	condition, err := eventstore.BuildDecisionModel(ctx, store, wanted())
+	condition, err := collie.BuildDecisionModel(ctx, store, wanted())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -320,14 +320,14 @@ func TestBuildDecisionModel_HeadConditionStillDetectsConflicts(t *testing.T) {
 	}
 
 	// A matching write after the read does.
-	condition, err = eventstore.BuildDecisionModel(ctx, store, wanted())
+	condition, err = collie.BuildDecisionModel(ctx, store, wanted())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := appendOne(t, store, "Wanted", nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := appendOne(t, store, "Wanted", condition); !errors.Is(err, eventstore.ErrAppendConditionViolated) {
+	if err := appendOne(t, store, "Wanted", condition); !errors.Is(err, collie.ErrAppendConditionViolated) {
 		t.Fatalf("expected a conflict, got %v", err)
 	}
 }
@@ -335,9 +335,9 @@ func TestBuildDecisionModel_HeadConditionStillDetectsConflicts(t *testing.T) {
 // counting is a stored projection counting events of one type from a checkpoint.
 func counting(eventType string, after uint64) *storedProjection[int] {
 	return &storedProjection[int]{
-		DefaultProjection: eventstore.DefaultProjection[int]{
-			Handlers: map[string]eventstore.HandleFunc[int]{
-				eventType: func(n int, _ eventstore.SequencedEvent) (int, error) { return n + 1, nil },
+		DefaultProjection: collie.DefaultProjection[int]{
+			Handlers: map[string]collie.HandleFunc[int]{
+				eventType: func(n int, _ collie.SequencedEvent) (int, error) { return n + 1, nil },
 			},
 		},
 		after: after,
@@ -356,7 +356,7 @@ func TestBuildDecisionModel_StoredProjectionsAtDifferentCheckpoints(t *testing.T
 	}
 	a, b := counting("A", 2), counting("B", 6)
 
-	condition, err := eventstore.BuildDecisionModel(context.Background(), store, a, b)
+	condition, err := collie.BuildDecisionModel(context.Background(), store, a, b)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -377,9 +377,9 @@ func TestBuildDecisionModel_KeepsCheckpointsOnError(t *testing.T) {
 			}
 		}
 		a, b := counting("A", 0), counting("B", 0)
-		b.Handlers["B"] = func(int, eventstore.SequencedEvent) (int, error) { return 0, errors.New("poison") }
+		b.Handlers["B"] = func(int, collie.SequencedEvent) (int, error) { return 0, errors.New("poison") }
 
-		if _, err := eventstore.BuildDecisionModel(context.Background(), store, a, b); err == nil {
+		if _, err := collie.BuildDecisionModel(context.Background(), store, a, b); err == nil {
 			t.Fatal("expected the apply error")
 		}
 		if a.After() != 0 || b.After() != 0 {
@@ -387,10 +387,10 @@ func TestBuildDecisionModel_KeepsCheckpointsOnError(t *testing.T) {
 		}
 	})
 
-	for name, store := range map[string]eventstore.Store{"head": headlessStore{}, "iteration": brokenStore{}} {
+	for name, store := range map[string]collie.Store{"head": headlessStore{}, "iteration": brokenStore{}} {
 		t.Run(name, func(t *testing.T) {
 			a, b := counting("A", 2), counting("B", 4)
-			if _, err := eventstore.BuildDecisionModel(context.Background(), store, a, b); err == nil {
+			if _, err := collie.BuildDecisionModel(context.Background(), store, a, b); err == nil {
 				t.Fatal("expected the read error")
 			}
 			if a.After() != 2 || b.After() != 4 {

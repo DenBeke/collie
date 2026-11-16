@@ -8,13 +8,13 @@ import (
 
 	"gorm.io/gorm"
 
-	eventstore "github.com/DenBeke/collie"
+	"github.com/DenBeke/collie"
 	pgstore "github.com/DenBeke/collie/postgres"
 )
 
-func studentEvent(t *testing.T, id string) eventstore.Event {
+func studentEvent(t *testing.T, id string) collie.Event {
 	t.Helper()
-	e, err := eventstore.NewEvent("StudentRegistered", nil, eventstore.NewTags("student", id))
+	e, err := collie.NewEvent("StudentRegistered", nil, collie.NewTags("student", id))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,7 +30,7 @@ func staged(t *testing.T, db *gorm.DB) int64 {
 	return n
 }
 
-func headOf(t *testing.T, store eventstore.Store) uint64 {
+func headOf(t *testing.T, store collie.Store) uint64 {
 	t.Helper()
 	_, head, err := store.Read(context.Background(), nil, 0)
 	if err != nil {
@@ -61,8 +61,8 @@ func TestDefaultStoreFlushesItself(t *testing.T) {
 	}
 	ctx := context.Background()
 
-	cond := &eventstore.AppendCondition{Query: eventstore.Query{{Types: []string{"StudentRegistered"}, Tags: eventstore.NewTags("student", "s1")}}}
-	if err := store.Append(ctx, []eventstore.Event{studentEvent(t, "s1")}, cond); err != nil {
+	cond := &collie.AppendCondition{Query: collie.Query{{Types: []string{"StudentRegistered"}, Tags: collie.NewTags("student", "s1")}}}
+	if err := store.Append(ctx, []collie.Event{studentEvent(t, "s1")}, cond); err != nil {
 		t.Fatal(err)
 	}
 	eventually(t, "the append is readable", func() bool { return headOf(t, store) == 1 })
@@ -73,7 +73,7 @@ func TestDefaultStoreFlushesItself(t *testing.T) {
 	if err := store.Close(); err != nil {
 		t.Fatalf("a second Close: %v", err)
 	}
-	if err := store.Append(ctx, []eventstore.Event{studentEvent(t, "s2")}, nil); err != nil {
+	if err := store.Append(ctx, []collie.Event{studentEvent(t, "s2")}, nil); err != nil {
 		t.Fatal(err)
 	}
 	time.Sleep(100 * time.Millisecond)
@@ -95,7 +95,7 @@ func TestStoppedFlusherDrains(t *testing.T) {
 	go func() { done <- store.RunFlusher(ctx, pgstore.FlushOptions{Interval: time.Hour}) }()
 	time.Sleep(300 * time.Millisecond)
 
-	if err := store.Append(context.Background(), []eventstore.Event{studentEvent(t, "s1")}, nil); err != nil {
+	if err := store.Append(context.Background(), []collie.Event{studentEvent(t, "s1")}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if n := staged(t, db); n != 1 {
@@ -130,7 +130,7 @@ func TestMigrateRecordsTheAppendMode(t *testing.T) {
 	if err := global.Migrate(); !errors.Is(err, pgstore.ErrAppendModeMismatch) {
 		t.Fatalf("Migrate in the other mode: got %v, want ErrAppendModeMismatch", err)
 	}
-	if err := global.Append(ctx, []eventstore.Event{studentEvent(t, "s1")}, nil); !errors.Is(err, pgstore.ErrAppendModeMismatch) {
+	if err := global.Append(ctx, []collie.Event{studentEvent(t, "s1")}, nil); !errors.Is(err, pgstore.ErrAppendModeMismatch) {
 		t.Fatalf("a global-lock append on a staging database: got %v, want ErrAppendModeMismatch", err)
 	}
 	if err := global.RunFlusher(ctx, pgstore.FlushOptions{}); !errors.Is(err, pgstore.ErrAppendModeMismatch) {
@@ -150,7 +150,7 @@ func TestSwitchAppendMode(t *testing.T) {
 	if err := staging.Migrate(); err != nil {
 		t.Fatal(err)
 	}
-	if err := staging.Append(ctx, []eventstore.Event{studentEvent(t, "s1")}, nil); err != nil {
+	if err := staging.Append(ctx, []collie.Event{studentEvent(t, "s1")}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -165,20 +165,20 @@ func TestSwitchAppendMode(t *testing.T) {
 	if err := global.Migrate(); err != nil {
 		t.Fatalf("Migrate after the switch: %v", err)
 	}
-	if err := global.Append(ctx, []eventstore.Event{studentEvent(t, "s2")}, nil); err != nil {
+	if err := global.Append(ctx, []collie.Event{studentEvent(t, "s2")}, nil); err != nil {
 		t.Fatalf("global-lock append after the switch: %v", err)
 	}
 	if head := headOf(t, global); head != 2 {
 		t.Fatalf("head=%d, want 2: readable at once", head)
 	}
-	if err := staging.Append(ctx, []eventstore.Event{studentEvent(t, "s3")}, nil); !errors.Is(err, pgstore.ErrAppendModeMismatch) {
+	if err := staging.Append(ctx, []collie.Event{studentEvent(t, "s3")}, nil); !errors.Is(err, pgstore.ErrAppendModeMismatch) {
 		t.Fatalf("a staging append after the switch: got %v, want ErrAppendModeMismatch", err)
 	}
 
 	if err := staging.SwitchAppendMode(ctx); err != nil {
 		t.Fatalf("switch back to staging: %v", err)
 	}
-	if err := staging.Append(ctx, []eventstore.Event{studentEvent(t, "s3")}, nil); err != nil {
+	if err := staging.Append(ctx, []collie.Event{studentEvent(t, "s3")}, nil); err != nil {
 		t.Fatalf("staging append after switching back: %v", err)
 	}
 	flushAll(t, staging)

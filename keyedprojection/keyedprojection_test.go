@@ -5,7 +5,7 @@ import (
 	"slices"
 	"testing"
 
-	eventstore "github.com/DenBeke/collie"
+	"github.com/DenBeke/collie"
 	"github.com/DenBeke/collie/keyedprojection"
 	"github.com/DenBeke/collie/memory"
 )
@@ -20,11 +20,11 @@ type job struct {
 
 type jobHandler struct{}
 
-func (jobHandler) Key(e eventstore.SequencedEvent) (string, error) {
+func (jobHandler) Key(e collie.SequencedEvent) (string, error) {
 	return e.TagValues("jobId")[0], nil
 }
 
-func (jobHandler) Apply(e eventstore.SequencedEvent, cur *job) (*job, error) {
+func (jobHandler) Apply(e collie.SequencedEvent, cur *job) (*job, error) {
 	if e.Type == "JobDeleted" {
 		return nil, nil // the model's null handler: drop the row
 	}
@@ -32,7 +32,7 @@ func (jobHandler) Apply(e eventstore.SequencedEvent, cur *job) (*job, error) {
 	if cur != nil {
 		next = *cur
 	}
-	data, err := eventstore.EventData[job](e)
+	data, err := collie.EventData[job](e)
 	if err != nil {
 		return nil, err
 	}
@@ -48,17 +48,17 @@ func (jobHandler) Apply(e eventstore.SequencedEvent, cur *job) (*job, error) {
 	return &next, nil
 }
 
-func seedJobs(t *testing.T) eventstore.Store {
+func seedJobs(t *testing.T) collie.Store {
 	t.Helper()
 	store := memory.New()
-	add := func(typ, id string, d job, extra ...eventstore.Tag) {
+	add := func(typ, id string, d job, extra ...collie.Tag) {
 		t.Helper()
-		tags := append([]eventstore.Tag{eventstore.NewTag("jobId", id)}, extra...)
-		e, err := eventstore.NewEvent(typ, d, tags)
+		tags := append([]collie.Tag{collie.NewTag("jobId", id)}, extra...)
+		e, err := collie.NewEvent(typ, d, tags)
 		if err != nil {
 			t.Fatalf("new event: %v", err)
 		}
-		if err := store.Append(context.Background(), []eventstore.Event{e}, nil); err != nil {
+		if err := store.Append(context.Background(), []collie.Event{e}, nil); err != nil {
 			t.Fatalf("append: %v", err)
 		}
 	}
@@ -68,24 +68,24 @@ func seedJobs(t *testing.T) eventstore.Store {
 	// A later event scoped to the agency only: the row must stay findable by
 	// jobId, which is what makes tag accumulation load-bearing.
 	add("JobDetailsChanged", "j1", job{Title: "Backend engineer"},
-		eventstore.NewTag("agencyId", "a1"))
+		collie.NewTag("agencyId", "a1"))
 	return store
 }
 
-func caughtUp(t *testing.T, store eventstore.Store, p eventstore.CheckpointProjection) {
+func caughtUp(t *testing.T, store collie.Store, p collie.CheckpointProjection) {
 	t.Helper()
-	if err := eventstore.UpdateProjection(context.Background(), store, p); err != nil {
+	if err := collie.UpdateProjection(context.Background(), store, p); err != nil {
 		t.Fatalf("catch up: %v", err)
 	}
 }
 
 // newMemoryJobs returns the projection through the interface, so every test
-// below is written against eventstore.KeyedProjection and not against the
+// below is written against collie.KeyedProjection and not against the
 // memory implementation.
-func newMemoryJobs(t *testing.T, store eventstore.Store) keyedprojection.Projection[job] {
+func newMemoryJobs(t *testing.T, store collie.Store) keyedprojection.Projection[job] {
 	t.Helper()
 	p := memory.NewKeyedProjection[job](
-		eventstore.QueryItem{Types: []string{"JobCreated", "JobDetailsChanged", "JobDeleted"}},
+		collie.QueryItem{Types: []string{"JobCreated", "JobDetailsChanged", "JobDeleted"}},
 		jobHandler{},
 	)
 	caughtUp(t, store, p)
@@ -163,7 +163,7 @@ func TestKeyedProjectionTagsAccumulate(t *testing.T) {
 	jobs := newMemoryJobs(t, store)
 
 	got, err := jobs.List(context.Background(), keyedprojection.ListQuery{
-		Tags: []eventstore.Tag{eventstore.NewTag("jobId", "j1")},
+		Tags: []collie.Tag{collie.NewTag("jobId", "j1")},
 	})
 	if err != nil {
 		t.Fatalf("List: %v", err)
@@ -229,8 +229,8 @@ func TestKeyedProjectionNullHandlerDropsTheRow(t *testing.T) {
 	jobs := newMemoryJobs(t, store)
 	ctx := context.Background()
 
-	e, _ := eventstore.NewEvent("JobDeleted", job{}, eventstore.NewTags("jobId", "j1"))
-	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
+	e, _ := collie.NewEvent("JobDeleted", job{}, collie.NewTags("jobId", "j1"))
+	if err := store.Append(ctx, []collie.Event{e}, nil); err != nil {
 		t.Fatalf("append: %v", err)
 	}
 	caughtUp(t, store, jobs)
@@ -278,11 +278,11 @@ func TestKeyedProjectionOrder(t *testing.T) {
 		"j2": {Title: "cherry", Rank: 9},
 		"j3": {Title: "apple", Rank: 100},
 	} {
-		e, err := eventstore.NewEvent("JobCreated", d, eventstore.NewTags("jobId", id))
+		e, err := collie.NewEvent("JobCreated", d, collie.NewTags("jobId", id))
 		if err != nil {
 			t.Fatalf("new event: %v", err)
 		}
-		if err := store.Append(context.Background(), []eventstore.Event{e}, nil); err != nil {
+		if err := store.Append(context.Background(), []collie.Event{e}, nil); err != nil {
 			t.Fatalf("append: %v", err)
 		}
 	}

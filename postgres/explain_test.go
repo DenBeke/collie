@@ -23,9 +23,9 @@ func TestReadPlanUsesEventTagsIndex(t *testing.T) {
 
 	const entities, perEntity = 50, 200 // 10k events; one entity ~2% selective
 	for e := 0; e < entities; e++ {
-		batch := make([]eventstore.Event, perEntity)
+		batch := make([]collie.Event, perEntity)
 		for i := range batch {
-			ev, _ := eventstore.NewEvent("Bench", nil, eventstore.NewTags("entity", fmt.Sprintf("e-%d", e)))
+			ev, _ := collie.NewEvent("Bench", nil, collie.NewTags("entity", fmt.Sprintf("e-%d", e)))
 			batch[i] = ev
 		}
 		if err := store.Append(ctx, batch, nil); err != nil {

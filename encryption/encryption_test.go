@@ -14,19 +14,19 @@ func newEncryptor() *encryption.EventEncryptor {
 	return encryption.NewEventEncryptor(encryption.NewMemoryKeyStore())
 }
 
-func newStore() (*eventstore.MiddlewareStore, *encryption.EventEncryptor) {
+func newStore() (*collie.MiddlewareStore, *encryption.EventEncryptor) {
 	enc := newEncryptor()
-	store := eventstore.NewMiddlewareStore(memory.New(),
-		eventstore.WithAppendMiddleware(enc.OnAppend),
-		eventstore.WithReadMiddleware(enc.OnRead),
+	store := collie.NewMiddlewareStore(memory.New(),
+		collie.WithAppendMiddleware(enc.OnAppend),
+		collie.WithReadMiddleware(enc.OnRead),
 	)
 	return store, enc
 }
 
-func collectEvents(t *testing.T, store eventstore.Store, query eventstore.Query) []eventstore.SequencedEvent {
+func collectEvents(t *testing.T, store collie.Store, query collie.Query) []collie.SequencedEvent {
 	t.Helper()
 	ctx := context.Background()
-	var events []eventstore.SequencedEvent
+	var events []collie.SequencedEvent
 	stream, _, err := store.Read(ctx, query, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -44,11 +44,11 @@ func TestPassthroughWithoutEncryptionKeys(t *testing.T) {
 	store, _ := newStore()
 	ctx := context.Background()
 
-	e, err := eventstore.NewEvent("SystemBooted", "v1.0", nil)
+	e, err := collie.NewEvent("SystemBooted", "v1.0", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
+	if err := store.Append(ctx, []collie.Event{e}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -56,7 +56,7 @@ func TestPassthroughWithoutEncryptionKeys(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
-	data, err := eventstore.EventData[string](events[0])
+	data, err := collie.EventData[string](events[0])
 	if err != nil {
 		t.Fatalf("unexpected unmarshal error: %v", err)
 	}
@@ -75,13 +75,13 @@ func TestEncryptedRoundTrip(t *testing.T) {
 	}
 	userData := user{Name: "Alice", Email: "alice@example.com"}
 
-	e, err := eventstore.NewEvent("UserSignedUp", userData, eventstore.NewTags(
+	e, err := collie.NewEvent("UserSignedUp", userData, collie.NewTags(
 		"userId", "user-123",
 	), encryption.WithEncryptionKeys("userId"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
+	if err := store.Append(ctx, []collie.Event{e}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -89,7 +89,7 @@ func TestEncryptedRoundTrip(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
-	data, err := eventstore.EventData[user](events[0])
+	data, err := collie.EventData[user](events[0])
 	if err != nil {
 		t.Fatalf("unexpected unmarshal error: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestEnvelopeSurvivesEncryption(t *testing.T) {
 	store, _ := newStore()
 	ctx := context.Background()
 
-	e, err := eventstore.NewEvent("UserSignedUp", "alice", eventstore.NewTags(
+	e, err := collie.NewEvent("UserSignedUp", "alice", collie.NewTags(
 		"userId", "user-123",
 	), encryption.WithEncryptionKeys("userId"))
 	if err != nil {
@@ -113,7 +113,7 @@ func TestEnvelopeSurvivesEncryption(t *testing.T) {
 	}
 	e.Actor = "user:user-123"
 	e.Cause = "request:8f3a"
-	err = store.Append(ctx, []eventstore.Event{e}, nil)
+	err = store.Append(ctx, []collie.Event{e}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,27 +135,27 @@ func TestEncryptedAtRest(t *testing.T) {
 	// the data is actually encrypted at rest.
 	enc := newEncryptor()
 	raw := memory.New()
-	encryptedStore := eventstore.NewMiddlewareStore(raw,
-		eventstore.WithAppendMiddleware(enc.OnAppend),
-		eventstore.WithReadMiddleware(enc.OnRead),
+	encryptedStore := collie.NewMiddlewareStore(raw,
+		collie.WithAppendMiddleware(enc.OnAppend),
+		collie.WithReadMiddleware(enc.OnRead),
 	)
 
 	ctx := context.Background()
 
-	e, err := eventstore.NewEvent("UserSignedUp", "secret-data", eventstore.NewTags(
+	e, err := collie.NewEvent("UserSignedUp", "secret-data", collie.NewTags(
 		"userId", "user-123",
 	), encryption.WithEncryptionKeys("userId"))
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if err := encryptedStore.Append(ctx, []eventstore.Event{e}, nil); err != nil {
+	if err := encryptedStore.Append(ctx, []collie.Event{e}, nil); err != nil {
 		t.Fatal(err)
 	}
 
 	// Read through encrypted store — should get plaintext
 	events := collectEvents(t, encryptedStore, nil)
-	data, err := eventstore.EventData[string](events[0])
+	data, err := collie.EventData[string](events[0])
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -174,18 +174,18 @@ func TestForgetRedactsData(t *testing.T) {
 	store, enc := newStore()
 	ctx := context.Background()
 
-	e, err := eventstore.NewEvent("UserSignedUp", "alice-data", eventstore.NewTags(
+	e, err := collie.NewEvent("UserSignedUp", "alice-data", collie.NewTags(
 		"userId", "user-123",
 	), encryption.WithEncryptionKeys("userId"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
+	if err := store.Append(ctx, []collie.Event{e}, nil); err != nil {
 		t.Fatal(err)
 	}
 
 	// Forget the user — called directly on the middleware
-	if err := enc.Forget(ctx, eventstore.NewTags("userId", "user-123")); err != nil {
+	if err := enc.Forget(ctx, collie.NewTags("userId", "user-123")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -213,17 +213,17 @@ func TestForgetDoesNotAffectOtherSubjects(t *testing.T) {
 	store, enc := newStore()
 	ctx := context.Background()
 
-	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", eventstore.NewTags(
+	e1, _ := collie.NewEvent("UserSignedUp", "alice", collie.NewTags(
 		"userId", "user-1",
 	), encryption.WithEncryptionKeys("userId"))
-	e2, _ := eventstore.NewEvent("UserSignedUp", "bob", eventstore.NewTags(
+	e2, _ := collie.NewEvent("UserSignedUp", "bob", collie.NewTags(
 		"userId", "user-2",
 	), encryption.WithEncryptionKeys("userId"))
-	if err := store.Append(ctx, []eventstore.Event{e1, e2}, nil); err != nil {
+	if err := store.Append(ctx, []collie.Event{e1, e2}, nil); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := enc.Forget(ctx, eventstore.NewTags("userId", "user-1")); err != nil {
+	if err := enc.Forget(ctx, collie.NewTags("userId", "user-1")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -236,7 +236,7 @@ func TestForgetDoesNotAffectOtherSubjects(t *testing.T) {
 		t.Fatal("expected user-1 to be redacted")
 	}
 
-	data, err := eventstore.EventData[string](events[1])
+	data, err := collie.EventData[string](events[1])
 	if err != nil {
 		t.Fatalf("unexpected error reading user-2: %v", err)
 	}
@@ -249,14 +249,14 @@ func TestSameSubjectSameKey(t *testing.T) {
 	store, enc := newStore()
 	ctx := context.Background()
 
-	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", eventstore.NewTags(
+	e1, _ := collie.NewEvent("UserSignedUp", "alice", collie.NewTags(
 		"userId", "user-1",
 	), encryption.WithEncryptionKeys("userId"))
-	e2, _ := eventstore.NewEvent("OrderPlaced", "order-data", eventstore.NewTags(
+	e2, _ := collie.NewEvent("OrderPlaced", "order-data", collie.NewTags(
 		"userId", "user-1",
 		"orderId", "order-99",
 	), encryption.WithEncryptionKeys("userId"))
-	if err := store.Append(ctx, []eventstore.Event{e1, e2}, nil); err != nil {
+	if err := store.Append(ctx, []collie.Event{e1, e2}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -265,7 +265,7 @@ func TestSameSubjectSameKey(t *testing.T) {
 		t.Fatalf("expected 2 events, got %d", len(events))
 	}
 
-	if err := enc.Forget(ctx, eventstore.NewTags("userId", "user-1")); err != nil {
+	if err := enc.Forget(ctx, collie.NewTags("userId", "user-1")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -281,21 +281,21 @@ func TestSupersetForgetWithMultiKeySubject(t *testing.T) {
 	store, enc := newStore()
 	ctx := context.Background()
 
-	e, _ := eventstore.NewEvent("FriendRequest", "request-data", eventstore.NewTags(
+	e, _ := collie.NewEvent("FriendRequest", "request-data", collie.NewTags(
 		"senderId", "user-1",
 		"receiverId", "user-2",
 	), encryption.WithEncryptionKeys("senderId", "receiverId"))
-	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
+	if err := store.Append(ctx, []collie.Event{e}, nil); err != nil {
 		t.Fatal(err)
 	}
 
 	events := collectEvents(t, store, nil)
-	data, _ := eventstore.EventData[string](events[0])
+	data, _ := collie.EventData[string](events[0])
 	if data != "request-data" {
 		t.Fatalf("expected request-data, got %s", data)
 	}
 
-	if err := enc.Forget(ctx, eventstore.NewTags("senderId", "user-1")); err != nil {
+	if err := enc.Forget(ctx, collie.NewTags("senderId", "user-1")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -309,25 +309,25 @@ func TestAppendConditionWorksThroughEncryption(t *testing.T) {
 	store, _ := newStore()
 	ctx := context.Background()
 
-	e1, _ := eventstore.NewEvent("UserSignedUp", "alice", eventstore.NewTags(
+	e1, _ := collie.NewEvent("UserSignedUp", "alice", collie.NewTags(
 		"userId", "user-1",
 	), encryption.WithEncryptionKeys("userId"))
-	if err := store.Append(ctx, []eventstore.Event{e1}, nil); err != nil {
+	if err := store.Append(ctx, []collie.Event{e1}, nil); err != nil {
 		t.Fatal(err)
 	}
 
-	condition := &eventstore.AppendCondition{
-		Query: eventstore.Query{
-			eventstore.QueryItem{Types: []string{"UserSignedUp"}, Tags: eventstore.NewTags("userId", "user-1")},
+	condition := &collie.AppendCondition{
+		Query: collie.Query{
+			collie.QueryItem{Types: []string{"UserSignedUp"}, Tags: collie.NewTags("userId", "user-1")},
 		},
 		After: 0,
 	}
 
-	e2, _ := eventstore.NewEvent("UserSignedUp", "alice-again", eventstore.NewTags(
+	e2, _ := collie.NewEvent("UserSignedUp", "alice-again", collie.NewTags(
 		"userId", "user-1",
 	), encryption.WithEncryptionKeys("userId"))
-	err := store.Append(ctx, []eventstore.Event{e2}, condition)
-	if err != eventstore.ErrAppendConditionViolated {
+	err := store.Append(ctx, []collie.Event{e2}, condition)
+	if err != collie.ErrAppendConditionViolated {
 		t.Fatalf("expected ErrAppendConditionViolated, got %v", err)
 	}
 }
@@ -336,15 +336,15 @@ func TestMixedEncryptedAndPlainEvents(t *testing.T) {
 	store, enc := newStore()
 	ctx := context.Background()
 
-	plain, _ := eventstore.NewEvent("SystemBooted", "v1.0", nil)
-	encrypted, _ := eventstore.NewEvent("UserSignedUp", "alice", eventstore.NewTags(
+	plain, _ := collie.NewEvent("SystemBooted", "v1.0", nil)
+	encrypted, _ := collie.NewEvent("UserSignedUp", "alice", collie.NewTags(
 		"userId", "user-1",
 	), encryption.WithEncryptionKeys("userId"))
-	if err := store.Append(ctx, []eventstore.Event{plain, encrypted}, nil); err != nil {
+	if err := store.Append(ctx, []collie.Event{plain, encrypted}, nil); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := enc.Forget(ctx, eventstore.NewTags("userId", "user-1")); err != nil {
+	if err := enc.Forget(ctx, collie.NewTags("userId", "user-1")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -353,7 +353,7 @@ func TestMixedEncryptedAndPlainEvents(t *testing.T) {
 		t.Fatalf("expected 2 events, got %d", len(events))
 	}
 
-	data, err := eventstore.EventData[string](events[0])
+	data, err := collie.EventData[string](events[0])
 	if err != nil || data != "v1.0" {
 		t.Fatalf("plain event should be readable: data=%s, err=%v", data, err)
 	}
@@ -368,15 +368,15 @@ func TestNoMiddlewarePassthrough(t *testing.T) {
 	store := memory.New()
 	ctx := context.Background()
 
-	e, _ := eventstore.NewEvent("TestEvent", "data", eventstore.NewTags(
+	e, _ := collie.NewEvent("TestEvent", "data", collie.NewTags(
 		"userId", "user-1",
 	), encryption.WithEncryptionKeys("userId"))
-	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
+	if err := store.Append(ctx, []collie.Event{e}, nil); err != nil {
 		t.Fatal(err)
 	}
 
 	events := collectEvents(t, store, nil)
-	data, err := eventstore.EventData[string](events[0])
+	data, err := collie.EventData[string](events[0])
 	if err != nil || data != "data" {
 		t.Fatalf("expected plaintext passthrough: data=%s, err=%v", data, err)
 	}
@@ -386,11 +386,11 @@ func TestEncryptionKeysMustReferenceExistingTags(t *testing.T) {
 	store, _ := newStore()
 	ctx := context.Background()
 
-	e, _ := eventstore.NewEvent("UserSignedUp", "alice", eventstore.NewTags(
+	e, _ := collie.NewEvent("UserSignedUp", "alice", collie.NewTags(
 		"userId", "user-1",
 	), encryption.WithEncryptionKeys("nonExistentTag"))
 
-	err := store.Append(ctx, []eventstore.Event{e}, nil)
+	err := store.Append(ctx, []collie.Event{e}, nil)
 	if err == nil {
 		t.Fatal("expected error for missing tag, got nil")
 	}
@@ -407,14 +407,14 @@ func TestFieldLevelWithoutEncryptionKeysIsNoOp(t *testing.T) {
 	}
 
 	// WithEncryptedFields alone (no WithEncryptionKeys) should pass through
-	e, _ := eventstore.NewEvent("UserSignedUp", user{Name: "Alice"}, nil,
+	e, _ := collie.NewEvent("UserSignedUp", user{Name: "Alice"}, nil,
 		encryption.WithEncryptedFields("name"))
-	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
+	if err := store.Append(ctx, []collie.Event{e}, nil); err != nil {
 		t.Fatal(err)
 	}
 
 	events := collectEvents(t, store, nil)
-	data, err := eventstore.EventData[user](events[0])
+	data, err := collie.EventData[user](events[0])
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -434,18 +434,18 @@ func TestFieldLevelRoundTrip(t *testing.T) {
 	}
 	u := user{Name: "Alice", Email: "alice@example.com", Role: "admin"}
 
-	e, err := eventstore.NewEvent("UserSignedUp", u, eventstore.NewTags(
+	e, err := collie.NewEvent("UserSignedUp", u, collie.NewTags(
 		"userId", "user-1",
 	), encryption.WithEncryptionKeys("userId"), encryption.WithEncryptedFields("name", "email"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
+	if err := store.Append(ctx, []collie.Event{e}, nil); err != nil {
 		t.Fatal(err)
 	}
 
 	events := collectEvents(t, store, nil)
-	data, err := eventstore.EventData[user](events[0])
+	data, err := collie.EventData[user](events[0])
 	if err != nil {
 		t.Fatalf("unexpected unmarshal error: %v", err)
 	}
@@ -457,9 +457,9 @@ func TestFieldLevelRoundTrip(t *testing.T) {
 func TestFieldLevelEncryptedAtRest(t *testing.T) {
 	enc := newEncryptor()
 	raw := memory.New()
-	store := eventstore.NewMiddlewareStore(raw,
-		eventstore.WithAppendMiddleware(enc.OnAppend),
-		eventstore.WithReadMiddleware(enc.OnRead),
+	store := collie.NewMiddlewareStore(raw,
+		collie.WithAppendMiddleware(enc.OnAppend),
+		collie.WithReadMiddleware(enc.OnRead),
 	)
 	ctx := context.Background()
 
@@ -470,10 +470,10 @@ func TestFieldLevelEncryptedAtRest(t *testing.T) {
 	}
 	u := user{Name: "Alice", Email: "alice@example.com", Role: "admin"}
 
-	e, _ := eventstore.NewEvent("UserSignedUp", u, eventstore.NewTags(
+	e, _ := collie.NewEvent("UserSignedUp", u, collie.NewTags(
 		"userId", "user-1",
 	), encryption.WithEncryptionKeys("userId"), encryption.WithEncryptedFields("email"))
-	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
+	if err := store.Append(ctx, []collie.Event{e}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -500,14 +500,14 @@ func TestFieldLevelForgetRedactsOnlyEncryptedFields(t *testing.T) {
 	email := "alice@example.com"
 	u := user{Name: "Alice", Email: &email, Role: "admin"}
 
-	e, _ := eventstore.NewEvent("UserSignedUp", u, eventstore.NewTags(
+	e, _ := collie.NewEvent("UserSignedUp", u, collie.NewTags(
 		"userId", "user-1",
 	), encryption.WithEncryptionKeys("userId"), encryption.WithEncryptedFields("name", "email"))
-	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
+	if err := store.Append(ctx, []collie.Event{e}, nil); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := enc.Forget(ctx, eventstore.NewTags("userId", "user-1")); err != nil {
+	if err := enc.Forget(ctx, collie.NewTags("userId", "user-1")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -520,7 +520,7 @@ func TestFieldLevelForgetRedactsOnlyEncryptedFields(t *testing.T) {
 		t.Fatal("expected Data to be non-nil for field-level redaction")
 	}
 
-	data, err := eventstore.EventData[user](events[0])
+	data, err := collie.EventData[user](events[0])
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -554,15 +554,15 @@ func TestFieldLevelNestedStructRoundTrip(t *testing.T) {
 		Role:    "admin",
 	}
 
-	e, _ := eventstore.NewEvent("UserSignedUp", u, eventstore.NewTags(
+	e, _ := collie.NewEvent("UserSignedUp", u, collie.NewTags(
 		"userId", "user-1",
 	), encryption.WithEncryptionKeys("userId"), encryption.WithEncryptedFields("address"))
-	if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
+	if err := store.Append(ctx, []collie.Event{e}, nil); err != nil {
 		t.Fatal(err)
 	}
 
 	events := collectEvents(t, store, nil)
-	data, err := eventstore.EventData[user](events[0])
+	data, err := collie.EventData[user](events[0])
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -579,11 +579,11 @@ func TestFieldLevelMissingFieldError(t *testing.T) {
 		Name string `json:"name"`
 	}
 
-	e, _ := eventstore.NewEvent("UserSignedUp", user{Name: "Alice"}, eventstore.NewTags(
+	e, _ := collie.NewEvent("UserSignedUp", user{Name: "Alice"}, collie.NewTags(
 		"userId", "user-1",
 	), encryption.WithEncryptionKeys("userId"), encryption.WithEncryptedFields("nonExistent"))
 
-	err := store.Append(ctx, []eventstore.Event{e}, nil)
+	err := store.Append(ctx, []collie.Event{e}, nil)
 	if err == nil {
 		t.Fatal("expected error for missing field, got nil")
 	}
@@ -600,16 +600,16 @@ func TestMixedFullBlobAndFieldLevelEvents(t *testing.T) {
 	}
 
 	// Full-blob encryption
-	fullBlob, _ := eventstore.NewEvent("UserSignedUp", "full-secret", eventstore.NewTags(
+	fullBlob, _ := collie.NewEvent("UserSignedUp", "full-secret", collie.NewTags(
 		"userId", "user-1",
 	), encryption.WithEncryptionKeys("userId"))
 
 	// Field-level encryption
-	fieldLevel, _ := eventstore.NewEvent("ProfileUpdated", user{Name: "Alice", Email: "a@b.c", Role: "admin"}, eventstore.NewTags(
+	fieldLevel, _ := collie.NewEvent("ProfileUpdated", user{Name: "Alice", Email: "a@b.c", Role: "admin"}, collie.NewTags(
 		"userId", "user-2",
 	), encryption.WithEncryptionKeys("userId"), encryption.WithEncryptedFields("email"))
 
-	if err := store.Append(ctx, []eventstore.Event{fullBlob, fieldLevel}, nil); err != nil {
+	if err := store.Append(ctx, []collie.Event{fullBlob, fieldLevel}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -620,7 +620,7 @@ func TestMixedFullBlobAndFieldLevelEvents(t *testing.T) {
 	}
 
 	// Forget user-1 (full-blob)
-	if err := enc.Forget(ctx, eventstore.NewTags("userId", "user-1")); err != nil {
+	if err := enc.Forget(ctx, collie.NewTags("userId", "user-1")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -635,7 +635,7 @@ func TestMixedFullBlobAndFieldLevelEvents(t *testing.T) {
 	}
 
 	// Field-level: should still be fully readable (different subject)
-	data, err := eventstore.EventData[user](events[1])
+	data, err := collie.EventData[user](events[1])
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -652,17 +652,17 @@ func TestEncryptedMultiUserSubject(t *testing.T) {
 	store, enc := newStore()
 	ctx := context.Background()
 
-	msg, err := eventstore.NewEvent("MessageSent", "hello", eventstore.NewTags("user", "user-A", "user", "user-B"),
+	msg, err := collie.NewEvent("MessageSent", "hello", collie.NewTags("user", "user-A", "user", "user-B"),
 		encryption.WithEncryptionKeys("user"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	note, err := eventstore.NewEvent("NoteAdded", "private", eventstore.NewTags("user", "user-A"),
+	note, err := collie.NewEvent("NoteAdded", "private", collie.NewTags("user", "user-A"),
 		encryption.WithEncryptionKeys("user"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Append(ctx, []eventstore.Event{msg, note}, nil); err != nil {
+	if err := store.Append(ctx, []collie.Event{msg, note}, nil); err != nil {
 		t.Fatal(err)
 	}
 
@@ -670,12 +670,12 @@ func TestEncryptedMultiUserSubject(t *testing.T) {
 		if encryption.IsRedacted(e) {
 			t.Fatalf("event %s unexpectedly redacted before forget", e.Type)
 		}
-		if data, err := eventstore.EventData[string](e); err != nil || data == "" {
+		if data, err := collie.EventData[string](e); err != nil || data == "" {
 			t.Fatalf("decrypt %s: data=%q err=%v", e.Type, data, err)
 		}
 	}
 
-	if err := enc.Forget(ctx, eventstore.NewTags("user", "user-A")); err != nil {
+	if err := enc.Forget(ctx, collie.NewTags("user", "user-A")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -694,12 +694,12 @@ func TestEncryptedMultiUserForgetEither(t *testing.T) {
 			store, enc := newStore()
 			ctx := context.Background()
 
-			msg, _ := eventstore.NewEvent("MessageSent", "hello", eventstore.NewTags("user", "user-A", "user", "user-B"),
+			msg, _ := collie.NewEvent("MessageSent", "hello", collie.NewTags("user", "user-A", "user", "user-B"),
 				encryption.WithEncryptionKeys("user"))
-			if err := store.Append(ctx, []eventstore.Event{msg}, nil); err != nil {
+			if err := store.Append(ctx, []collie.Event{msg}, nil); err != nil {
 				t.Fatal(err)
 			}
-			if err := enc.Forget(ctx, eventstore.NewTags("user", forget)); err != nil {
+			if err := enc.Forget(ctx, collie.NewTags("user", forget)); err != nil {
 				t.Fatal(err)
 			}
 			events := collectEvents(t, store, nil)

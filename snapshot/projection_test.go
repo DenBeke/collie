@@ -10,16 +10,16 @@ import (
 )
 
 // seed appends n events of the given type and returns the store.
-func seed(t *testing.T, n int, eventType string, tags []eventstore.Tag) *memory.Store {
+func seed(t *testing.T, n int, eventType string, tags []collie.Tag) *memory.Store {
 	t.Helper()
 	store := memory.New()
 	ctx := context.Background()
 	for range n {
-		event, err := eventstore.NewEvent(eventType, nil, tags)
+		event, err := collie.NewEvent(eventType, nil, tags)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := store.Append(ctx, []eventstore.Event{event}, nil); err != nil {
+		if err := store.Append(ctx, []collie.Event{event}, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -28,10 +28,10 @@ func seed(t *testing.T, n int, eventType string, tags []eventstore.Tag) *memory.
 
 // countDef counts events of the given type; partition tags scope which ones.
 // Note there is no Query: the event types to read derive from the handler keys.
-func countDef(eventType string) eventstore.DefaultProjection[int] {
-	return eventstore.DefaultProjection[int]{
-		Handlers: map[string]eventstore.HandleFunc[int]{
-			eventType: func(count int, _ eventstore.SequencedEvent) (int, error) { return count + 1, nil },
+func countDef(eventType string) collie.DefaultProjection[int] {
+	return collie.DefaultProjection[int]{
+		Handlers: map[string]collie.HandleFunc[int]{
+			eventType: func(count int, _ collie.SequencedEvent) (int, error) { return count + 1, nil },
 		},
 	}
 }
@@ -50,7 +50,7 @@ func TestProjection_ResumesFromSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := eventstore.UpdateProjection(ctx, store, projection); err != nil {
+	if err := collie.UpdateProjection(ctx, store, projection); err != nil {
 		t.Fatal(err)
 	}
 	if projection.State != 3 || projection.After() != 3 {
@@ -68,15 +68,15 @@ func TestProjection_ResumesFromSnapshot(t *testing.T) {
 
 	// Two more events: the resumed instance applies only the delta since its checkpoint.
 	for range 2 {
-		event, err := eventstore.NewEvent("UserSignedUp", nil, nil)
+		event, err := collie.NewEvent("UserSignedUp", nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := store.Append(ctx, []eventstore.Event{event}, nil); err != nil {
+		if err := store.Append(ctx, []collie.Event{event}, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
-	condition, err := eventstore.BuildDecisionModel(ctx, store, resumed)
+	condition, err := collie.BuildDecisionModel(ctx, store, resumed)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -106,21 +106,21 @@ func TestNewProjection_ScopesQueryToPartition(t *testing.T) {
 	ctx := context.Background()
 	store := memory.New()
 	for _, room := range []string{"r1", "r1", "r2", "r2", "r2"} {
-		event, err := eventstore.NewEvent("SeatReserved", nil, eventstore.NewTags("room", room))
+		event, err := collie.NewEvent("SeatReserved", nil, collie.NewTags("room", room))
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := store.Append(ctx, []eventstore.Event{event}, nil); err != nil {
+		if err := store.Append(ctx, []collie.Event{event}, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
 
 	projection, err := snapshot.NewProjection(ctx, memory.NewSnapshotStore(),
-		"seats", countDef("SeatReserved"), eventstore.NewTag("room", "r1"))
+		"seats", countDef("SeatReserved"), collie.NewTag("room", "r1"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := eventstore.UpdateProjection(ctx, store, projection); err != nil {
+	if err := collie.UpdateProjection(ctx, store, projection); err != nil {
 		t.Fatal(err)
 	}
 	if projection.State != 2 {
@@ -133,14 +133,14 @@ func TestNewProjection_ScopesQueryToPartition(t *testing.T) {
 func TestNewProjection_TagOrderInsensitive(t *testing.T) {
 	ctx := context.Background()
 	snapshots := memory.NewSnapshotStore()
-	store := seed(t, 3, "StudentSubscribed", eventstore.NewTags("student", "s1", "course", "c1"))
+	store := seed(t, 3, "StudentSubscribed", collie.NewTags("student", "s1", "course", "c1"))
 
 	first, err := snapshot.NewProjection(ctx, snapshots, "subscription", countDef("StudentSubscribed"),
-		eventstore.NewTag("student", "s1"), eventstore.NewTag("course", "c1"))
+		collie.NewTag("student", "s1"), collie.NewTag("course", "c1"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := eventstore.UpdateProjection(ctx, store, first); err != nil {
+	if err := collie.UpdateProjection(ctx, store, first); err != nil {
 		t.Fatal(err)
 	}
 	if first.State != 3 || first.After() != 3 {
@@ -149,7 +149,7 @@ func TestNewProjection_TagOrderInsensitive(t *testing.T) {
 
 	// Same partition, reversed tag order: must resume from the same snapshot.
 	resumed, err := snapshot.NewProjection(ctx, snapshots, "subscription", countDef("StudentSubscribed"),
-		eventstore.NewTag("course", "c1"), eventstore.NewTag("student", "s1"))
+		collie.NewTag("course", "c1"), collie.NewTag("student", "s1"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,14 +164,14 @@ func TestNewProjection_TagOrderInsensitive(t *testing.T) {
 func TestNewProjection_NoCollisionOnSeparatorValues(t *testing.T) {
 	ctx := context.Background()
 	snapshots := memory.NewSnapshotStore()
-	store := seed(t, 2, "Ev", eventstore.NewTags("a", "1|b=2"))
+	store := seed(t, 2, "Ev", collie.NewTags("a", "1|b=2"))
 
 	tricky, err := snapshot.NewProjection(ctx, snapshots, "p", countDef("Ev"),
-		eventstore.NewTag("a", "1|b=2"))
+		collie.NewTag("a", "1|b=2"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := eventstore.UpdateProjection(ctx, store, tricky); err != nil {
+	if err := collie.UpdateProjection(ctx, store, tricky); err != nil {
 		t.Fatal(err)
 	}
 	if tricky.After() != 2 {
@@ -180,7 +180,7 @@ func TestNewProjection_NoCollisionOnSeparatorValues(t *testing.T) {
 
 	// The naive encoding "p|a=1|b=2" would collide; both must be fresh.
 	other, err := snapshot.NewProjection(ctx, snapshots, "p", countDef("Ev"),
-		eventstore.NewTag("a", "1"), eventstore.NewTag("b", "2"))
+		collie.NewTag("a", "1"), collie.NewTag("b", "2"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +219,7 @@ func TestProjection_SavesOncePerCatchUp(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := eventstore.UpdateProjection(ctx, store, projection); err != nil {
+	if err := collie.UpdateProjection(ctx, store, projection); err != nil {
 		t.Fatal(err)
 	}
 	if projection.State != 5 {
@@ -230,7 +230,7 @@ func TestProjection_SavesOncePerCatchUp(t *testing.T) {
 	}
 
 	// Nothing new: no snapshot write.
-	if err := eventstore.UpdateProjection(ctx, store, projection); err != nil {
+	if err := collie.UpdateProjection(ctx, store, projection); err != nil {
 		t.Fatal(err)
 	}
 	if snapshots.saves != 1 {
@@ -238,21 +238,21 @@ func TestProjection_SavesOncePerCatchUp(t *testing.T) {
 	}
 
 	// BuildDecisionModel also checkpoints exactly once.
-	if _, err := eventstore.BuildDecisionModel(ctx, store, projection); err != nil {
+	if _, err := collie.BuildDecisionModel(ctx, store, projection); err != nil {
 		t.Fatal(err)
 	}
 	if snapshots.saves != 1 {
 		t.Fatalf("expected no save when decision model saw no new events, got %d", snapshots.saves)
 	}
 
-	event, err := eventstore.NewEvent("UserSignedUp", nil, nil)
+	event, err := collie.NewEvent("UserSignedUp", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Append(ctx, []eventstore.Event{event}, nil); err != nil {
+	if err := store.Append(ctx, []collie.Event{event}, nil); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := eventstore.BuildDecisionModel(ctx, store, projection); err != nil {
+	if _, err := collie.BuildDecisionModel(ctx, store, projection); err != nil {
 		t.Fatal(err)
 	}
 	if projection.State != 6 {
@@ -303,11 +303,11 @@ func TestProjection_DirtyCheckpointRecordsHead(t *testing.T) {
 	ctx := context.Background()
 	store := seed(t, 2, "UserSignedUp", nil)
 	for range 3 {
-		e, err := eventstore.NewEvent("Other", nil, nil)
+		e, err := collie.NewEvent("Other", nil, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := store.Append(ctx, []eventstore.Event{e}, nil); err != nil {
+		if err := store.Append(ctx, []collie.Event{e}, nil); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -316,7 +316,7 @@ func TestProjection_DirtyCheckpointRecordsHead(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := eventstore.UpdateProjection(ctx, store, projection); err != nil {
+	if err := collie.UpdateProjection(ctx, store, projection); err != nil {
 		t.Fatal(err)
 	}
 	if projection.State != 2 || projection.After() != 5 {

@@ -7,9 +7,9 @@ Large event fields (files, images, binary payloads) can be offloaded to a blob s
 ```go
 blobStore := attachments.NewMemoryBlobStore() // or your own BlobStore implementation
 attachmentMiddleware := attachments.NewAttachmentMiddleware(blobStore)
-store := eventstore.NewMiddlewareStore(inner,
-    eventstore.WithAppendMiddleware(attachmentMiddleware.OnAppend),
-    eventstore.WithReadMiddleware(attachmentMiddleware.OnRead),
+store := collie.NewMiddlewareStore(inner,
+    collie.WithAppendMiddleware(attachmentMiddleware.OnAppend),
+    collie.WithReadMiddleware(attachmentMiddleware.OnRead),
 )
 ```
 
@@ -24,7 +24,7 @@ type DocumentUploaded struct {
     Content    []byte `json:"content"    dcb-attachment:"blob"` // large, offloaded
 }
 
-event, _ := eventstore.NewEventFrom("DocumentUploaded", doc)
+event, _ := collie.NewEventFrom("DocumentUploaded", doc)
 ```
 
 This needs `attachments.RegisterStructTags()` once at boot (see [Struct tags and hooks](../encryption/README.md#struct-tags-and-hooks)). Several fields can carry the tag; a nested struct is offloaded as one blob.
@@ -32,7 +32,7 @@ This needs `attachments.RegisterStructTags()` once at boot (see [Struct tags and
 For events built without a struct, `WithAttachments` names the top-level JSON fields instead:
 
 ```go
-event, _ := eventstore.NewEvent("PhotoUploaded", photo, tags,
+event, _ := collie.NewEvent("PhotoUploaded", photo, tags,
     attachments.WithAttachments("content", "thumbnail"),
 )
 ```
@@ -42,7 +42,7 @@ event, _ := eventstore.NewEvent("PhotoUploaded", photo, tags,
 On read, the middleware restores the original data from the blob store. Consumers use `EventData[T]` as usual. If a blob cannot be retrieved, the field is set to `null` and the event is flagged — check with `attachments.IsMissing(event)`.
 
 ```go
-data, _ := eventstore.EventData[DocumentUploaded](event)
+data, _ := collie.EventData[DocumentUploaded](event)
 fmt.Println(len(data.Content)) // original size
 ```
 
@@ -60,8 +60,8 @@ url := fmt.Sprintf("/blobs/%s", ids["content"])
 If you don't want blobs fetched on every read (e.g. for projections that only need metadata), skip registering the read middleware:
 
 ```go
-store := eventstore.NewMiddlewareStore(inner,
-    eventstore.WithAppendMiddleware(attachmentMiddleware.OnAppend),
+store := collie.NewMiddlewareStore(inner,
+    collie.WithAppendMiddleware(attachmentMiddleware.OnAppend),
     // no OnRead — blob IDs stay in metadata for manual access
 )
 ```

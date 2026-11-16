@@ -1,6 +1,6 @@
-// Package eventstore defines the core types and interface for a Dynamic
+// Package collie defines the core types and interface for a Dynamic
 // Consistency Boundary event store. See https://dcb.events/specification/
-package eventstore
+package collie
 
 import (
 	"context"

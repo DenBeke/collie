@@ -24,14 +24,14 @@ type prepareState struct {
 // twice. The token embeds the Prepare count, so a second Prepare would be
 // visible as a changed token rather than only as a changed counter.
 type preparingCommand struct {
-	store      eventstore.Store
+	store      collie.Store
 	state      *prepareState
 	prepareErr error
 
 	token string // filled by Prepare, read by Decide
 }
 
-func newPreparingCommand(store eventstore.Store) *preparingCommand {
+func newPreparingCommand(store collie.Store) *preparingCommand {
 	return &preparingCommand{store: store, state: &prepareState{}}
 }
 
@@ -44,34 +44,34 @@ func (cmd *preparingCommand) Prepare(context.Context) error {
 	return nil
 }
 
-func (cmd *preparingCommand) Projections(context.Context) ([]eventstore.Projection, error) {
-	return []eventstore.Projection{
-		&eventstore.DefaultProjection[int]{
-			Query: eventstore.QueryItem{Tags: touched},
-			Handlers: map[string]eventstore.HandleFunc[int]{
-				"Touched": func(seen int, _ eventstore.SequencedEvent) (int, error) { return seen + 1, nil },
+func (cmd *preparingCommand) Projections(context.Context) ([]collie.Projection, error) {
+	return []collie.Projection{
+		&collie.DefaultProjection[int]{
+			Query: collie.QueryItem{Tags: touched},
+			Handlers: map[string]collie.HandleFunc[int]{
+				"Touched": func(seen int, _ collie.SequencedEvent) (int, error) { return seen + 1, nil },
 			},
 		},
 	}, nil
 }
 
-func (cmd *preparingCommand) Decide(ctx context.Context) ([]eventstore.Event, error) {
+func (cmd *preparingCommand) Decide(ctx context.Context) ([]collie.Event, error) {
 	cmd.state.decided = append(cmd.state.decided, cmd.token)
 	if !cmd.state.injected {
 		cmd.state.injected = true
-		competing, err := eventstore.NewEvent("Touched", nil, touched)
+		competing, err := collie.NewEvent("Touched", nil, touched)
 		if err != nil {
 			return nil, fmt.Errorf("could not create competing event: %w", err)
 		}
-		if err := cmd.store.Append(ctx, []eventstore.Event{competing}, nil); err != nil {
+		if err := cmd.store.Append(ctx, []collie.Event{competing}, nil); err != nil {
 			return nil, fmt.Errorf("could not append competing event: %w", err)
 		}
 	}
-	event, err := eventstore.NewEvent("Touched", nil, touched)
+	event, err := collie.NewEvent("Touched", nil, touched)
 	if err != nil {
 		return nil, fmt.Errorf("could not create Touched event: %w", err)
 	}
-	return []eventstore.Event{event}, nil
+	return []collie.Event{event}, nil
 }
 
 // TestExecute_PrepareRunsOnceAcrossRetries is the whole point of the phase: the
@@ -218,20 +218,20 @@ func (cmd *signUpPreparing) Prepare(context.Context) error {
 	return nil
 }
 
-func (cmd *signUpPreparing) Projections(context.Context) ([]eventstore.Projection, error) {
+func (cmd *signUpPreparing) Projections(context.Context) ([]collie.Projection, error) {
 	return nil, nil
 }
 
-func (cmd *signUpPreparing) Decide(context.Context) ([]eventstore.Event, error) {
-	event, err := eventstore.NewEvent("UserSignedUp", cmd.Username,
-		eventstore.NewTags("username", cmd.Username))
+func (cmd *signUpPreparing) Decide(context.Context) ([]collie.Event, error) {
+	event, err := collie.NewEvent("UserSignedUp", cmd.Username,
+		collie.NewTags("username", cmd.Username))
 	if err != nil {
 		return nil, fmt.Errorf("could not create UserSignedUp event: %w", err)
 	}
-	return []eventstore.Event{event}, nil
+	return []collie.Event{event}, nil
 }
 
-func newDispatchRegistry(store eventstore.Store, recorder *dispatchRecorder) *command.Registry {
+func newDispatchRegistry(store collie.Store, recorder *dispatchRecorder) *command.Registry {
 	return command.NewRegistry(store,
 		command.WithCommands(&signUpPreparing{}),
 		command.WithInjector(func(cmd any) error {

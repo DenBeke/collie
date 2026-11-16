@@ -19,7 +19,7 @@ import (
 // Dispatch errors, classifiable with errors.Is so a transport adapter (HTTP,
 // queue, CLI) can map outcomes without string matching. Domain rejections from
 // Decide match [ErrCommandRejected], and an exhausted optimistic retry matches
-// [eventstore.ErrAppendConditionViolated]; anything else is an infrastructure
+// [collie.ErrAppendConditionViolated]; anything else is an infrastructure
 // failure.
 var (
 	// ErrUnknownCommand: no command is registered under the dispatched name.
@@ -60,7 +60,7 @@ type SnapshotStoreUser interface {
 //	    Room string `json:"room"`
 //	}
 //
-//	func (cmd *ReserveSeat) Projections(ctx context.Context) ([]eventstore.Projection, error) {
+//	func (cmd *ReserveSeat) Projections(ctx context.Context) ([]collie.Projection, error) {
 //	    p, err := snapshot.NewProjection(ctx, cmd.SnapshotStore(), "seats-"+cmd.Room, def)
 //	    // ...
 //	}
@@ -84,7 +84,7 @@ func (access *SnapshotStoreAccess) SnapshotStore() snapshot.Store {
 // [Execute]. Construct it with [NewRegistry] and register commands
 // with the With... options.
 type Registry struct {
-	store          eventstore.Store
+	store          collie.Store
 	snapshotStore  snapshot.Store
 	factories      map[string]func() Command
 	executeOptions []ExecuteOption
@@ -96,7 +96,7 @@ type Registry struct {
 type Option func(*Registry)
 
 // NewRegistry creates a Registry backed by store.
-func NewRegistry(store eventstore.Store, options ...Option) *Registry {
+func NewRegistry(store collie.Store, options ...Option) *Registry {
 	registry := &Registry{
 		store:     store,
 		factories: make(map[string]func() Command),

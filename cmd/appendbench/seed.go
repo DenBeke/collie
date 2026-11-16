@@ -53,14 +53,14 @@ func appendSeed(ctx context.Context, store *pgstore.Store, cfg *Config, need int
 		if n > need-done {
 			n = need - done
 		}
-		events := make([]eventstore.Event, n)
+		events := make([]collie.Event, n)
 		for i := int64(0); i < n; i++ {
 			id := entity % cfg.Partitions
 			entity++
-			events[i] = eventstore.Event{
+			events[i] = collie.Event{
 				Type: eventType,
 				Data: benchData,
-				Tags: eventstore.NewTags(entityTagKey, entityID(id)),
+				Tags: collie.NewTags(entityTagKey, entityID(id)),
 			}
 		}
 		if err := store.Append(ctx, events, nil); err != nil {

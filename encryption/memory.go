@@ -10,7 +10,7 @@ import (
 )
 
 type memoryKey struct {
-	tags []eventstore.Tag
+	tags []collie.Tag
 	key  []byte
 }
 
@@ -26,7 +26,7 @@ func NewMemoryKeyStore() *MemoryKeyStore {
 }
 
 // GetOrCreate returns the key for the subject, generating a new one if needed.
-func (s *MemoryKeyStore) GetOrCreate(_ context.Context, subject []eventstore.Tag) ([]byte, error) {
+func (s *MemoryKeyStore) GetOrCreate(_ context.Context, subject []collie.Tag) ([]byte, error) {
 	id := TagID(subject)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -42,7 +42,7 @@ func (s *MemoryKeyStore) GetOrCreate(_ context.Context, subject []eventstore.Tag
 }
 
 // Get returns the key for the exact subject, or (nil, false, nil) if absent.
-func (s *MemoryKeyStore) Get(_ context.Context, subject []eventstore.Tag) ([]byte, bool, error) {
+func (s *MemoryKeyStore) Get(_ context.Context, subject []collie.Tag) ([]byte, bool, error) {
 	id := TagID(subject)
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -54,7 +54,7 @@ func (s *MemoryKeyStore) Get(_ context.Context, subject []eventstore.Tag) ([]byt
 }
 
 // Forget deletes all keys whose subject is a superset of the provided tags.
-func (s *MemoryKeyStore) Forget(_ context.Context, tags []eventstore.Tag) error {
+func (s *MemoryKeyStore) Forget(_ context.Context, tags []collie.Tag) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for id, entry := range s.keys {
@@ -66,7 +66,7 @@ func (s *MemoryKeyStore) Forget(_ context.Context, tags []eventstore.Tag) error 
 }
 
 // containsAll returns true if superset contains every tag in subset.
-func containsAll(superset, subset []eventstore.Tag) bool {
+func containsAll(superset, subset []collie.Tag) bool {
 	for _, t := range subset {
 		if !slices.Contains(superset, t) {
 			return false

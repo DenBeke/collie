@@ -16,7 +16,7 @@ For example, a stored projection that loads its state from a cache or database:
 
 ```go
 type storedProjection[S any] struct {
-    eventstore.DefaultProjection[S]
+    collie.DefaultProjection[S]
     after uint64
 }
 
@@ -59,11 +59,11 @@ Two implementations are provided:
 `snapshot.Projection[S]` wraps a `DefaultProjection[S]` with position tracking and persists state and position through a `snapshot.Store`. Define the projection once:
 
 ```go
-projection := eventstore.DefaultProjection[int]{
-    Query: eventstore.QueryItem{Types: []string{"UserSignedUp"}},
+projection := collie.DefaultProjection[int]{
+    Query: collie.QueryItem{Types: []string{"UserSignedUp"}},
     State: 0,
-    Handlers: map[string]eventstore.HandleFunc[int]{
-        "UserSignedUp": func(count int, _ eventstore.SequencedEvent) (int, error) {
+    Handlers: map[string]collie.HandleFunc[int]{
+        "UserSignedUp": func(count int, _ collie.SequencedEvent) (int, error) {
             return count + 1, nil
         },
     },
@@ -80,14 +80,14 @@ totalUsers, err := snapshot.NewProjection(ctx, snapshots, "total_users/v1", proj
 Update and read the state the same way:
 
 ```go
-eventstore.UpdateProjection(ctx, store, totalUsers)
+collie.UpdateProjection(ctx, store, totalUsers)
 fmt.Println(totalUsers.State)
 ```
 
 Two things the name does. Version it (`/v1`) and bump it when the handlers change, so an old snapshot is rebuilt rather than read as wrong state. And pass partition tags to scope one projection definition to one boundary; each partition then keeps its own snapshot and checkpoint:
 
 ```go
-seats, err := snapshot.NewProjection(ctx, snapshots, "course_seats/v1", seatsDelta, eventstore.NewTag("course", courseID))
+seats, err := snapshot.NewProjection(ctx, snapshots, "course_seats/v1", seatsDelta, collie.NewTag("course", courseID))
 ```
 
 A snapshot projection is also what `BuildDecisionModel` uses to skip already-folded events in a decision, so the same definition serves a command and a read endpoint.

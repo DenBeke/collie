@@ -31,11 +31,11 @@ type twoFields struct {
 
 func TestStructTagsDeclareWhatOptionsDeclare(t *testing.T) {
 	data := twoFields{UserID: "u1", Name: "Ada", Iban: "BE00"}
-	declared, err := eventstore.NewEventFrom("UserRegistered", data)
+	declared, err := collie.NewEventFrom("UserRegistered", data)
 	if err != nil {
 		t.Fatal(err)
 	}
-	byOptions, err := eventstore.NewEvent("UserRegistered", data, eventstore.NewTags("user", "u1"),
+	byOptions, err := collie.NewEvent("UserRegistered", data, collie.NewTags("user", "u1"),
 		encryption.WithEncryptionKeys("user"), encryption.WithEncryptedFields("name", "iban"))
 	if err != nil {
 		t.Fatal(err)
@@ -46,7 +46,7 @@ func TestStructTagsDeclareWhatOptionsDeclare(t *testing.T) {
 		}
 	}
 	// Options and struct agreeing is fine; the same event built with both.
-	if _, err := eventstore.NewEventFrom("UserRegistered", data,
+	if _, err := collie.NewEventFrom("UserRegistered", data,
 		encryption.WithEncryptionKeys("user"), encryption.WithEncryptedFields("name", "iban")); err != nil {
 		t.Errorf("agreeing option: %v", err)
 	}
@@ -55,24 +55,24 @@ func TestStructTagsDeclareWhatOptionsDeclare(t *testing.T) {
 func TestStructTagsNestedBlockRoundTripAndForget(t *testing.T) {
 	raw := memory.New()
 	enc := newEncryptor()
-	store := eventstore.NewMiddlewareStore(raw,
-		eventstore.WithAppendMiddleware(enc.OnAppend),
-		eventstore.WithReadMiddleware(enc.OnRead),
+	store := collie.NewMiddlewareStore(raw,
+		collie.WithAppendMiddleware(enc.OnAppend),
+		collie.WithReadMiddleware(enc.OnRead),
 	)
 	ctx := context.Background()
 
-	event, err := eventstore.NewEventFrom("SupplierRegistered", supplierRegistered{
+	event, err := collie.NewEventFrom("SupplierRegistered", supplierRegistered{
 		SupplierID: "s1", Contact: contact{Name: "Acme", Phone: "123"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Append(ctx, []eventstore.Event{event}, nil); err != nil {
+	if err := store.Append(ctx, []collie.Event{event}, nil); err != nil {
 		t.Fatal(err)
 	}
 
 	got := collectEvents(t, store, nil)[0]
-	data, err := eventstore.EventData[supplierRegistered](got)
+	data, err := collie.EventData[supplierRegistered](got)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,14 +86,14 @@ func TestStructTagsNestedBlockRoundTripAndForget(t *testing.T) {
 		t.Errorf("stored data leaks the block: %s", s)
 	}
 
-	if err := enc.Forget(ctx, eventstore.NewTags("supplier", "s1")); err != nil {
+	if err := enc.Forget(ctx, collie.NewTags("supplier", "s1")); err != nil {
 		t.Fatal(err)
 	}
 	redacted := collectEvents(t, store, nil)[0]
 	if !encryption.IsRedacted(redacted) {
 		t.Fatal("expected redaction after Forget")
 	}
-	data, err = eventstore.EventData[supplierRegistered](redacted)
+	data, err = collie.EventData[supplierRegistered](redacted)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,38 +142,38 @@ type (
 func TestStructTagsRejectInvalidDeclarations(t *testing.T) {
 	cases := []struct {
 		name  string
-		event func() (eventstore.Event, error)
+		event func() (collie.Event, error)
 	}{
-		{"value without tag: prefix", func() (eventstore.Event, error) {
-			return eventstore.NewEvent("X", badValue{Name: "n"}, eventstore.NewTags("user", "u"))
+		{"value without tag: prefix", func() (collie.Event, error) {
+			return collie.NewEvent("X", badValue{Name: "n"}, collie.NewTags("user", "u"))
 		}},
-		{"key is not a tag on the event", func() (eventstore.Event, error) {
-			return eventstore.NewEvent("X", noSuchTag{Name: "n"}, nil)
+		{"key is not a tag on the event", func() (collie.Event, error) {
+			return collie.NewEvent("X", noSuchTag{Name: "n"}, nil)
 		}},
-		{"tag field encrypted", func() (eventstore.Event, error) {
-			return eventstore.NewEventFrom("X", encryptedTag{UserID: "u"})
+		{"tag field encrypted", func() (collie.Event, error) {
+			return collie.NewEventFrom("X", encryptedTag{UserID: "u"})
 		}},
-		{`json:"-" field`, func() (eventstore.Event, error) {
-			return eventstore.NewEventFrom("X", hiddenField{UserID: "u", Name: "n"})
+		{`json:"-" field`, func() (collie.Event, error) {
+			return collie.NewEventFrom("X", hiddenField{UserID: "u", Name: "n"})
 		}},
-		{"embedded field declared", func() (eventstore.Event, error) {
-			return eventstore.NewEventFrom("X", embeddedBlock{UserID: "u", contact: contact{Name: "n"}})
+		{"embedded field declared", func() (collie.Event, error) {
+			return collie.NewEventFrom("X", embeddedBlock{UserID: "u", contact: contact{Name: "n"}})
 		}},
-		{"unexported field declared", func() (eventstore.Event, error) {
-			return eventstore.NewEventFrom("X", unexportedField{UserID: "u", name: "n"})
+		{"unexported field declared", func() (collie.Event, error) {
+			return collie.NewEventFrom("X", unexportedField{UserID: "u", name: "n"})
 		}},
-		{"field behind nil embedded pointer", func() (eventstore.Event, error) {
-			return eventstore.NewEventFrom("X", absentField{UserID: "u"})
+		{"field behind nil embedded pointer", func() (collie.Event, error) {
+			return collie.NewEventFrom("X", absentField{UserID: "u"})
 		}},
-		{"two subjects", func() (eventstore.Event, error) {
-			return eventstore.NewEventFrom("X", twoSubjects{UserID: "u", TenantID: "t", Name: "n", Secret: "s"})
+		{"two subjects", func() (collie.Event, error) {
+			return collie.NewEventFrom("X", twoSubjects{UserID: "u", TenantID: "t", Name: "n", Secret: "s"})
 		}},
-		{"option disagrees on subject", func() (eventstore.Event, error) {
-			return eventstore.NewEvent("X", twoFields{UserID: "u", Name: "n", Iban: "i"},
-				eventstore.NewTags("user", "u", "tenant", "t"), encryption.WithEncryptionKeys("tenant"))
+		{"option disagrees on subject", func() (collie.Event, error) {
+			return collie.NewEvent("X", twoFields{UserID: "u", Name: "n", Iban: "i"},
+				collie.NewTags("user", "u", "tenant", "t"), encryption.WithEncryptionKeys("tenant"))
 		}},
-		{"option disagrees on fields", func() (eventstore.Event, error) {
-			return eventstore.NewEventFrom("X", twoFields{UserID: "u", Name: "n", Iban: "i"},
+		{"option disagrees on fields", func() (collie.Event, error) {
+			return collie.NewEventFrom("X", twoFields{UserID: "u", Name: "n", Iban: "i"},
 				encryption.WithEncryptedFields("name"))
 		}},
 	}
@@ -188,7 +188,7 @@ func TestStructTagsRejectInvalidDeclarations(t *testing.T) {
 }
 
 func TestStructTagsIgnoreUndeclaredPayloads(t *testing.T) {
-	e, err := eventstore.NewEvent("Plain", "alice", eventstore.NewTags("user", "u"))
+	e, err := collie.NewEvent("Plain", "alice", collie.NewTags("user", "u"))
 	if err != nil {
 		t.Fatal(err)
 	}

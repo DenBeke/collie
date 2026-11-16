@@ -12,15 +12,15 @@ import (
 
 // stamped wires the envelope middleware in front of a postgres store, the way an
 // application does.
-func stamped(store *pgstore.Store, options ...envelope.Option) *eventstore.MiddlewareStore {
-	return eventstore.NewMiddlewareStore(store,
-		eventstore.WithAppendMiddleware(envelope.New(options...).OnAppend),
+func stamped(store *pgstore.Store, options ...envelope.Option) *collie.MiddlewareStore {
+	return collie.NewMiddlewareStore(store,
+		collie.WithAppendMiddleware(envelope.New(options...).OnAppend),
 	)
 }
 
-func readAll(t *testing.T, store eventstore.Store) []eventstore.SequencedEvent {
+func readAll(t *testing.T, store collie.Store) []collie.SequencedEvent {
 	t.Helper()
-	var events []eventstore.SequencedEvent
+	var events []collie.SequencedEvent
 	stream, _, err := store.Read(context.Background(), nil, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -37,10 +37,10 @@ func readAll(t *testing.T, store eventstore.Store) []eventstore.SequencedEvent {
 func TestPGEnvelopeRoundTrip(t *testing.T) {
 	inner := setupStore(t)
 	store := stamped(inner)
-	ctx := eventstore.ContextWithCause(eventstore.ContextWithActor(context.Background(), "student:s1"), "request:8f3a")
+	ctx := collie.ContextWithCause(collie.ContextWithActor(context.Background(), "student:s1"), "request:8f3a")
 
-	e, _ := eventstore.NewEvent("StudentRegistered", "Ada", eventstore.NewTags("student", "s1"))
-	err := store.Append(ctx, []eventstore.Event{e}, nil)
+	e, _ := collie.NewEvent("StudentRegistered", "Ada", collie.NewTags("student", "s1"))
+	err := store.Append(ctx, []collie.Event{e}, nil)
 	if err != nil {
 		t.Fatalf("append: %v", err)
 	}
@@ -67,8 +67,8 @@ func TestPGAnonymousAppendStoresNull(t *testing.T) {
 	store := stamped(inner, envelope.AllowAnonymous())
 	ctx := context.Background()
 
-	e, _ := eventstore.NewEvent("SystemBooted", "v1", nil)
-	err := store.Append(ctx, []eventstore.Event{e}, nil)
+	e, _ := collie.NewEvent("SystemBooted", "v1", nil)
+	err := store.Append(ctx, []collie.Event{e}, nil)
 	if err != nil {
 		t.Fatalf("append: %v", err)
 	}
@@ -85,13 +85,13 @@ func TestPGAnonymousAppendStoresNull(t *testing.T) {
 func TestPGStagedRecordedAtIsAppendTime(t *testing.T) {
 	inner := setupStagingStore(t)
 	store := stamped(inner)
-	ctx := eventstore.ContextWithActor(context.Background(), "student:s1")
+	ctx := collie.ContextWithActor(context.Background(), "student:s1")
 
-	e, _ := eventstore.NewEvent("StudentRegistered", "Ada", eventstore.NewTags("student", "s1"))
-	err := store.Append(ctx, []eventstore.Event{e}, &eventstore.AppendCondition{
-		Query: eventstore.Query{{
+	e, _ := collie.NewEvent("StudentRegistered", "Ada", collie.NewTags("student", "s1"))
+	err := store.Append(ctx, []collie.Event{e}, &collie.AppendCondition{
+		Query: collie.Query{{
 			Types: []string{"StudentRegistered"},
-			Tags:  eventstore.NewTags("student", "s1"),
+			Tags:  collie.NewTags("student", "s1"),
 		}},
 	})
 	if err != nil {
@@ -102,12 +102,12 @@ func TestPGStagedRecordedAtIsAppendTime(t *testing.T) {
 	// Straight at the inner store, with an already-stamped event.
 	staged := e
 	staged.Actor = "student:s2"
-	staged.Tags = eventstore.NewTags("student", "s2")
+	staged.Tags = collie.NewTags("student", "s2")
 	appendedAt := time.Now()
-	err = inner.Append(ctx, []eventstore.Event{staged}, &eventstore.AppendCondition{
-		Query: eventstore.Query{{
+	err = inner.Append(ctx, []collie.Event{staged}, &collie.AppendCondition{
+		Query: collie.Query{{
 			Types: []string{"StudentRegistered"},
-			Tags:  eventstore.NewTags("student", "s2"),
+			Tags:  collie.NewTags("student", "s2"),
 		}},
 	})
 	if err != nil {
@@ -150,8 +150,8 @@ func TestPGMigrateLeavesOldRowsUnstamped(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	old, _ := eventstore.NewEvent("StudentRegistered", "Ada", eventstore.NewTags("student", "s1"))
-	err = inner.Append(ctx, []eventstore.Event{old}, nil)
+	old, _ := collie.NewEvent("StudentRegistered", "Ada", collie.NewTags("student", "s1"))
+	err = inner.Append(ctx, []collie.Event{old}, nil)
 	if err != nil {
 		t.Fatalf("append the historical event: %v", err)
 	}
@@ -170,8 +170,8 @@ func TestPGMigrateLeavesOldRowsUnstamped(t *testing.T) {
 	}
 
 	store := stamped(inner)
-	fresh, _ := eventstore.NewEvent("StudentRegistered", "Bob", eventstore.NewTags("student", "s2"))
-	err = store.Append(eventstore.ContextWithActor(ctx, "student:s2"), []eventstore.Event{fresh}, nil)
+	fresh, _ := collie.NewEvent("StudentRegistered", "Bob", collie.NewTags("student", "s2"))
+	err = store.Append(collie.ContextWithActor(ctx, "student:s2"), []collie.Event{fresh}, nil)
 	if err != nil {
 		t.Fatalf("append after the migration: %v", err)
 	}
@@ -245,8 +245,8 @@ func TestPGMigrateDropsCreatedAt(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	direct, _ := eventstore.NewEvent("StudentRegistered", "Bob", eventstore.NewTags("student", "s2"))
-	err = inner.Append(ctx, []eventstore.Event{direct}, nil)
+	direct, _ := collie.NewEvent("StudentRegistered", "Bob", collie.NewTags("student", "s2"))
+	err = inner.Append(ctx, []collie.Event{direct}, nil)
 	if err != nil {
 		t.Fatalf("append after the migration: %v", err)
 	}
@@ -257,8 +257,8 @@ func TestPGMigrateDropsCreatedAt(t *testing.T) {
 	if err := stagingStore.SwitchAppendMode(ctx); err != nil {
 		t.Fatalf("switch to staging: %v", err)
 	}
-	staged, _ := eventstore.NewEvent("StudentRegistered", "Cleo", eventstore.NewTags("student", "s3"))
-	err = stagingStore.Append(ctx, []eventstore.Event{staged}, nil)
+	staged, _ := collie.NewEvent("StudentRegistered", "Cleo", collie.NewTags("student", "s3"))
+	err = stagingStore.Append(ctx, []collie.Event{staged}, nil)
 	if err != nil {
 		t.Fatalf("staged append after the migration: %v", err)
 	}

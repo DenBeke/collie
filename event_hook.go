@@ -1,4 +1,4 @@
-package eventstore
+package collie
 
 // Hook runs on every event built by NewEvent or NewEventFrom, after Type, Data,
 // Tags and the options are set. It sees the typed payload the event was built

@@ -2,8 +2,8 @@
 // followed from, read from the context just before the event is persisted.
 //
 // An event's envelope is three typed fields and one free map. Actor and Cause
-// sit on the write-side [eventstore.Event] and are filled in here. RecordedAt
-// sits on [eventstore.SequencedEvent] and is assigned by the store at
+// sit on the write-side [collie.Event] and are filled in here. RecordedAt
+// sits on [collie.SequencedEvent] and is assigned by the store at
 // acceptance, so it is a fact about the log rather than a claim by the writer.
 // Metadata stays what it always was: the escape hatch, and the channel other
 // middleware coordinate through. Nothing more is typed, on one razor — record
@@ -30,9 +30,9 @@
 // encrypted:
 //
 //	stamp := envelope.New().OnAppend
-//	store := eventstore.NewMiddlewareStore(inner,
-//	    eventstore.WithAppendMiddleware(stamp, encryptor.OnAppend),
-//	    eventstore.WithReadMiddleware(encryptor.OnRead),
+//	store := collie.NewMiddlewareStore(inner,
+//	    collie.WithAppendMiddleware(stamp, encryptor.OnAppend),
+//	    collie.WithReadMiddleware(encryptor.OnRead),
 //	)
 package envelope
 
@@ -46,10 +46,10 @@ import (
 // ErrNoActor is returned by [Stamper.OnAppend] when the context carries no
 // actor and the stamper is strict, which it is unless [AllowAnonymous] says
 // otherwise.
-var ErrNoActor = errors.New("append has no actor: set one with eventstore.ContextWithActor, or allow anonymous appends explicitly with envelope.AllowAnonymous()")
+var ErrNoActor = errors.New("append has no actor: set one with collie.ContextWithActor, or allow anonymous appends explicitly with envelope.AllowAnonymous()")
 
 // Stamper writes the envelope onto events on their way to the store. Register
-// [Stamper.OnAppend] with an [eventstore.MiddlewareStore].
+// [Stamper.OnAppend] with an [collie.MiddlewareStore].
 type Stamper struct {
 	allowAnonymous bool
 }
@@ -74,15 +74,15 @@ func New(options ...Option) *Stamper {
 	return s
 }
 
-// OnAppend is an [eventstore.AppendMiddleware] that copies the actor and cause
+// OnAppend is an [collie.AppendMiddleware] that copies the actor and cause
 // from ctx onto the event, overwriting whatever was there: the envelope is what
 // the context says, never what the caller wrote.
-func (s *Stamper) OnAppend(ctx context.Context, e *eventstore.Event) error {
-	actor := eventstore.ActorFromContext(ctx)
+func (s *Stamper) OnAppend(ctx context.Context, e *collie.Event) error {
+	actor := collie.ActorFromContext(ctx)
 	if actor == "" && !s.allowAnonymous {
 		return ErrNoActor
 	}
 	e.Actor = actor
-	e.Cause = eventstore.CauseFromContext(ctx)
+	e.Cause = collie.CauseFromContext(ctx)
 	return nil
 }

@@ -31,13 +31,13 @@ var ErrInvalidStructTags = errors.New("invalid dcb-encrypt struct tags")
 // RegisterStructTags makes every event built from now on honour the TagKey
 // declarations on its payload. Call once at boot, before any event is built.
 func RegisterStructTags() {
-	eventstore.RegisterHook(resolveStructTags)
+	collie.RegisterHook(resolveStructTags)
 }
 
 // resolveStructTags is the hook: it turns TagKey declarations into the
 // metadata OnAppend reads, filling what is absent and verifying what an option
 // already set.
-func resolveStructTags(e *eventstore.Event, payload any) error {
+func resolveStructTags(e *collie.Event, payload any) error {
 	var subject string
 	var fields []string
 	for f, v := range structtag.Fields(payload) {
@@ -64,7 +64,7 @@ func resolveStructTags(e *eventstore.Event, payload any) error {
 			return fail("a tag field cannot be encrypted: tag values are plaintext")
 		case !inData:
 			return fail("field is json:\"-\" and so has nothing in Data to encrypt")
-		case !slices.ContainsFunc(e.Tags, func(t eventstore.Tag) bool { return t.Key == key }):
+		case !slices.ContainsFunc(e.Tags, func(t collie.Tag) bool { return t.Key == key }):
 			return fail("the event carries no %q tag", key)
 		case subject != "" && key != subject:
 			return fail("fields disagree on the subject: %q and %q", subject, key)
@@ -83,7 +83,7 @@ func resolveStructTags(e *eventstore.Event, payload any) error {
 
 // declare writes one metadata entry unless an option already wrote it, in
 // which case the two must agree.
-func declare(e *eventstore.Event, key, value string) error {
+func declare(e *collie.Event, key, value string) error {
 	if e.Metadata == nil {
 		e.Metadata = make(map[string]string)
 	}

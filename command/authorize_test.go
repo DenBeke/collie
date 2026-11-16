@@ -29,18 +29,18 @@ type authorizeState struct {
 // Authorize answers; conflict makes Decide slip a competing event into the store
 // on its first run, so a test can watch the phase run again on the retry.
 type authorizingCommand struct {
-	store    eventstore.Store
+	store    collie.Store
 	state    *authorizeState
 	deny     error
 	conflict bool
 }
 
-func (cmd *authorizingCommand) Projections(context.Context) ([]eventstore.Projection, error) {
-	return []eventstore.Projection{
-		&eventstore.DefaultProjection[int]{
-			Query: eventstore.QueryItem{Tags: touched},
-			Handlers: map[string]eventstore.HandleFunc[int]{
-				"Touched": func(seen int, _ eventstore.SequencedEvent) (int, error) { return seen + 1, nil },
+func (cmd *authorizingCommand) Projections(context.Context) ([]collie.Projection, error) {
+	return []collie.Projection{
+		&collie.DefaultProjection[int]{
+			Query: collie.QueryItem{Tags: touched},
+			Handlers: map[string]collie.HandleFunc[int]{
+				"Touched": func(seen int, _ collie.SequencedEvent) (int, error) { return seen + 1, nil },
 			},
 		},
 	}, nil
@@ -51,28 +51,28 @@ func (cmd *authorizingCommand) Authorize(context.Context) error {
 	return cmd.deny
 }
 
-func (cmd *authorizingCommand) Decide(ctx context.Context) ([]eventstore.Event, error) {
+func (cmd *authorizingCommand) Decide(ctx context.Context) ([]collie.Event, error) {
 	cmd.state.decided++
 	if cmd.conflict && !cmd.state.injected {
 		cmd.state.injected = true
-		competing, err := eventstore.NewEvent("Touched", nil, touched)
+		competing, err := collie.NewEvent("Touched", nil, touched)
 		if err != nil {
 			return nil, fmt.Errorf("could not create competing event: %w", err)
 		}
-		if err := cmd.store.Append(ctx, []eventstore.Event{competing}, nil); err != nil {
+		if err := cmd.store.Append(ctx, []collie.Event{competing}, nil); err != nil {
 			return nil, fmt.Errorf("could not append competing event: %w", err)
 		}
 	}
-	event, err := eventstore.NewEvent("Touched", nil, touched)
+	event, err := collie.NewEvent("Touched", nil, touched)
 	if err != nil {
 		return nil, fmt.Errorf("could not create Touched event: %w", err)
 	}
-	return []eventstore.Event{event}, nil
+	return []collie.Event{event}, nil
 }
 
 // newAuthorizingRegistry registers the command under a name, building a fresh
 // one per dispatch that shares the test's state and its verdict.
-func newAuthorizingRegistry(store eventstore.Store, state *authorizeState, deny error) *command.Registry {
+func newAuthorizingRegistry(store collie.Store, state *authorizeState, deny error) *command.Registry {
 	return command.NewRegistry(store,
 		command.WithCommandFunc("authorizing", func() command.Command {
 			return &authorizingCommand{store: store, state: state, deny: deny}
@@ -230,24 +230,24 @@ func (cmd *gatedCommand) Authorize(context.Context) error {
 	return cmd.deny
 }
 
-func (cmd *gatedCommand) Projections(context.Context) ([]eventstore.Projection, error) {
-	return []eventstore.Projection{
-		&eventstore.DefaultProjection[int]{
-			Query: eventstore.QueryItem{Tags: touched},
-			Handlers: map[string]eventstore.HandleFunc[int]{
-				"Touched": func(seen int, _ eventstore.SequencedEvent) (int, error) { return seen + 1, nil },
+func (cmd *gatedCommand) Projections(context.Context) ([]collie.Projection, error) {
+	return []collie.Projection{
+		&collie.DefaultProjection[int]{
+			Query: collie.QueryItem{Tags: touched},
+			Handlers: map[string]collie.HandleFunc[int]{
+				"Touched": func(seen int, _ collie.SequencedEvent) (int, error) { return seen + 1, nil },
 			},
 		},
 	}, nil
 }
 
-func (cmd *gatedCommand) Decide(context.Context) ([]eventstore.Event, error) {
+func (cmd *gatedCommand) Decide(context.Context) ([]collie.Event, error) {
 	cmd.state.calls = append(cmd.state.calls, "decide")
-	event, err := eventstore.NewEvent("Touched", nil, touched)
+	event, err := collie.NewEvent("Touched", nil, touched)
 	if err != nil {
 		return nil, fmt.Errorf("could not create Touched event: %w", err)
 	}
-	return []eventstore.Event{event}, nil
+	return []collie.Event{event}, nil
 }
 
 // TestExecute_DeniedBeforePrepare is the guarantee the gate exists for: a caller

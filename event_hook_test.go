@@ -1,4 +1,4 @@
-package eventstore_test
+package collie_test
 
 import (
 	"errors"
@@ -17,7 +17,7 @@ type hooked struct {
 var errRejected = errors.New("rejected by hook")
 
 func init() {
-	eventstore.RegisterHook(func(e *eventstore.Event, payload any) error {
+	collie.RegisterHook(func(e *collie.Event, payload any) error {
 		h, ok := payload.(hooked)
 		if !ok {
 			return nil
@@ -32,7 +32,7 @@ func init() {
 		e.Metadata["first"] = "tags=" + e.TagValues("id")[0] + " option=" + e.Metadata["option"]
 		return nil
 	})
-	eventstore.RegisterHook(func(e *eventstore.Event, payload any) error {
+	collie.RegisterHook(func(e *collie.Event, payload any) error {
 		if _, ok := payload.(hooked); ok {
 			e.Metadata["second"] = "after " + e.Metadata["first"]
 		}
@@ -40,20 +40,20 @@ func init() {
 	})
 }
 
-func withOption(e *eventstore.Event) {
+func withOption(e *collie.Event) {
 	e.Metadata = map[string]string{"option": "set"}
 }
 
 func TestHooksRunAfterOptionsInOrder(t *testing.T) {
-	fromStruct, err := eventstore.NewEventFrom("Hooked", hooked{ID: "x"}, withOption)
+	fromStruct, err := collie.NewEventFrom("Hooked", hooked{ID: "x"}, withOption)
 	if err != nil {
 		t.Fatal(err)
 	}
-	plain, err := eventstore.NewEvent("Hooked", hooked{ID: "x"}, eventstore.NewTags("id", "x"), withOption)
+	plain, err := collie.NewEvent("Hooked", hooked{ID: "x"}, collie.NewTags("id", "x"), withOption)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for name, e := range map[string]eventstore.Event{"NewEventFrom": fromStruct, "NewEvent": plain} {
+	for name, e := range map[string]collie.Event{"NewEventFrom": fromStruct, "NewEvent": plain} {
 		if got := e.Metadata["first"]; got != "tags=x option=set" {
 			t.Errorf("%s: first hook saw %q", name, got)
 		}
@@ -64,14 +64,14 @@ func TestHooksRunAfterOptionsInOrder(t *testing.T) {
 }
 
 func TestHookErrorAbortsConstruction(t *testing.T) {
-	_, err := eventstore.NewEventFrom("Hooked", hooked{ID: "x", Reject: true})
+	_, err := collie.NewEventFrom("Hooked", hooked{ID: "x", Reject: true})
 	if !errors.Is(err, errRejected) {
 		t.Errorf("err = %v, want errRejected", err)
 	}
 }
 
 func TestHooksIgnoreOtherPayloads(t *testing.T) {
-	e, err := eventstore.NewEvent("Plain", "alice", nil)
+	e, err := collie.NewEvent("Plain", "alice", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

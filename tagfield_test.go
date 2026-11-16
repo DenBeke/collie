@@ -1,4 +1,4 @@
-package eventstore_test
+package collie_test
 
 import (
 	"context"
@@ -48,7 +48,7 @@ type viaPointer struct {
 	Name string `json:"name"`
 }
 
-func tagsEqual(t *testing.T, got, want []eventstore.Tag) {
+func tagsEqual(t *testing.T, got, want []collie.Tag) {
 	t.Helper()
 	if !slices.Equal(got, want) {
 		t.Errorf("tags = %v, want %v", got, want)
@@ -59,26 +59,26 @@ func TestNewEventFromEmitsTags(t *testing.T) {
 	cases := []struct {
 		name    string
 		payload any
-		want    []eventstore.Tag
+		want    []collie.Tag
 	}{
 		{"two fields same key, named string type, field order", messageSent{From: "a", To: "b", Body: "hi"},
-			eventstore.NewTags("user", "a", "user", "b")},
+			collie.NewTags("user", "a", "user", "b")},
 		{"pointer payload", &messageSent{From: "a", To: "b"},
-			eventstore.NewTags("user", "a", "user", "b")},
+			collie.NewTags("user", "a", "user", "b")},
 		{"embedded struct promoted, slice in element order", documentShared{identity: identity{TenantID: "t"}, DocumentID: "d", Readers: []string{"r2", "r1"}},
-			eventstore.NewTags("tenant", "t", "document", "d", "user", "r2", "user", "r1")},
+			collie.NewTags("tenant", "t", "document", "d", "user", "r2", "user", "r1")},
 		{"one field two keys in written order", ownerChanged{OwnerID: "o"},
-			eventstore.NewTags("owner", "o", "user", "o")},
+			collie.NewTags("owner", "o", "user", "o")},
 		{"slice with two keys is element-major", groupNotified{Members: []string{"m1", "m2"}},
-			eventstore.NewTags("member", "m1", "recipient", "m1", "member", "m2", "recipient", "m2")},
+			collie.NewTags("member", "m1", "recipient", "m1", "member", "m2", "recipient", "m2")},
 		{"omitempty scalar and slice emit nothing", optionalCourse{StudentID: "s"},
-			eventstore.NewTags("student", "s")},
+			collie.NewTags("student", "s")},
 		{"omitempty fields present", optionalCourse{StudentID: "s", CourseID: "c", Cohorts: []string{"x"}},
-			eventstore.NewTags("student", "s", "course", "c", "cohort", "x")},
+			collie.NewTags("student", "s", "course", "c", "cohort", "x")},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			e, err := eventstore.NewEventFrom("Happened", tc.payload)
+			e, err := collie.NewEventFrom("Happened", tc.payload)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -95,13 +95,13 @@ func TestNewEventFromEmitsTags(t *testing.T) {
 // options run as they do there.
 func TestNewEventFromDataMatchesNewEvent(t *testing.T) {
 	msg := messageSent{From: "a", To: "b", Body: "hi"}
-	mark := func(e *eventstore.Event) { e.Metadata = map[string]string{"seen": "yes"} }
+	mark := func(e *collie.Event) { e.Metadata = map[string]string{"seen": "yes"} }
 
-	from, err := eventstore.NewEventFrom("MessageSent", msg, mark)
+	from, err := collie.NewEventFrom("MessageSent", msg, mark)
 	if err != nil {
 		t.Fatal(err)
 	}
-	plain, err := eventstore.NewEvent("MessageSent", msg, nil, mark)
+	plain, err := collie.NewEvent("MessageSent", msg, nil, mark)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,18 +131,18 @@ func TestNewEventFromEmptyValues(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := eventstore.NewEventFrom("Happened", tc.payload)
-			if !errors.Is(err, eventstore.ErrEmptyTagValue) {
+			_, err := collie.NewEventFrom("Happened", tc.payload)
+			if !errors.Is(err, collie.ErrEmptyTagValue) {
 				t.Errorf("err = %v, want ErrEmptyTagValue", err)
 			}
 		})
 	}
 	// The embedded pointer is fine once it points somewhere.
-	e, err := eventstore.NewEventFrom("Happened", viaPointer{identity: &identity{TenantID: "t"}})
+	e, err := collie.NewEventFrom("Happened", viaPointer{identity: &identity{TenantID: "t"}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	tagsEqual(t, e.Tags, eventstore.NewTags("tenant", "t"))
+	tagsEqual(t, e.Tags, collie.NewTags("tenant", "t"))
 }
 
 type (
@@ -202,8 +202,8 @@ func TestNewEventFromRejectsInvalidStructs(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := eventstore.NewEventFrom("Happened", tc.payload)
-			if !errors.Is(err, eventstore.ErrInvalidTagStruct) {
+			_, err := collie.NewEventFrom("Happened", tc.payload)
+			if !errors.Is(err, collie.ErrInvalidTagStruct) {
 				t.Errorf("err = %v, want ErrInvalidTagStruct", err)
 			}
 		})
@@ -214,16 +214,16 @@ func TestNewEventFromRoundTrip(t *testing.T) {
 	store := memory.New()
 	ctx := context.Background()
 
-	sent, err := eventstore.NewEventFrom("MessageSent", messageSent{From: "a", To: "b", Body: "hi"})
+	sent, err := collie.NewEventFrom("MessageSent", messageSent{From: "a", To: "b", Body: "hi"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Append(ctx, []eventstore.Event{sent}, nil); err != nil {
+	if err := store.Append(ctx, []collie.Event{sent}, nil); err != nil {
 		t.Fatal(err)
 	}
 
 	count := 0
-	stream, _, err := store.Read(ctx, eventstore.Query{{Tags: eventstore.NewTags("user", "b")}}, 0)
+	stream, _, err := store.Read(ctx, collie.Query{{Tags: collie.NewTags("user", "b")}}, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,8 +232,8 @@ func TestNewEventFromRoundTrip(t *testing.T) {
 			t.Fatal(err)
 		}
 		count++
-		tagsEqual(t, e.Tags, eventstore.NewTags("user", "a", "user", "b"))
-		msg, err := eventstore.EventData[messageSent](e)
+		tagsEqual(t, e.Tags, collie.NewTags("user", "a", "user", "b"))
+		msg, err := collie.EventData[messageSent](e)
 		if err != nil {
 			t.Fatal(err)
 		}

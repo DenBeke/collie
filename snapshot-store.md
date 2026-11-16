@@ -27,7 +27,7 @@ can use any backend.
 ## The seam — untyped on purpose
 
 ```go
-// core (eventstore): persistence only — serialized state + a position, keyed by name.
+// core (collie): persistence only — serialized state + a position, keyed by name.
 type SnapshotStore interface {
     Load(ctx context.Context, name string) (state []byte, position uint64, found bool, err error)
     Save(ctx context.Context, name string, state []byte, position uint64) error
@@ -78,17 +78,17 @@ mongo.NewSnapshotStore(collection)   // tomorrow — write this one type, nothin
 ```go
 type PrescribeDrug struct {
     PatientID string `json:"patient_id"`
-    store     eventstore.SnapshotStore                  // ← interface. No gorm, no postgres import.
-    allergies *eventstore.CheckpointProjection[AllergyState]
+    store     collie.SnapshotStore                  // ← interface. No gorm, no postgres import.
+    allergies *collie.CheckpointProjection[AllergyState]
 }
-func (c *PrescribeDrug) UseSnapshotStore(s eventstore.SnapshotStore) { c.store = s } // injected by the Registry
+func (c *PrescribeDrug) UseSnapshotStore(s collie.SnapshotStore) { c.store = s } // injected by the Registry
 
-func (c *PrescribeDrug) Projections(ctx context.Context) []eventstore.Projection {
-    c.allergies, _ = eventstore.NewCheckpointProjection[AllergyState](
+func (c *PrescribeDrug) Projections(ctx context.Context) []collie.Projection {
+    c.allergies, _ = collie.NewCheckpointProjection[AllergyState](
         ctx, c.store, "patient-allergies-"+c.PatientID, allergyDef())
-    return []eventstore.Projection{c.allergies}
+    return []collie.Projection{c.allergies}
 }
-func (c *PrescribeDrug) Decide(context.Context) ([]eventstore.Event, error) {
+func (c *PrescribeDrug) Decide(context.Context) ([]collie.Event, error) {
     if c.allergies.State.Contains(c.Drug) { return nil, ErrAllergy } // typed state
     ...
 }
